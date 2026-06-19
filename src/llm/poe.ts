@@ -6,10 +6,23 @@ import type {
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn } from './types'
 
-/** Poe's OpenAI-compatible endpoint. */
+/** Poe's OpenAI-compatible endpoint (direct). */
 export const POE_BASE_URL = 'https://api.poe.com/v1'
 /** Default Poe bot/model name. If this 404s, try the capitalized form (e.g. "Claude-Opus-4.8"). */
 export const MODEL = 'claude-opus-4.8'
+
+/**
+ * Poe blocks browser CORS, so in dev we route through the Vite proxy (see
+ * vite.config.ts) at a same-origin path. In a non-dev browser build there is no
+ * proxy — the direct URL will CORS-fail until the call is moved behind a backend
+ * (Tauri Rust command; plan step 8).
+ */
+function resolveBaseUrl(): string {
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    return `${window.location.origin}/poe/v1`
+  }
+  return POE_BASE_URL
+}
 
 function toOpenAiMessages(system: string, messages: LlmMessage[]): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: 'system', content: system }]
@@ -53,7 +66,7 @@ export class PoeAdapter implements LlmAdapter {
   private client: OpenAI
 
   constructor(apiKey: string) {
-    this.client = new OpenAI({ apiKey, baseURL: POE_BASE_URL, dangerouslyAllowBrowser: true })
+    this.client = new OpenAI({ apiKey, baseURL: resolveBaseUrl(), dangerouslyAllowBrowser: true })
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
