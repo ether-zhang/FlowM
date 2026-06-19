@@ -1,23 +1,25 @@
-import type Anthropic from '@anthropic-ai/sdk'
+import type { ToolDef } from '../protocol'
+import type { LlmMessage, LlmTurn } from './types'
 
-/** Callbacks fired while one assistant turn streams. */
+/** Callbacks fired while a turn is produced. */
 export interface TurnCallbacks {
-  onText(delta: string): void
+  /** Assistant text for this turn (full text on non-streaming adapters). */
+  onText(text: string): void
 }
 
-export interface StreamTurnParams {
+export interface RunTurnParams {
   system: string
-  messages: Anthropic.MessageParam[]
-  tools: Anthropic.Tool[]
+  messages: LlmMessage[]
+  tools: ToolDef[]
 }
 
 /**
- * Abstracts *where and how* an assistant turn is produced. The direct-Claude
- * implementation lives in claude.ts; a future agent bridge (claude code / codex)
- * is just another implementation of this interface — the conversation loop and
- * the rest of the app never change.
+ * Abstracts *where and how* an assistant turn is produced. The Poe (OpenAI-
+ * compatible) implementation lives in poe.ts; a future direct-Anthropic adapter
+ * or an agent bridge (claude code / codex) is just another implementation —
+ * the conversation loop and the rest of the app never change.
  */
 export interface LlmAdapter {
-  /** Stream one assistant turn; resolve with the final message (text + tool_use blocks). */
-  streamTurn(params: StreamTurnParams, cb: TurnCallbacks): Promise<Anthropic.Message>
+  /** Produce one assistant turn; resolve with its text and any tool calls. */
+  runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn>
 }

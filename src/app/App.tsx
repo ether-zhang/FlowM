@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { Editor } from 'tldraw'
 import { Canvas, createTldrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { ClaudeAdapter, Conversation } from '../llm'
+import { PoeAdapter, Conversation } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import './app.css'
@@ -19,7 +19,7 @@ export function App() {
   const [busy, setBusy] = useState(false)
 
   const ensureConversation = useCallback((key: string) => {
-    const adapter = new ClaudeAdapter(key)
+    const adapter = new PoeAdapter(key)
     const prev = convRef.current
     const conv = new Conversation(adapter)
     if (prev) conv.reset(prev.messages) // preserve history across key changes
@@ -48,7 +48,7 @@ export function App() {
 
   const onConfigureKey = useCallback(() => {
     const current = localStorage.getItem(KEY_STORAGE) ?? ''
-    const next = window.prompt('输入 Claude API Key（仅存于本地 localStorage）：', current)
+    const next = window.prompt('输入 Poe API Key（仅存于本地 localStorage）：', current)
     if (next == null) return
     const key = next.trim()
     if (!key) {

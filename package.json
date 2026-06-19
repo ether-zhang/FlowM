@@ -11,7 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.105.0",
+    "openai": "^6.44.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tldraw": "^5.1.1",

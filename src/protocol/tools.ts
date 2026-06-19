@@ -1,11 +1,17 @@
-import type Anthropic from '@anthropic-ai/sdk'
-
 /**
- * Anthropic tool definitions, one per canvas op. The model calls these; each
- * tool's input maps 1:1 to a `CanvasOp` (the `op` field is implied by the name).
- * Keeping the JSON Schemas here, next to the zod ops in schema.ts, makes the
- * two easy to keep in sync.
+ * Provider-neutral tool definitions, one per canvas op. The model calls these;
+ * each tool's input maps 1:1 to a `CanvasOp` (the `op` field is implied by the
+ * name). `parameters` is a JSON Schema object; adapters translate it to their
+ * provider's wire format (e.g. OpenAI `function.parameters`).
+ *
+ * Keeping the schemas here, next to the zod ops in schema.ts, makes the two easy
+ * to keep in sync.
  */
+export interface ToolDef {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+}
 
 const ref = {
   ref: {
@@ -15,12 +21,12 @@ const ref = {
   },
 } as const
 
-export const canvasTools: Anthropic.Tool[] = [
+export const canvasTools: ToolDef[] = [
   {
     name: 'create_geo',
     description:
       'Create a geometric shape (box/ellipse/diamond/triangle) at page coordinates. Use diamond for decision nodes in flowcharts.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         shape: { type: 'string', enum: ['rectangle', 'ellipse', 'diamond', 'triangle'] },
@@ -37,7 +43,7 @@ export const canvasTools: Anthropic.Tool[] = [
   {
     name: 'create_text',
     description: 'Create a free-standing text label at page coordinates.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         x: { type: 'number' },
@@ -51,7 +57,7 @@ export const canvasTools: Anthropic.Tool[] = [
   {
     name: 'move_shape',
     description: 'Move an existing shape to new top-left page coordinates.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'id of an existing shape (from the canvas context)' },
@@ -64,7 +70,7 @@ export const canvasTools: Anthropic.Tool[] = [
   {
     name: 'update_text',
     description: 'Replace the text/label of an existing shape.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         id: { type: 'string' },
@@ -76,7 +82,7 @@ export const canvasTools: Anthropic.Tool[] = [
   {
     name: 'delete_shape',
     description: 'Delete an existing shape by id.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: { id: { type: 'string' } },
       required: ['id'],
@@ -86,7 +92,7 @@ export const canvasTools: Anthropic.Tool[] = [
     name: 'connect_shapes',
     description:
       'Draw an arrow from one shape to another. `from`/`to` may be existing shape ids or refs created earlier in this same turn.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         from: { type: 'string' },
@@ -98,7 +104,7 @@ export const canvasTools: Anthropic.Tool[] = [
   },
 ]
 
-/** Turn a tool name + input into a CanvasOp shape (adds the `op` discriminator). */
-export function toolCallToOp(name: string, input: Record<string, unknown>): Record<string, unknown> {
-  return { op: name, ...input }
+/** Turn a tool name + parsed args into a CanvasOp shape (adds the `op` discriminator). */
+export function toolCallToOp(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  return { op: name, ...args }
 }

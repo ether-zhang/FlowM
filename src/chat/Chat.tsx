@@ -33,7 +33,7 @@ export function Chat({ messages, busy, apiKeySet, onSend, onConfigureKey, onSave
         <span className="spacer" />
         <button onClick={onSave} title="保存工程">保存</button>
         <button onClick={onLoad} title="加载工程">加载</button>
-        <button onClick={onConfigureKey} title="设置 Claude API Key">
+        <button onClick={onConfigureKey} title="设置 Poe API Key">
           {apiKeySet ? 'Key ✓' : 'Key'}
         </button>
       </header>

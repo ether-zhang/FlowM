@@ -1,4 +1,3 @@
-import type Anthropic from '@anthropic-ai/sdk'
 import {
   type CanvasPort,
   type CanvasOp,
@@ -8,6 +7,7 @@ import {
   toolCallToOp,
 } from '../protocol'
 import type { LlmAdapter } from './adapter'
+import type { LlmMessage } from './types'
 
 const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas of flowchart-like shapes.
 
@@ -21,74 +21,68 @@ const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user 
 const MAX_ITERATIONS = 8
 
 export interface SendCallbacks {
-  onText(delta: string): void
+  onText(text: string): void
   /** Fired after a batch of canvas ops is applied, with a short human summary. */
   onToolsApplied(summary: string): void
 }
 
-/** Holds the API-level message history and runs the tool-use loop for one user turn. */
+/** Holds the provider-neutral message history and runs the tool-use loop for one user turn. */
 export class Conversation {
-  private apiMessages: Anthropic.MessageParam[] = []
+  private history: LlmMessage[] = []
   private adapter: LlmAdapter
 
   constructor(adapter: LlmAdapter) {
     this.adapter = adapter
   }
 
-  reset(messages: Anthropic.MessageParam[] = []) {
-    this.apiMessages = messages
+  reset(messages: LlmMessage[] = []) {
+    this.history = messages
   }
 
-  get messages(): Anthropic.MessageParam[] {
-    return this.apiMessages
+  get messages(): LlmMessage[] {
+    return this.history
   }
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     const context = formatCanvas(port.snapshot('selection'))
-    this.apiMessages.push({
-      role: 'user',
-      content: `Current canvas:\n${context}\n\n---\n${userText}`,
-    })
+    this.history.push({ role: 'user', content: `Current canvas:\n${context}\n\n---\n${userText}` })
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const msg = await this.adapter.streamTurn(
-        { system: SYSTEM, messages: this.apiMessages, tools: canvasTools },
+      const turn = await this.adapter.runTurn(
+        { system: SYSTEM, messages: this.history, tools: canvasTools },
         { onText: cb.onText },
       )
-      this.apiMessages.push({ role: 'assistant', content: msg.content })
+      this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
 
-      const toolUses = msg.content.filter(
-        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-      )
-      if (toolUses.length === 0) return
+      if (turn.toolCalls.length === 0) return
 
       // Validate each tool call into a CanvasOp, then apply the valid ones as one
       // batch so create-refs resolve for later ops (e.g. connect_shapes).
       const validOps: CanvasOp[] = []
       const meta: { id: string; error?: string }[] = []
-      for (const tu of toolUses) {
+      for (const tc of turn.toolCalls) {
         try {
-          validOps.push(parseOp(toolCallToOp(tu.name, tu.input as Record<string, unknown>)))
-          meta.push({ id: tu.id })
+          validOps.push(parseOp(toolCallToOp(tc.name, tc.args)))
+          meta.push({ id: tc.id })
         } catch (e) {
-          meta.push({ id: tu.id, error: (e as Error).message })
+          meta.push({ id: tc.id, error: (e as Error).message })
         }
       }
       const results = port.apply(validOps)
 
       let vi = 0
       let applied = 0
-      const toolResults: Anthropic.ToolResultBlockParam[] = meta.map((m) => {
+      for (const m of meta) {
         if (m.error) {
-          return { type: 'tool_result', tool_use_id: m.id, is_error: true, content: m.error }
+          this.history.push({ role: 'tool', toolCallId: m.id, content: `error: ${m.error}` })
+          continue
         }
         const r = results[vi++]
         if (r.ok) applied++
-        return { type: 'tool_result', tool_use_id: m.id, is_error: !r.ok, content: JSON.stringify(r) }
-      })
+        this.history.push({ role: 'tool', toolCallId: m.id, content: JSON.stringify(r) })
+      }
 
-      cb.onToolsApplied(`已对画布执行 ${applied}/${toolUses.length} 个操作`)
-      this.apiMessages.push({ role: 'user', content: toolResults })
+      cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
   }
 }

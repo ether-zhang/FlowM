@@ -1,21 +1,21 @@
 import { type Editor, getSnapshot, loadSnapshot } from 'tldraw'
-import type Anthropic from '@anthropic-ai/sdk'
+import type { LlmMessage } from '../llm/types'
 import type { DisplayMessage } from '../chat/types'
 
 const VERSION = 1
 
-/** A saved FlowM project: the canvas plus the conversation (display + API history). */
+/** A saved FlowM project: the canvas plus the conversation (display + LLM history). */
 export interface Project {
   version: number
   canvas: ReturnType<typeof getSnapshot>
   display: DisplayMessage[]
-  api: Anthropic.MessageParam[]
+  api: LlmMessage[]
 }
 
 export function buildProject(
   editor: Editor,
   display: DisplayMessage[],
-  api: Anthropic.MessageParam[],
+  api: LlmMessage[],
 ): Project {
   return { version: VERSION, canvas: getSnapshot(editor.store), display, api }
 }
