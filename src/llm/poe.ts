@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import type {
+  ChatCompletionCreateParamsNonStreaming,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions'
@@ -14,8 +15,8 @@ export const MODEL = 'claude-opus-4.8'
 /**
  * Poe blocks browser CORS, so in dev we route through the Vite proxy (see
  * vite.config.ts) at a same-origin path. In a non-dev browser build there is no
- * proxy — the direct URL will CORS-fail until the call is moved behind a backend
- * (Tauri Rust command; plan step 8).
+ * proxy — the direct URL will CORS-fail. The Tauri build avoids this entirely by
+ * making the HTTP call from Rust (see src/llm/tauri.ts).
  */
 function resolveBaseUrl(): string {
   if (import.meta.env.DEV && typeof window !== 'undefined') {
@@ -51,6 +52,64 @@ function toOpenAiMessages(system: string, messages: LlmMessage[]): ChatCompletio
 }
 
 /**
+ * Build the OpenAI-format chat-completions request body. Shared by the browser
+ * adapter (passes it to the OpenAI SDK) and the Tauri adapter (invokes it to the
+ * Rust proxy) so both runtimes produce byte-identical requests.
+ */
+export function buildChatBody(params: RunTurnParams): ChatCompletionCreateParamsNonStreaming {
+  const tools: ChatCompletionTool[] = params.tools.map((t) => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }))
+  return {
+    model: MODEL,
+    messages: toOpenAiMessages(params.system, params.messages),
+    tools,
+    tool_choice: 'auto',
+  }
+}
+
+/** The slice of an OpenAI chat-completion response that we read. */
+export interface ChatResponseLike {
+  choices?: Array<{
+    message?: {
+      content?: string | null
+      tool_calls?: Array<{
+        id: string
+        type?: string
+        function?: { name?: string; arguments?: string }
+      }>
+    }
+  }>
+}
+
+/**
+ * Map an OpenAI-format chat-completion response into a provider-neutral turn.
+ * Works for both the SDK's typed response and the raw JSON returned by the Rust
+ * proxy (same wire shape).
+ */
+export function parseTurn(res: ChatResponseLike, cb: TurnCallbacks): LlmTurn {
+  const msg = res.choices?.[0]?.message
+  const text = msg?.content ?? ''
+  if (text) cb.onText(text)
+
+  const toolCalls = (msg?.tool_calls ?? []).flatMap((tc) => {
+    if (tc.type && tc.type !== 'function') return []
+    const fn = tc.function
+    if (!fn?.name) return []
+    let args: Record<string, unknown> = {}
+    try {
+      args = JSON.parse(fn.arguments || '{}')
+    } catch {
+      // leave args empty; the op validator will reject and report back to the model
+    }
+    return [{ id: tc.id, name: fn.name, args }]
+  })
+
+  return { text, toolCalls }
+}
+
+/**
  * Poe adapter via the OpenAI-compatible Chat Completions API.
  *
  * Non-streaming on purpose: Poe's OpenAI-compatible streaming has reported
@@ -60,7 +119,7 @@ function toOpenAiMessages(system: string, messages: LlmMessage[]): ChatCompletio
  *
  * NOTE on the key: in browser/PWA dev there is no backend, so the user-supplied
  * key is used from the renderer with `dangerouslyAllowBrowser`. Fine for personal/
- * MVP use; under Tauri move the call behind a Rust command (see plan, step 8).
+ * MVP use; the Tauri build moves the call behind a Rust command (see tauri.ts).
  */
 export class PoeAdapter implements LlmAdapter {
   private client: OpenAI
@@ -70,33 +129,7 @@ export class PoeAdapter implements LlmAdapter {
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
-    const tools: ChatCompletionTool[] = params.tools.map((t) => ({
-      type: 'function',
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }))
-
-    const res = await this.client.chat.completions.create({
-      model: MODEL,
-      messages: toOpenAiMessages(params.system, params.messages),
-      tools,
-      tool_choice: 'auto',
-    })
-
-    const msg = res.choices[0]?.message
-    const text = msg?.content ?? ''
-    if (text) cb.onText(text)
-
-    const toolCalls = (msg?.tool_calls ?? []).flatMap((tc) => {
-      if (tc.type !== 'function') return []
-      let args: Record<string, unknown> = {}
-      try {
-        args = JSON.parse(tc.function.arguments || '{}')
-      } catch {
-        // leave args empty; the op validator will reject and report back to the model
-      }
-      return [{ id: tc.id, name: tc.function.name, args }]
-    })
-
-    return { text, toolCalls }
+    const res = await this.client.chat.completions.create(buildChatBody(params))
+    return parseTurn(res as ChatResponseLike, cb)
   }
 }

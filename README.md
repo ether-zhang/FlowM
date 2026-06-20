@@ -35,6 +35,20 @@ npm test         # 运行 protocol 单元测试
 npm run build    # 生产构建
 ```
 
+## 桌面版（Tauri）
+
+桌面壳把前端包成 Win/Mac 原生窗口，并**把模型调用移到 Rust 后端**：Poe Key 存在应用数据目录（不进入渲染层/JS），HTTP 请求由 Rust 发起（无浏览器 CORS）。
+
+**前置**：安装 Rust 工具链 —— [rustup](https://rustup.rs)（Windows 另需 “Microsoft C++ Build Tools / MSVC”）。
+
+```bash
+npm run tauri dev        # 开发：自动起 Vite + 打开桌面窗口（首次会联网编译 Rust 依赖，较慢）
+npx tauri icon icon.png  # 打包前先用一张方形 PNG 生成 src-tauri/icons/*
+npm run tauri build      # 产出安装包
+```
+
+桌面窗口内点 **Key** 设置的密钥会写入 Rust 后端文件，**不**经 `localStorage`、不出现在前端代码里。运行时自动识别：浏览器走 `localStorage` + Vite 代理，Tauri 走 Rust 后端。
+
 ## 使用
 
 1. 打开应用，在画布上用左侧工具栏放置方块 / 手绘 / 文字。

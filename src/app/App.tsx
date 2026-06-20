@@ -1,10 +1,11 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from 'tldraw'
 import { Canvas, createTldrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { PoeAdapter, Conversation } from '../llm'
+import { PoeAdapter, TauriAdapter, tauriKey, Conversation } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
+import { IS_TAURI } from '../runtime'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
@@ -14,12 +15,17 @@ export function App() {
   const portRef = useRef<CanvasPort | null>(null)
   const convRef = useRef<Conversation | null>(null)
 
-  const [apiKeySet, setApiKeySet] = useState(() => !!localStorage.getItem(KEY_STORAGE))
+  // Browser: key lives in localStorage and is known synchronously.
+  // Tauri: key lives in the Rust backend; resolve asynchronously below.
+  const [apiKeySet, setApiKeySet] = useState(() =>
+    IS_TAURI ? false : !!localStorage.getItem(KEY_STORAGE),
+  )
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
 
-  const ensureConversation = useCallback((key: string) => {
-    const adapter = new PoeAdapter(key)
+  // Tauri's adapter needs no client-side key; the browser's PoeAdapter does.
+  const ensureConversation = useCallback((key?: string) => {
+    const adapter = IS_TAURI ? new TauriAdapter() : new PoeAdapter(key ?? '')
     const prev = convRef.current
     const conv = new Conversation(adapter)
     if (prev) conv.reset(prev.messages) // preserve history across key changes
@@ -27,12 +33,27 @@ export function App() {
     return conv
   }, [])
 
+  // Under Tauri, ask the backend whether a key is stored, then wire the adapter.
+  useEffect(() => {
+    if (!IS_TAURI) return
+    tauriKey.has().then((has) => {
+      setApiKeySet(has)
+      if (has && !convRef.current) ensureConversation()
+    })
+  }, [ensureConversation])
+
   const onEditor = useCallback(
     (editor: Editor) => {
       editorRef.current = editor
       portRef.current = createTldrawPort(editor)
-      const key = localStorage.getItem(KEY_STORAGE)
-      if (key && !convRef.current) ensureConversation(key)
+      if (!IS_TAURI) {
+        const key = localStorage.getItem(KEY_STORAGE)
+        if (key && !convRef.current) ensureConversation(key)
+      } else if (!convRef.current) {
+        tauriKey.has().then((has) => {
+          if (has && !convRef.current) ensureConversation()
+        })
+      }
     },
     [ensureConversation],
   )
@@ -46,7 +67,23 @@ export function App() {
   const appendToMessage = (id: string, delta: string) =>
     setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, text: msg.text + delta } : msg)))
 
-  const onConfigureKey = useCallback(() => {
+  const onConfigureKey = useCallback(async () => {
+    if (IS_TAURI) {
+      // Don't prefill — the key stays in the backend, never exposed to the renderer.
+      const next = window.prompt('输入 Poe API Key（存于桌面后端，不进入渲染层）：', '')
+      if (next == null) return
+      const key = next.trim()
+      if (!key) {
+        await tauriKey.clear()
+        setApiKeySet(false)
+        return
+      }
+      await tauriKey.set(key)
+      ensureConversation()
+      setApiKeySet(true)
+      return
+    }
+
     const current = localStorage.getItem(KEY_STORAGE) ?? ''
     const next = window.prompt('输入 Poe API Key（仅存于本地 localStorage）：', current)
     if (next == null) return
@@ -64,9 +101,18 @@ export function App() {
   const onSend = useCallback(
     async (text: string) => {
       const port = portRef.current
-      const key = localStorage.getItem(KEY_STORAGE)
-      if (!port || !key) return
-      const conv = convRef.current ?? ensureConversation(key)
+      if (!port) return
+
+      let conv = convRef.current
+      if (!conv) {
+        if (IS_TAURI) {
+          conv = ensureConversation()
+        } else {
+          const key = localStorage.getItem(KEY_STORAGE)
+          if (!key) return
+          conv = ensureConversation(key)
+        }
+      }
 
       addMessage('user', text)
       const assistantId = addMessage('assistant', '')
