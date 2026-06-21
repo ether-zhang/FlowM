@@ -5,7 +5,7 @@
 ## 技术栈
 
 - **前端**：React + TypeScript + Vite
-- **画布**：[tldraw](https://tldraw.dev)（无限画布 / 形状 / 手绘 / 可编程 Editor API）
+- **画布**：[Excalidraw](https://github.com/excalidraw/excalidraw)（MIT；无限画布 / 形状 / 手绘 / 带绑定的箭头 / 可编程 API）
 - **大模型**：[Poe](https://creator.poe.com/docs/external-applications/openai-compatible-api) 的 OpenAI 兼容接口（`openai` SDK，`base_url=https://api.poe.com/v1`，默认模型 `claude-opus-4.8`，function calling）
 - **桌面**（计划）：Tauri；**iPad**（计划）：PWA
 
@@ -16,10 +16,10 @@
 ```
 src/
   protocol/   ★ 画布↔LLM 独立协议：操作原语 schema、序列化、工具定义（与 UI/LLM 解耦）
-  canvas/     tldraw 封装 + 协议 CanvasPort 的 tldraw 实现
+  canvas/     Excalidraw 封装 + 协议 CanvasPort 的 Excalidraw 实现
   llm/        LlmAdapter 接口（provider 中立）+ Poe(OpenAI 兼容)实现 + tool-use 对话循环
   chat/       右侧对话栏 UI
-  persistence/ 工程保存/加载（tldraw 快照 + 对话历史）
+  persistence/ 工程保存/加载（经 CanvasPort 序列化的画布 + 对话历史）
   app/        两栏布局与装配
 ```
 

@@ -59,3 +59,8 @@ Windows、macOS、iPad。
    - [ ] 可变的大模型接入口（provider / 模型切换 UI；适配器已就绪）
    - [ ] iPad / PWA 收尾（manifest + service worker）
    - [ ] 上下文优化
+   - [x] 画布库 tldraw → Excalidraw（MIT，去商用授权风险）；持久化推到 `CanvasPort.serialize/deserialize` 后面 —— 代码+构建+9 单测通过，**待 `npm run dev` 实测画布/箭头绑定**
+     - [ ] 三角形：Excalidraw 无原生三角形，现暂用 diamond 近似，待用闭合三点 line 多边形实现
+     - [ ] 连接「已存在」形状的箭头绑定（同批新建的已绑定；跨已有元素现为无绑定直线，需补 focus/gap）
+     - [ ] `update_text` 给原本无标签的容器新增标签（需新建绑定 text 元素 + boundElements 接线）
+     - [ ] bundle 瘦身：Excalidraw 拉入 mermaid/katex/cytoscape（多为按需懒加载），评估关闭 TTD/mermaid 特性

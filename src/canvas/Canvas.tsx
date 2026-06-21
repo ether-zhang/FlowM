@@ -1,17 +1,17 @@
-import { Tldraw, type Editor } from 'tldraw'
-import 'tldraw/tldraw.css'
+import { Excalidraw } from '@excalidraw/excalidraw'
+import '@excalidraw/excalidraw/index.css'
+import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 
 /**
- * The center canvas. tldraw's default toolbar already provides the tools the MVP
- * needs — Select, Draw (画笔), the geo/Rectangle (方块) tool, and Text (文字) —
- * plus arrows and more. We surface the live Editor via onEditor so the app can
- * build a CanvasPort over it.
+ * The center canvas. Excalidraw (MIT) ships the tools the MVP needs — Select,
+ * Draw (画笔), Rectangle/Ellipse/Diamond (方块), Text (文字) and Arrow — plus
+ * pan/zoom. We surface the live imperative API via onReady so the app can build
+ * a CanvasPort over it.
  */
-export function Canvas({ onEditor }: { onEditor: (editor: Editor) => void }) {
+export function Canvas({ onReady }: { onReady: (api: ExcalidrawImperativeAPI) => void }) {
   return (
-    <Tldraw
-      persistenceKey="flowm-canvas"
-      onMount={(editor) => onEditor(editor)}
-    />
+    <div style={{ position: 'absolute', inset: 0 }}>
+      <Excalidraw excalidrawAPI={onReady} />
+    </div>
   )
 }

@@ -1,4 +1,4 @@
-import { type Editor, getSnapshot, loadSnapshot } from 'tldraw'
+import type { CanvasPort } from '../protocol'
 import type { LlmMessage } from '../llm/types'
 import type { DisplayMessage } from '../chat/types'
 
@@ -7,21 +7,22 @@ const VERSION = 1
 /** A saved FlowM project: the canvas plus the conversation (display + LLM history). */
 export interface Project {
   version: number
-  canvas: ReturnType<typeof getSnapshot>
+  /** Opaque canvas state from CanvasPort.serialize(); persistence never inspects it. */
+  canvas: unknown
   display: DisplayMessage[]
   api: LlmMessage[]
 }
 
 export function buildProject(
-  editor: Editor,
+  port: CanvasPort,
   display: DisplayMessage[],
   api: LlmMessage[],
 ): Project {
-  return { version: VERSION, canvas: getSnapshot(editor.store), display, api }
+  return { version: VERSION, canvas: port.serialize(), display, api }
 }
 
-export function restoreCanvas(editor: Editor, project: Project) {
-  loadSnapshot(editor.store, project.canvas)
+export function restoreCanvas(port: CanvasPort, project: Project) {
+  port.deserialize(project.canvas)
 }
 
 /** Browser fallback persistence: download the project as a .json file. */

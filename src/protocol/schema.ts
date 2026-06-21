@@ -8,7 +8,7 @@ import { z } from 'zod'
  *   1. CanvasShape — the structured form a shape takes when serialized for the model.
  *   2. CanvasOp    — the operation primitives the model emits to mutate the canvas.
  *
- * A concrete canvas (e.g. tldraw) implements `CanvasPort` to bind these to a real editor.
+ * A concrete canvas (e.g. Excalidraw) implements `CanvasPort` to bind these to a real editor.
  */
 
 export const GeoKind = z.enum(['rectangle', 'ellipse', 'diamond', 'triangle'])

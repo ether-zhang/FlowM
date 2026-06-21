@@ -1,11 +1,11 @@
-/* Two-pane shell: tldraw (with its own left toolbar: 方块/画笔/文字) fills the
+/* Two-pane shell: Excalidraw (with its own left toolbar: 方块/画笔/文字) fills the
    main pane; the chat panel sits on the right. */
 .layout {
   display: grid;
   grid-template-columns: 1fr 360px;
   /* Lock the shell to the viewport. minmax(0,1fr) lets the single row hold its
      height instead of growing with content, so a long chat never pushes the
-     page taller (which would scroll the whole page and fight tldraw's panning). */
+     page taller (which would scroll the whole page and fight Excalidraw's panning). */
   grid-template-rows: minmax(0, 1fr);
   height: 100svh;
   width: 100vw;

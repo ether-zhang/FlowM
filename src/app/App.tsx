@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Editor } from 'tldraw'
-import { Canvas, createTldrawPort } from '../canvas'
+import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
+import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
@@ -30,7 +30,6 @@ function formatRequest(params: RunTurnParams, iteration: number): string {
 }
 
 export function App() {
-  const editorRef = useRef<Editor | null>(null)
   const portRef = useRef<CanvasPort | null>(null)
   const convRef = useRef<Conversation | null>(null)
 
@@ -62,10 +61,9 @@ export function App() {
     })
   }, [ensureConversation])
 
-  const onEditor = useCallback(
-    (editor: Editor) => {
-      editorRef.current = editor
-      portRef.current = createTldrawPort(editor)
+  const onReady = useCallback(
+    (api: ExcalidrawImperativeAPI) => {
+      portRef.current = createExcalidrawPort(api)
       if (!IS_TAURI) {
         const key = localStorage.getItem(KEY_STORAGE)
         if (key && !convRef.current) ensureConversation(key)
@@ -155,17 +153,17 @@ export function App() {
   )
 
   const onSave = useCallback(() => {
-    const editor = editorRef.current
-    if (!editor) return
-    downloadProject(buildProject(editor, messages, convRef.current?.messages ?? []))
+    const port = portRef.current
+    if (!port) return
+    downloadProject(buildProject(port, messages, convRef.current?.messages ?? []))
   }, [messages])
 
   const onLoad = useCallback(async () => {
-    const editor = editorRef.current
-    if (!editor) return
+    const port = portRef.current
+    if (!port) return
     const project = await openProjectFile()
     if (!project) return
-    restoreCanvas(editor, project)
+    restoreCanvas(port, project)
     setMessages(project.display)
     convRef.current?.reset(project.api)
   }, [])
@@ -173,7 +171,7 @@ export function App() {
   return (
     <div className="layout">
       <main className="canvas-pane">
-        <Canvas onEditor={onEditor} />
+        <Canvas onReady={onReady} />
       </main>
       <aside className="chat-pane">
         <Chat
