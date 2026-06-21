@@ -5,13 +5,25 @@ export interface ChatProps {
   messages: DisplayMessage[]
   busy: boolean
   apiKeySet: boolean
+  debug: boolean
   onSend: (text: string) => void
   onConfigureKey: () => void
+  onToggleDebug: () => void
   onSave: () => void
   onLoad: () => void
 }
 
-export function Chat({ messages, busy, apiKeySet, onSend, onConfigureKey, onSave, onLoad }: ChatProps) {
+export function Chat({
+  messages,
+  busy,
+  apiKeySet,
+  debug,
+  onSend,
+  onConfigureKey,
+  onToggleDebug,
+  onSave,
+  onLoad,
+}: ChatProps) {
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -33,6 +45,13 @@ export function Chat({ messages, busy, apiKeySet, onSend, onConfigureKey, onSave
         <span className="spacer" />
         <button onClick={onSave} title="保存工程">保存</button>
         <button onClick={onLoad} title="加载工程">加载</button>
+        <button
+          onClick={onToggleDebug}
+          title="调试模式：显示每次发送给模型的请求"
+          aria-pressed={debug}
+        >
+          {debug ? 'Debug ✓' : 'Debug'}
+        </button>
         <button onClick={onConfigureKey} title="设置 Poe API Key">
           {apiKeySet ? 'Key ✓' : 'Key'}
         </button>
@@ -44,11 +63,18 @@ export function Chat({ messages, busy, apiKeySet, onSend, onConfigureKey, onSave
             在画布上放置或手绘图形，选中后在这里向大模型描述需求；模型可直接修改画布。
           </p>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={`msg msg-${m.role}`}>
-            {m.text || (m.role === 'assistant' && busy ? '…' : '')}
-          </div>
-        ))}
+        {messages.map((m) =>
+          m.role === 'debug' ? (
+            <details key={m.id} className="msg msg-debug">
+              <summary>发送给模型的请求</summary>
+              <pre>{m.text}</pre>
+            </details>
+          ) : (
+            <div key={m.id} className={`msg msg-${m.role}`}>
+              {m.text || (m.role === 'assistant' && busy ? '…' : '')}
+            </div>
+          ),
+        )}
       </div>
 
       <div className="chat-input">

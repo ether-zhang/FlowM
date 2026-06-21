@@ -77,6 +77,30 @@
 .msg-assistant { align-self: flex-start; background: #f1f1f3; }
 .msg-system { align-self: center; background: #fff7e6; color: #9a6b00; font-size: 12px; }
 
+.msg-debug {
+  align-self: stretch;
+  max-width: 100%;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 0;
+}
+.msg-debug summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #a6adc8;
+  user-select: none;
+}
+.msg-debug pre {
+  margin: 0;
+  padding: 0 12px 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
 .chat-input {
   display: flex;
   gap: 8px;

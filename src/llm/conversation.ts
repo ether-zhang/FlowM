@@ -6,7 +6,7 @@ import {
   parseOp,
   toolCallToOp,
 } from '../protocol'
-import type { LlmAdapter } from './adapter'
+import type { LlmAdapter, RunTurnParams } from './adapter'
 import type { LlmMessage } from './types'
 
 const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas of flowchart-like shapes.
@@ -25,6 +25,12 @@ export interface SendCallbacks {
   onText(text: string): void
   /** Fired after a batch of canvas ops is applied, with a short human summary. */
   onToolsApplied(summary: string): void
+  /**
+   * Debug hook: fired right before each model call with the exact request
+   * (system + message history + tools) for that loop iteration. `iteration` is
+   * 0-based. Used by the UI's debug mode to show what was sent to the model.
+   */
+  onRequest?(params: RunTurnParams, iteration: number): void
 }
 
 /** Holds the provider-neutral message history and runs the tool-use loop for one user turn. */
@@ -49,10 +55,9 @@ export class Conversation {
     this.history.push({ role: 'user', content: `Current canvas:\n${context}\n\n---\n${userText}` })
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const turn = await this.adapter.runTurn(
-        { system: SYSTEM, messages: this.history, tools: canvasTools },
-        { onText: cb.onText },
-      )
+      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: canvasTools }
+      cb.onRequest?.(params, i)
+      const turn = await this.adapter.runTurn(params, { onText: cb.onText })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
 
       if (turn.toolCalls.length === 0) return

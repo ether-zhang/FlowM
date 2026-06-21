@@ -2,13 +2,32 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from 'tldraw'
 import { Canvas, createTldrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { PoeAdapter, TauriAdapter, tauriKey, Conversation } from '../llm'
+import { PoeAdapter, TauriAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
+
+/** Render one outgoing model request as readable text for the debug panel. */
+function formatRequest(params: RunTurnParams, iteration: number): string {
+  const lines = [`# 第 ${iteration + 1} 轮请求`, '', 'SYSTEM:', params.system, '', `MESSAGES (${params.messages.length}):`]
+  for (const m of params.messages) {
+    if (m.role === 'tool') {
+      lines.push(`[tool ${m.toolCallId}] ${m.content}`)
+    } else if (m.role === 'assistant') {
+      const calls = m.toolCalls?.length
+        ? '\n  ↳ ' + m.toolCalls.map((t) => `${t.name}(${JSON.stringify(t.args)})`).join('\n  ↳ ')
+        : ''
+      lines.push(`[assistant] ${m.content}${calls}`)
+    } else {
+      lines.push(`[${m.role}] ${m.content}`)
+    }
+  }
+  lines.push('', `TOOLS (${params.tools.length}): ${params.tools.map((t) => t.name).join(', ')}`)
+  return lines.join('\n')
+}
 
 export function App() {
   const editorRef = useRef<Editor | null>(null)
@@ -22,6 +41,7 @@ export function App() {
   )
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
+  const [debug, setDebug] = useState(false)
 
   // Tauri's adapter needs no client-side key; the browser's PoeAdapter does.
   const ensureConversation = useCallback((key?: string) => {
@@ -121,6 +141,9 @@ export function App() {
         await conv.send(text, port, {
           onText: (delta) => appendToMessage(assistantId, delta),
           onToolsApplied: (summary) => addMessage('system', summary),
+          onRequest: debug
+            ? (params, i) => addMessage('debug', formatRequest(params, i))
+            : undefined,
         })
       } catch (e) {
         addMessage('system', `出错：${(e as Error).message}`)
@@ -128,7 +151,7 @@ export function App() {
         setBusy(false)
       }
     },
-    [ensureConversation],
+    [ensureConversation, debug],
   )
 
   const onSave = useCallback(() => {
@@ -157,8 +180,10 @@ export function App() {
           messages={messages}
           busy={busy}
           apiKeySet={apiKeySet}
+          debug={debug}
           onSend={onSend}
           onConfigureKey={onConfigureKey}
+          onToggleDebug={() => setDebug((d) => !d)}
           onSave={onSave}
           onLoad={onLoad}
         />
