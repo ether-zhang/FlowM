@@ -74,8 +74,33 @@
   max-width: 92%;
 }
 .msg-user { align-self: flex-end; background: #2563eb; color: #fff; }
-.msg-assistant { align-self: flex-start; background: #f1f1f3; }
+.msg-assistant { align-self: flex-start; background: #f1f1f3; white-space: normal; }
 .msg-system { align-self: center; background: #fff7e6; color: #9a6b00; font-size: 12px; }
+
+/* Markdown rendered inside the assistant bubble: tighten default block margins
+   so it reads like a chat message, and style code/lists/tables. */
+.msg-assistant > :first-child { margin-top: 0; }
+.msg-assistant > :last-child { margin-bottom: 0; }
+.msg-assistant p { margin: 0.5em 0; }
+.msg-assistant ul, .msg-assistant ol { margin: 0.5em 0; padding-left: 1.4em; }
+.msg-assistant li { margin: 0.15em 0; }
+.msg-assistant h1, .msg-assistant h2, .msg-assistant h3 { margin: 0.6em 0 0.3em; font-size: 1.05em; }
+.msg-assistant a { color: #2563eb; }
+.msg-assistant code {
+  background: #e3e3e8;
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.msg-assistant pre {
+  background: #e3e3e8;
+  padding: 8px 10px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.msg-assistant pre code { background: none; padding: 0; }
+.msg-assistant table { border-collapse: collapse; margin: 0.5em 0; }
+.msg-assistant th, .msg-assistant td { border: 1px solid #d0d0d6; padding: 3px 6px; }
 
 .msg-debug {
   align-self: stretch;

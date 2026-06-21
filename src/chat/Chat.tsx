@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { DisplayMessage } from './types'
 
 export interface ChatProps {
@@ -63,18 +65,32 @@ export function Chat({
             在画布上放置或手绘图形，选中后在这里向大模型描述需求；模型可直接修改画布。
           </p>
         )}
-        {messages.map((m) =>
-          m.role === 'debug' ? (
-            <details key={m.id} className="msg msg-debug">
-              <summary>发送给模型的请求</summary>
-              <pre>{m.text}</pre>
-            </details>
-          ) : (
+        {messages.map((m) => {
+          if (m.role === 'debug') {
+            return (
+              <details key={m.id} className="msg msg-debug">
+                <summary>发送给模型的请求</summary>
+                <pre>{m.text}</pre>
+              </details>
+            )
+          }
+          if (m.role === 'assistant') {
+            return (
+              <div key={m.id} className="msg msg-assistant">
+                {m.text ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                ) : busy ? (
+                  '…'
+                ) : null}
+              </div>
+            )
+          }
+          return (
             <div key={m.id} className={`msg msg-${m.role}`}>
-              {m.text || (m.role === 'assistant' && busy ? '…' : '')}
+              {m.text}
             </div>
-          ),
-        )}
+          )
+        })}
       </div>
 
       <div className="chat-input">
