@@ -22,11 +22,21 @@ function formatRequest(params: RunTurnParams, iteration: number): string {
         : ''
       lines.push(`[assistant] ${m.content}${calls}`)
     } else {
-      lines.push(`[${m.role}] ${m.content}`)
+      const img = m.role === 'user' && m.image ? ' [+image ↓]' : ''
+      lines.push(`[${m.role}]${img} ${m.content}`)
     }
   }
   lines.push('', `TOOLS (${params.tools.length}): ${params.tools.map((t) => t.name).join(', ')}`)
   return lines.join('\n')
+}
+
+/** The image (if any) attached to the latest user message of a request. */
+function requestImage(params: RunTurnParams): string | undefined {
+  for (let i = params.messages.length - 1; i >= 0; i--) {
+    const m = params.messages[i]
+    if (m.role === 'user') return m.image
+  }
+  return undefined
 }
 
 export function App() {
@@ -76,9 +86,9 @@ export function App() {
     [ensureConversation],
   )
 
-  const addMessage = (role: DisplayMessage['role'], text: string) => {
+  const addMessage = (role: DisplayMessage['role'], text: string, image?: string) => {
     const id = crypto.randomUUID()
-    setMessages((m) => [...m, { id, role, text }])
+    setMessages((m) => [...m, { id, role, text, image }])
     return id
   }
 
@@ -140,7 +150,7 @@ export function App() {
           onText: (delta) => appendToMessage(assistantId, delta),
           onToolsApplied: (summary) => addMessage('system', summary),
           onRequest: debug
-            ? (params, i) => addMessage('debug', formatRequest(params, i))
+            ? (params, i) => addMessage('debug', formatRequest(params, i), requestImage(params))
             : undefined,
         })
       } catch (e) {

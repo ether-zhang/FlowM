@@ -125,6 +125,14 @@
   word-break: break-word;
   overflow-x: auto;
 }
+.msg-debug .debug-image {
+  display: block;
+  max-width: calc(100% - 24px);
+  margin: 0 12px 12px;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  background: #fff;
+}
 
 .chat-input {
   display: flex;

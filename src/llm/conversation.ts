@@ -9,9 +9,13 @@ import {
 import type { LlmAdapter, RunTurnParams } from './adapter'
 import type { LlmMessage } from './types'
 
-const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas of flowchart-like shapes.
+const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas — it may hold structured flowcharts/diagrams OR free-form notes, sketches and hand-drawn strokes (like a whiteboard / 无边记 board).
 
-- Before each user message you are given the current canvas (selection, or whole canvas) as a list of shapes with their ids, types, page coordinates (top-left), sizes and text.
+- Before each user message you are given the current canvas (selection, or whole canvas) two ways: (1) a list of shapes with their ids, types, page coordinates (top-left), sizes and text, AND (2) an IMAGE of that same selection/canvas. Use the image to see the actual layout, hand-drawn strokes, colors and visual intent that the shape list can't fully convey.
+- Judge intent from the user's request AND the image, then pick the right output:
+  - a STRUCTURED flowchart — rectangles=steps, diamonds=decisions, ellipses=start/end, connected by arrows in flow order — when they want a process/diagram;
+  - a FREE-FORM arrangement — shapes and text laid out spatially to express or annotate an idea, no rigid flow or arrows — when they're sketching, brainstorming, or organizing notes.
+  Don't force a flowchart when free arrangement fits, and vice versa.
 - You can both answer in words AND modify the canvas by calling the provided tools. When the user asks you to draw, arrange, or edit, USE THE TOOLS.
 - Coordinates are page space: x grows right, y grows down. Default shapes are ~120 wide × 80 tall.
 - Space shapes GENEROUSLY so connecting arrows are clearly visible and shapes never overlap: leave at least ~100px of empty gap between adjacent shapes. In practice, for a top-to-bottom flowchart step each node ~200px down (y += 200); for a left-to-right layout step ~260px across (x += 260). Diamonds and shapes with long labels are bigger — give them extra room.
@@ -52,7 +56,17 @@ export class Conversation {
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     const context = formatCanvas(port.snapshot('selection'))
-    this.history.push({ role: 'user', content: `Current canvas:\n${context}\n\n---\n${userText}` })
+    const image = await port.exportImage('selection')
+
+    // Keep only the newest turn's image: vision tokens are costly and stale
+    // snapshots add little once the canvas has moved on.
+    for (const m of this.history) if (m.role === 'user') delete m.image
+
+    this.history.push({
+      role: 'user',
+      content: `Current canvas:\n${context}\n\n---\n${userText}`,
+      ...(image ? { image } : {}),
+    })
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: canvasTools }

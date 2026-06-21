@@ -5,4 +5,6 @@ export interface DisplayMessage {
   id: string
   role: DisplayRole
   text: string
+  /** Optional image (PNG data URL) — used by debug messages to show what was sent. */
+  image?: string
 }

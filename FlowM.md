@@ -35,7 +35,7 @@ Windows、macOS、iPad。
 - [x] git 追踪、模块化开发
 
 ### 待办（TODO）
-1. UI相关
+- UI相关
    - [x] ~~右侧对话框增长影响画布移动逻辑~~ —— 已修复：整壳锁定视口，对话框内部独立滚动
    - [x] Tauri 桌面壳（需先装 Rust；并把模型调用移到 Rust 后端，Key 不入渲染层）—— 已就绪：`src-tauri/` + `TauriAdapter`，Key 存后端、HTTP 由 Rust 发起。Excalidraw 迁移后 `tauri dev` 已实测（窗口/生成/绑定均正常）
      - [x] 打包态字体：Excalidraw 画布字体（Excalifont/Xiaolai-CJK 等）运行时按 `EXCALIDRAW_ASSET_PATH` 取，默认走 CDN → 离线打包会丢。已配：`scripts/copy-excalidraw-fonts.mjs` 在 pre(dev|build) 把字体拷进 `public/fonts`（gitignore），`index.html` 设 `EXCALIDRAW_ASSET_PATH="/"`，离线从 `dist/fonts` 加载
@@ -45,21 +45,23 @@ Windows、macOS、iPad。
    - [x] Debug模式：看到序列化后的prompt —— 聊天栏 Debug 开关，逐轮折叠展示 system + 历史 + 工具
    - [x] 返回结果的markdown格式解析 —— 助手回复经 react-markdown + remark-gfm 渲染（代码块/列表/表格），用户与系统消息仍为纯文本
 
-2. 人机交互相关
-    2.1 自由笔触模式的识别
-   - [ ] 大模型 → 用户端：识别与执行自由笔触（draw）模式，也能图片与流程图双向并行？
-   - [ ] 流程图模式 + 随意画图模式：让大模型更合理地自动识别，**同时传图片与序列化流程图也许是关键**？
-    2.2 布局优化
-   - [ ] 未绑定箭头的处理，也许与上两条相互兼容
-   - [ ] 提高模型操作画布的精准度，脚本修改大模型返回的xywh，**一个自动避障与优化排布的脚本也许才是这个模块的核心**?
-   - [ ] 提高画布组件的 UI 拖放精准度，上一条加合理的曲线箭头
+- 人机交互相关
+    - 自由笔触模式的识别
+        - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**待运行时确认 Poe/Claude 视觉是否真生效**
+        - [ ] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——现已能"看到"（图片入参），但理解与执行待打磨
+        - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
+    - 布局优化
+        - [ ] 未绑定箭头的处理，也许与上两条相互兼容
+        - [ ] 提高模型操作画布的精准度，脚本修改大模型返回的xywh，**一个自动避障与优化排布的脚本也许才是这个模块的核心**?
+        - [ ] 提高画布组件的 UI 拖放精准度，上一条加合理的曲线箭头
+        - [ ] 模型生成组件时根据文本行数和最长行决定组件长与宽。
 
-3. step模式与项目开发能力
+- step模式与项目开发能力
    - [ ] step模式，需要结合项目功能5，是先打通功能，再接agent?
    - [ ] 项目功能 5：项目开发能力（流程图 → 工程开发，接已有 agent），step模式，图片与流程图双向并行？
    - [ ] 工程持久记忆能力？
 
-4. 杂项
+- 杂项
    - [ ] 可变的大模型接入口（provider / 模型切换 UI；适配器已就绪）
    - [ ] iPad / PWA 收尾（manifest + service worker）
    - [ ] 上下文优化
@@ -70,5 +72,5 @@ Windows、macOS、iPad。
      - [ ] 三角形：Excalidraw 无原生三角形，现暂用 diamond 近似，待用闭合三点 line 多边形实现
      - [ ] `update_text` 给原本无标签的容器新增标签（需新建绑定 text 元素 + boundElements 接线）
      - [ ] bundle 瘦身：Excalidraw 拉入 mermaid/katex/cytoscape（多为按需懒加载），评估关闭 TTD/mermaid 特性
-5. BUG
+- BUG
    - [x] 生成的文本只有 `\n` 而没有换行 —— 模型在 JSON 工具参数里把换行**过度转义**成 `\\n`，`JSON.parse` 后是"反斜杠+n"两个字符，Excalidraw 原样渲染（tldraw 时代 `toRichText` 恰好吃掉了所以没暴露）。修复：`decodeText()` 把字面量 `\n`/`\r\n`/`\t` 还原为真字符，作用于 create_geo/create_text/connect_shapes/update_text 的文本（真换行符不匹配该正则、不受影响）。待下次生成实测确认

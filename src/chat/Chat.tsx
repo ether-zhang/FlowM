@@ -69,8 +69,9 @@ export function Chat({
           if (m.role === 'debug') {
             return (
               <details key={m.id} className="msg msg-debug">
-                <summary>发送给模型的请求</summary>
+                <summary>发送给模型的请求{m.image ? '（含图片）' : ''}</summary>
                 <pre>{m.text}</pre>
+                {m.image && <img className="debug-image" src={m.image} alt="发送给模型的画布缩略图" />}
               </details>
             )
           }

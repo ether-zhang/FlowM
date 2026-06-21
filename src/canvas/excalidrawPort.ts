@@ -1,5 +1,6 @@
 import {
   convertToExcalidrawElements,
+  exportToCanvas,
   getNonDeletedElements,
   newElementWith,
 } from '@excalidraw/excalidraw'
@@ -356,6 +357,30 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
 
     deserialize(data: unknown) {
       api.updateScene({ elements: (data as ExcalidrawElement[]) ?? [] })
+    },
+
+    async exportImage(scope) {
+      const all = getNonDeletedElements(api.getSceneElements())
+      const selected = api.getAppState().selectedElementIds
+      const useSelection = scope === 'selection' && Object.keys(selected).length > 0
+      // Include bound text labels of selected containers so labels aren't dropped.
+      const elements = useSelection
+        ? all.filter((el) => selected[el.id] || (isText(el) && el.containerId && selected[el.containerId]))
+        : all
+      if (elements.length === 0) return null
+
+      try {
+        const canvas = await exportToCanvas({
+          elements,
+          files: api.getFiles(),
+          exportPadding: 16,
+          maxWidthOrHeight: 1280, // cap so the data URL stays a reasonable token cost
+          appState: { exportBackground: true, viewBackgroundColor: '#ffffff' },
+        })
+        return canvas.toDataURL('image/png')
+      } catch {
+        return null // degrade to text-only rather than break the send
+      }
     },
   }
 }

@@ -29,7 +29,17 @@ function toOpenAiMessages(system: string, messages: LlmMessage[]): ChatCompletio
   const out: ChatCompletionMessageParam[] = [{ role: 'system', content: system }]
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ role: 'user', content: m.content })
+      // Multimodal when an image is attached: OpenAI-format content parts. Poe's
+      // OpenAI-compatible endpoint accepts image_url data URLs for vision models.
+      out.push({
+        role: 'user',
+        content: m.image
+          ? [
+              { type: 'text', text: m.content },
+              { type: 'image_url', image_url: { url: m.image } },
+            ]
+          : m.content,
+      })
     } else if (m.role === 'assistant') {
       out.push({
         role: 'assistant',

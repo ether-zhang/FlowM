@@ -11,7 +11,7 @@ export interface LlmToolCall {
 }
 
 export type LlmMessage =
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string; image?: string } // image: a PNG data URL (canvas selection)
   | { role: 'assistant'; content: string; toolCalls?: LlmToolCall[] }
   | { role: 'tool'; toolCallId: string; content: string }
 

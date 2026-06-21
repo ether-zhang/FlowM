@@ -12,6 +12,13 @@ export interface CanvasPort {
   /** Apply a batch of ops in order, resolving create-refs so later ops can target them. */
   apply(ops: CanvasOp[]): OpResult[]
   /**
+   * Render the given scope to a PNG data URL (or null if empty), so the model can
+   * be sent a *visual* of the canvas alongside the serialized text — letting it
+   * judge intent (structured flowchart vs free-form arrangement) from how things
+   * actually look, not just the shape list.
+   */
+  exportImage(scope: 'selection' | 'all'): Promise<string | null>
+  /**
    * Serialize the entire canvas to a JSON-safe value for project persistence.
    * The shape of this value is the concrete canvas's business — the protocol and
    * persistence layers treat it as opaque and only round-trip it. This keeps
