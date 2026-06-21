@@ -38,6 +38,15 @@ const center = (el: { x: number; y: number; width: number; height: number }) => 
 })
 const newId = () => `flowm-${crypto.randomUUID()}`
 
+/**
+ * Interpret literal escape sequences the model sometimes emits in text values.
+ * When the model over-escapes a newline as "\\n" in its JSON tool arguments, it
+ * parses to the two characters backslash+n and renders literally on the canvas
+ * instead of breaking the line. Convert those (and \r, \t) to the real chars.
+ * Real newline characters don't match these patterns, so this is a no-op on them.
+ */
+const decodeText = (s: string) => s.replace(/\\r\\n|\\r|\\n/g, '\n').replace(/\\t/g, '\t')
+
 /** Excalidraw element types an arrow can bind to. */
 const BINDABLE = new Set(['rectangle', 'ellipse', 'diamond'])
 
@@ -222,7 +231,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               y: op.y,
               width: op.w,
               height: op.h,
-              ...(op.text ? { label: { text: op.text } } : {}),
+              ...(op.text ? { label: { text: decodeText(op.text) } } : {}),
             } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
             pending.set(id, { x: op.x, y: op.y, width: op.w, height: op.h })
@@ -231,7 +240,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
           }
           case 'create_text': {
             const id = newId()
-            skeleton.push({ type: 'text', id, x: op.x, y: op.y, text: op.text } as ExcalidrawElementSkeleton)
+            skeleton.push({ type: 'text', id, x: op.x, y: op.y, text: decodeText(op.text) } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break
@@ -247,7 +256,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             // shapes created in this same batch (only realized after convert), and
             // binding is computed there uniformly for new and pre-existing shapes.
             const id = newId()
-            connects.push({ id, from, to, text: op.text })
+            connects.push({ id, from, to, text: op.text ? decodeText(op.text) : undefined })
             results[i] = { op: op.op, ok: true, id }
             break
           }
@@ -275,13 +284,14 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               results[i] = { op: op.op, ok: false, error: `no shape ${op.id}` }
               break
             }
+            const text = decodeText(op.text)
             if (isText(el)) {
-              byId.set(el.id, newElementWith(el, { text: op.text, originalText: op.text }))
+              byId.set(el.id, newElementWith(el, { text, originalText: text }))
             } else {
               // Labeled container: update its bound text child if present.
               for (const t of byId.values()) {
                 if (isText(t) && t.containerId === el.id) {
-                  byId.set(t.id, newElementWith(t, { text: op.text, originalText: op.text }))
+                  byId.set(t.id, newElementWith(t, { text, originalText: text }))
                   break
                 }
               }
