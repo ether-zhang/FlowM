@@ -12,6 +12,7 @@ export function formatCanvas(shapes: CanvasShape[]): string {
   const lines = shapes.map((s) => {
     const parts = [`#${s.id}`, s.type, `@(${r(s.x)},${r(s.y)})`]
     if (s.w != null && s.h != null) parts.push(`${r(s.w)}x${r(s.h)}`)
+    if (s.from || s.to) parts.push(`${s.from ?? '?'}→${s.to ?? '?'}`)
     if (s.text) parts.push(`text=${JSON.stringify(s.text)}`)
     return '- ' + parts.join(' ')
   })

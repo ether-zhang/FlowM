@@ -29,6 +29,27 @@ function readText(editor: Editor, shape: TLShape): string | undefined {
   return text || undefined
 }
 
+/**
+ * For an arrow, read which shapes its start/end terminals are bound to. The
+ * connection lives in tldraw bindings (not the arrow's props), so this is the
+ * only source of truth — same place createBindings wrote it.
+ *
+ * TODO: unbound (free-floating) arrows have no binding, so from/to stay
+ * undefined and the model only sees their coordinates. If hand-drawn arrows that
+ * visually point between shapes need to be understood, infer endpoints from
+ * terminal geometry (nearest shape under each tip) as a fallback.
+ */
+function arrowEnds(editor: Editor, shape: TLShape): { from?: string; to?: string } {
+  if (shape.type !== 'arrow') return {}
+  const ends: { from?: string; to?: string } = {}
+  for (const b of editor.getBindingsFromShape(shape.id, 'arrow')) {
+    const terminal = (b.props as { terminal?: 'start' | 'end' }).terminal
+    if (terminal === 'start') ends.from = b.toId
+    else if (terminal === 'end') ends.to = b.toId
+  }
+  return ends
+}
+
 /** Bind one terminal of an arrow to a target shape's center. */
 function bindArrow(editor: Editor, arrowId: TLShapeId, targetId: TLShapeId, terminal: 'start' | 'end') {
   editor.createBindings([
@@ -67,6 +88,7 @@ export function createTldrawPort(editor: Editor): CanvasPort {
           w: bounds?.w,
           h: bounds?.h,
           text: readText(editor, shape),
+          ...arrowEnds(editor, shape),
         }
       })
     },

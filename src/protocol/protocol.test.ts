@@ -59,4 +59,11 @@ describe('formatCanvas', () => {
     expect(out).toContain('#s1 rectangle @(10,21) 120x80 text="Start"')
     expect(out).toContain('#s2 text @(0,0) text="note"')
   })
+
+  it('renders an arrow with its bound endpoints', () => {
+    const out = formatCanvas([
+      { id: 'a1', type: 'arrow', x: 0, y: 0, from: 's1', to: 's2', text: 'yes' },
+    ])
+    expect(out).toContain('#a1 arrow @(0,0) s1→s2 text="yes"')
+  })
 })

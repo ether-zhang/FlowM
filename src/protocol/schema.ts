@@ -23,6 +23,9 @@ export const CanvasShape = z.object({
   w: z.number().optional(),
   h: z.number().optional(),
   text: z.string().optional(),
+  /** For arrows: the shape ids its start/end terminals are bound to (if any). */
+  from: z.string().optional(),
+  to: z.string().optional(),
 })
 export type CanvasShape = z.infer<typeof CanvasShape>
 
