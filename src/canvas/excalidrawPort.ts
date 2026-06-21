@@ -38,6 +38,115 @@ const center = (el: { x: number; y: number; width: number; height: number }) => 
 })
 const newId = () => `flowm-${crypto.randomUUID()}`
 
+/** Excalidraw element types an arrow can bind to. */
+const BINDABLE = new Set(['rectangle', 'ellipse', 'diamond'])
+
+/** Register an arrow in a shape's boundElements so moving the shape moves the arrow. */
+function withBoundArrow(el: ExcalidrawElement, arrowId: string): ExcalidrawElement {
+  const bound = el.boundElements ?? []
+  if (bound.some((b) => b.id === arrowId)) return el
+  return newElementWith(el, { boundElements: [...bound, { id: arrowId, type: 'arrow' }] })
+}
+
+/** Px between an arrow tip and the shape it binds to. */
+const GAP = 2
+type Box = { x: number; y: number; width: number; height: number }
+type Pt = { x: number; y: number }
+
+/**
+ * Point where the ray from `box`'s center toward `toward` exits the box, pushed
+ * GAP px further out. Approximating ellipse/diamond by their bounding rectangle
+ * is close enough — the binding's focus/gap let Excalidraw refine on first edit.
+ */
+function edgePoint(box: Box, toward: Pt): Pt {
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  const dx = toward.x - cx
+  const dy = toward.y - cy
+  const len = Math.hypot(dx, dy) || 1
+  const ux = dx / len
+  const uy = dy / len
+  const t =
+    Math.min(ux ? box.width / 2 / Math.abs(ux) : Infinity, uy ? box.height / 2 / Math.abs(uy) : Infinity) + GAP
+  return { x: cx + ux * t, y: cy + uy * t }
+}
+
+/**
+ * Re-origin a linear element so points[0] = [0,0] (shifting the offset into x/y).
+ * The converter re-origins arrows with negative extent (pointing up/left) to their
+ * bbox top-left, which leaves points[0] ≠ [0,0]; Excalidraw's runtime then warns
+ * "Linear element is not normalized" and refuses to edit (you can't bend it). This
+ * is Excalidraw's own getNormalizedPoints, applied to undo that.
+ */
+function normalizeArrow(a: ExcalidrawArrowElement): ExcalidrawArrowElement {
+  const [ox, oy] = a.points[0]
+  if (ox === 0 && oy === 0) return a
+  return newElementWith(a, {
+    x: a.x + ox,
+    y: a.y + oy,
+    points: a.points.map((p) => [p[0] - ox, p[1] - oy]) as ExcalidrawArrowElement['points'],
+  })
+}
+
+/** Build one arrow element (plus its bound label child, if any) via the converter. */
+function buildArrow(id: string, start: Pt, end: Pt, text?: string): ExcalidrawElement[] {
+  const out = convertToExcalidrawElements(
+    [
+      {
+        type: 'arrow',
+        id,
+        x: start.x,
+        y: start.y,
+        width: end.x - start.x,
+        height: end.y - start.y,
+        points: [
+          [0, 0],
+          [end.x - start.x, end.y - start.y],
+        ],
+        ...(text ? { label: { text } } : {}),
+      } as ExcalidrawElementSkeleton,
+    ],
+    { regenerateIds: false },
+  ) as ExcalidrawElement[]
+  return out.map((e) => (e.id === id ? normalizeArrow(e as ExcalidrawArrowElement) : e))
+}
+
+/**
+ * A bound arrow between two shapes. We compute the edge-to-edge endpoints
+ * ourselves and attach start/end bindings (focus 0 = aim at center) so the arrow
+ * reroutes when either shape moves. We can't reuse the converter's own start/end
+ * binding: it ships bound arrows with placeholder points that only resolve inside
+ * Excalidraw's render pipeline (not on updateScene), which left every arrow
+ * pointing right until an undo/redo forced a recompute.
+ */
+function computeBoundArrow(
+  id: string,
+  from: ExcalidrawElement,
+  to: ExcalidrawElement,
+  text?: string,
+): ExcalidrawElement[] {
+  const start = edgePoint(from, center(to))
+  const end = edgePoint(to, center(from))
+  return buildArrow(id, start, end, text).map((e) =>
+    e.id === id
+      ? newElementWith(e as ExcalidrawArrowElement, {
+          startBinding: { elementId: from.id, focus: 0, gap: GAP },
+          endBinding: { elementId: to.id, focus: 0, gap: GAP },
+        })
+      : e,
+  )
+}
+
+/** Fallback for endpoints an arrow can't bind to: a plain arrow between centers. */
+function computeUnboundArrow(
+  id: string,
+  from: ExcalidrawElement | undefined,
+  to: ExcalidrawElement | undefined,
+  text?: string,
+): ExcalidrawElement[] {
+  return buildArrow(id, from ? center(from) : { x: 0, y: 0 }, to ? center(to) : { x: 0, y: 0 }, text)
+}
+
 /**
  * Bind the protocol's CanvasPort to a live Excalidraw editor. This is the only
  * place that knows about Excalidraw types — the protocol and LLM layers stay
@@ -91,13 +200,13 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       const refs = new Map<string, string>() // create-ref → assigned id
       const pending = new Map<string, { x: number; y: number; width: number; height: number }>()
       const skeleton: ExcalidrawElementSkeleton[] = []
+      const connects: { id: string; from: string; to: string; text?: string }[] = []
       const results: OpResult[] = new Array(ops.length)
 
       // Resolve an op's id/ref to a real element id (existing scene shape or a
       // shape created earlier in this same batch).
       const resolve = (key: string): string | undefined =>
         refs.get(key) ?? (byId.has(key) || pending.has(key) ? key : undefined)
-      const geomOf = (id: string) => pending.get(id) ?? byId.get(id)
 
       ops.forEach((op, i) => {
         switch (op.op) {
@@ -134,41 +243,11 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               results[i] = { op: op.op, ok: false, error: `unresolved ${op.from} or ${op.to}` }
               break
             }
+            // Defer arrow creation to the post-convert pass: the endpoints may be
+            // shapes created in this same batch (only realized after convert), and
+            // binding is computed there uniformly for new and pre-existing shapes.
             const id = newId()
-            const a = geomOf(from)
-            const b = geomOf(to)
-            const start = a ? center(a) : { x: 0, y: 0 }
-            // Excalidraw's skeleton converter only binds start/end to elements
-            // present in THIS batch. When both endpoints are freshly created we
-            // bind by id; otherwise fall back to a plain arrow between centers.
-            // TODO: bind arrows to pre-existing scene shapes (needs focus/gap).
-            const bothNew = pending.has(from) && pending.has(to)
-            if (bothNew) {
-              skeleton.push({
-                type: 'arrow',
-                id,
-                x: start.x,
-                y: start.y,
-                start: { id: from },
-                end: { id: to },
-                ...(op.text ? { label: { text: op.text } } : {}),
-              } as ExcalidrawElementSkeleton)
-            } else {
-              const end = b ? center(b) : start
-              skeleton.push({
-                type: 'arrow',
-                id,
-                x: start.x,
-                y: start.y,
-                width: end.x - start.x,
-                height: end.y - start.y,
-                points: [
-                  [0, 0],
-                  [end.x - start.x, end.y - start.y],
-                ],
-                ...(op.text ? { label: { text: op.text } } : {}),
-              } as ExcalidrawElementSkeleton)
-            }
+            connects.push({ id, from, to, text: op.text })
             results[i] = { op: op.op, ok: true, id }
             break
           }
@@ -228,10 +307,35 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         }
       })
 
-      // Convert all newly created shapes/arrows in one batch so in-batch arrow
-      // bindings resolve, then write the whole scene back.
-      const created = skeleton.length ? convertToExcalidrawElements(skeleton) : []
-      api.updateScene({ elements: [...byId.values(), ...created] })
+      // Convert created shapes. regenerateIds:false is essential — it keeps the ids
+      // we assigned (and returned in the op results) so later ops, in this or a
+      // future turn, can reference the shapes. The default (true) would mint new
+      // ids and silently break every connect_shapes that follows.
+      const created = skeleton.length
+        ? convertToExcalidrawElements(skeleton, { regenerateIds: false })
+        : []
+
+      // Single source of truth for this batch's scene; arrows are added below.
+      const combined = new Map<string, ExcalidrawElement>()
+      for (const el of byId.values()) combined.set(el.id, el)
+      for (const el of created) combined.set(el.id, el as ExcalidrawElement)
+
+      // Create each arrow now that all endpoint shapes exist in `combined`. When
+      // both ends are bindable shapes, bind them (the converter computes correct
+      // focus/gap); otherwise draw a plain arrow.
+      for (const { id, from, to, text } of connects) {
+        const a = combined.get(from)
+        const b = combined.get(to)
+        if (a && b && BINDABLE.has(a.type) && BINDABLE.has(b.type)) {
+          for (const el of computeBoundArrow(id, a, b, text)) combined.set(el.id, el)
+          combined.set(from, withBoundArrow(a, id))
+          combined.set(to, withBoundArrow(b, id))
+        } else {
+          for (const el of computeUnboundArrow(id, a, b, text)) combined.set(el.id, el)
+        }
+      }
+
+      api.updateScene({ elements: [...combined.values()] })
       return results
     },
 
