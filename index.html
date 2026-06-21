@@ -5,6 +5,13 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>flowm-scaffold</title>
+    <!-- Load Excalidraw's canvas fonts from the bundled /fonts (copied by
+         scripts/copy-excalidraw-fonts.mjs) instead of node_modules/CDN, so the
+         packaged offline Tauri build renders the real fonts. Must be set before
+         Excalidraw loads. -->
+    <script>
+      window.EXCALIDRAW_ASSET_PATH = '/'
+    </script>
   </head>
   <body>
     <div id="root"></div>

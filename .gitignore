@@ -16,6 +16,9 @@ dist-ssr
 src-tauri/target
 src-tauri/gen
 
+# Excalidraw fonts copied from node_modules at build time (scripts/copy-excalidraw-fonts.mjs)
+public/fonts
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
