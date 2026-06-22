@@ -48,7 +48,9 @@ Windows、macOS、iPad。
 - 人机交互相关
     - 自由笔触模式的识别
         - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**待运行时确认 Poe/Claude 视觉是否真生效**
-        - [ ] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——现已能"看到"（图片入参），但理解与执行待打磨
+        - [ ] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——现已能"看到"（图片入参），但理解与执行待打磨，提醒结合图片与实际坐标？
+        - [ ] 中心/边界计算脚本+自反馈视觉
+        - [ ] 让模型在真正布置前划定操作区？操作区在完成前的不可操作？
         - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
