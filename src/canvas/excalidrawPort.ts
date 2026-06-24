@@ -13,6 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
+import { resolveOverlaps, routeBoundArrow, type LayoutBox } from './layout'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -189,6 +190,54 @@ function reflowArrow(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawEl
 }
 
 /**
+ * After endpoints settle, bow a bound arrow with a single bend point when its
+ * straight segment would cut through a third shape; otherwise keep it straight
+ * (and undo any earlier bow). Obstacles are every box-like shape except the
+ * arrow's own two endpoints. Same stance as reflowArrow — model ops own
+ * bound-arrow geometry. Routing math lives in layout.ts (pure, unit-tested).
+ */
+function routeArrowElement(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawElement>): ExcalidrawElement {
+  const startEl = a.startBinding ? lookup.get(a.startBinding.elementId) : undefined
+  const endEl = a.endBinding ? lookup.get(a.endBinding.elementId) : undefined
+  if (!startEl && !endEl) return a
+  const last = a.points[a.points.length - 1]
+  const start = { x: a.x, y: a.y }
+  const end = { x: a.x + last[0], y: a.y + last[1] }
+
+  const obstacles: LayoutBox[] = []
+  for (const el of lookup.values()) {
+    if (el.type === 'arrow') continue
+    if (isText(el) && el.containerId) continue // bound labels move with their container
+    if (el.id === startEl?.id || el.id === endEl?.id) continue
+    obstacles.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false })
+  }
+
+  const r = routeBoundArrow({ startShape: startEl, endShape: endEl, start, end, obstacles, gap: GAP })
+  if (!r.mid) {
+    if (a.points.length === 2) return a // already straight
+    return newElementWith(a, {
+      x: r.start.x,
+      y: r.start.y,
+      points: [
+        [0, 0],
+        [r.end.x - r.start.x, r.end.y - r.start.y],
+      ] as ExcalidrawArrowElement['points'],
+      roundness: null,
+    })
+  }
+  return newElementWith(a, {
+    x: r.start.x,
+    y: r.start.y,
+    points: [
+      [0, 0],
+      [r.mid.x - r.start.x, r.mid.y - r.start.y],
+      [r.end.x - r.start.x, r.end.y - r.start.y],
+    ] as ExcalidrawArrowElement['points'],
+    roundness: { type: 2 }, // proportional radius → smooth curve through the bend
+  })
+}
+
+/**
  * Bind the protocol's CanvasPort to a live Excalidraw editor. This is the only
  * place that knows about Excalidraw types — the protocol and LLM layers stay
  * agnostic, exactly as they did behind the previous tldraw port.
@@ -358,6 +407,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       const created = skeleton.length
         ? convertToExcalidrawElements(skeleton, { regenerateIds: false })
         : []
+      const createdIds = new Set(created.map((e) => e.id))
 
       // Single source of truth for this batch's scene; arrows are added below.
       const combined = new Map<string, ExcalidrawElement>()
@@ -367,7 +417,9 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       // Create each arrow now that all endpoint shapes exist in `combined`. When
       // both ends are bindable shapes, bind them (the converter computes correct
       // focus/gap); otherwise draw a plain arrow.
+      const createdArrowIds = new Set<string>()
       for (const { id, from, to, text } of connects) {
+        createdArrowIds.add(id)
         const a = combined.get(from)
         const b = combined.get(to)
         if (a && b && BINDABLE.has(a.type) && BINDABLE.has(b.type)) {
@@ -379,16 +431,45 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         }
       }
 
-      // updateScene skips Excalidraw's binding pipeline, so reflow arrows bound to
-      // any shape moved this batch — otherwise move_shape leaves them stale.
-      if (movedIds.size > 0) {
+      // updateScene bypasses Excalidraw's binding/layout pipeline, so when this batch
+      // touched any geometry we run the equivalent ourselves (all deterministic, see
+      // layout.ts): (1) push model-placed overlaps apart, (2) reflow bound arrows whose
+      // shapes moved, (3) bow each arrow around any shape it would otherwise cut through.
+      if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0) {
+        // (1) Avoidance — only shapes created/moved this batch may be repositioned;
+        // pre-existing shapes are pinned so we never shuffle untouched content.
+        const movable = new Set<string>([...createdIds, ...movedIds])
+        const boxes: LayoutBox[] = []
+        for (const el of combined.values()) {
+          if (el.type === 'arrow') continue
+          if (isText(el) && el.containerId) continue // bound labels follow their container
+          boxes.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: movable.has(el.id) })
+        }
+        const displaced = new Set<string>(movedIds)
+        for (const [id, p] of resolveOverlaps(boxes)) {
+          const el = combined.get(id)
+          if (!el) continue
+          const dx = p.x - el.x
+          const dy = p.y - el.y
+          combined.set(id, newElementWith(el, { x: p.x, y: p.y }))
+          for (const t of combined.values()) {
+            if (isText(t) && t.containerId === id) combined.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+          }
+          displaced.add(id)
+        }
+
+        // (2)+(3) Reflow arrows touching a displaced shape (and every arrow created
+        // this batch) to straight edge-to-edge endpoints, then route around obstacles.
         for (const el of combined.values()) {
           if (el.type !== 'arrow') continue
           const arrow = el as ExcalidrawArrowElement
-          const touchesMoved =
-            (arrow.startBinding && movedIds.has(arrow.startBinding.elementId)) ||
-            (arrow.endBinding && movedIds.has(arrow.endBinding.elementId))
-          if (touchesMoved) combined.set(arrow.id, reflowArrow(arrow, combined))
+          const touches =
+            createdArrowIds.has(arrow.id) ||
+            (arrow.startBinding && displaced.has(arrow.startBinding.elementId)) ||
+            (arrow.endBinding && displaced.has(arrow.endBinding.elementId))
+          if (!touches) continue
+          const straight = reflowArrow(arrow, combined) as ExcalidrawArrowElement
+          combined.set(arrow.id, routeArrowElement(straight, combined))
         }
       }
 

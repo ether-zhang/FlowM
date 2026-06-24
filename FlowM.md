@@ -49,15 +49,21 @@ Windows、macOS、iPad。
     - 自由笔触模式的识别
         - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**待运行时确认 Poe/Claude 视觉是否真生效**
         - [ ] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——现已能"看到"（图片入参），但理解与执行待打磨，提醒结合图片与实际坐标？
+            - [ ] 杠杆1·视觉锚点（Set-of-Mark）：导出前在 PNG 上叠加每个 shape 的 id 徽标 + 场景坐标网格/原点轴，把"图↔序列化坐标"对应关系**直接画出来**而非靠模型脑补（纯提示词太薄）；在 `exportImage` 内做，映射 `px=(scene-bboxMin+padding)*scale` 单测先行。VLM grounding 成熟手法，确定性可测。提示词只是它的说明书
         - [ ] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
-        - [ ] 提醒结合图片与序列化坐标？
+            - [ ] 自反馈视觉做成**显式 refine 模式**（应用后重渲染→喂回让模型挑错），默认关、控成本/延迟，不做默认每轮
         - [ ] 让模型在真正布置前划定操作区？操作区在完成前的不可操作？
         - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
-        - [ ] 箭头端点几何自算（edgePoint + computeBoundArrow），也许可以用shape自带初始指明端点优化
+        - [ ] 同一 shape 多条出口箭头按边分配（focus≠0；`solveEndpoint`/`determineFocusPoint` 已支持，写入侧待接）
+        ~~- [ ] 箭头端点几何自算（edgePoint + computeBoundArrow），也许可以用shape自带初始指明端点优化~~
         - [ ] 提高模型操作画布的精准度，脚本修改大模型返回的xywh，**一个自动避障与优化排布的脚本也许才是这个模块的核心**?
+            - [x] 杠杆2·算而不信：把箭头"系统算、不信模型坐标"泛化到布局——纯函数 `resolveOverlaps`（`layout.ts`：仅修**真重叠**、按最小穿透轴推开留 margin、仅作用于本批新建/移动形状，pinned 不动），`apply` 后处理里应用位移并复用 `reflowArrow` 重排受影响箭头。与 `bindingGeometry` 同范式（确定性、留仓库、可测），单测 `layout.test.ts`
         - [ ] 提高画布组件的 UI 拖放精准度，上一条加合理的曲线箭头
+            - [x] 曲线箭头（与 58 互补）：避障挪位后直箭头可能穿过第三个形状 → `routeBoundArrow`（`layout.ts`）**仅当直线段与某形状相交时**把箭头"弓"出一个中点绕开（Liang–Barsky 命中测试 + 选最小弓向，单中点非全局寻路），端点由 `solveEndpoint` 对中点求解以保持不动点、`roundness:{type:2}` 平滑；不相交保持直线。`apply` 后处理 reflow→route 串联
+            - [ ] UI 拖放精准度（用户手动拖放/吸附）：部分已随原生 Excalidraw 吸附/绑定生效，余下待细化
+            - [ ] 进一步：多障碍 / 双向避让 / 全局寻路（本期只做单中点单障碍）
         - [ ] 模型生成组件时根据文本行数和最长行决定组件长与宽。
 
 - step模式与项目开发能力
