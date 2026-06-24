@@ -49,11 +49,13 @@ Windows、macOS、iPad。
     - 自由笔触模式的识别
         - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**待运行时确认 Poe/Claude 视觉是否真生效**
         - [ ] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——现已能"看到"（图片入参），但理解与执行待打磨，提醒结合图片与实际坐标？
-        - [ ] 中心/边界计算脚本+自反馈视觉
+        - [ ] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
+        - [ ] 提醒结合图片与序列化坐标？
         - [ ] 让模型在真正布置前划定操作区？操作区在完成前的不可操作？
         - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
+        - [ ] 箭头端点几何自算（edgePoint + computeBoundArrow），也许可以用shape自带初始指明端点优化
         - [ ] 提高模型操作画布的精准度，脚本修改大模型返回的xywh，**一个自动避障与优化排布的脚本也许才是这个模块的核心**?
         - [ ] 提高画布组件的 UI 拖放精准度，上一条加合理的曲线箭头
         - [ ] 模型生成组件时根据文本行数和最长行决定组件长与宽。
@@ -76,3 +78,11 @@ Windows、macOS、iPad。
      - [ ] bundle 瘦身：Excalidraw 拉入 mermaid/katex/cytoscape（多为按需懒加载），评估关闭 TTD/mermaid 特性
 - BUG
    - [x] 生成的文本只有 `\n` 而没有换行 —— 模型在 JSON 工具参数里把换行**过度转义**成 `\\n`，`JSON.parse` 后是"反斜杠+n"两个字符，Excalidraw 原样渲染（tldraw 时代 `toRichText` 恰好吃掉了所以没暴露）。修复：`decodeText()` 把字面量 `\n`/`\r\n`/`\t` 还原为真字符，作用于 create_geo/create_text/connect_shapes/update_text 的文本（真换行符不匹配该正则、不受影响）。待下次生成实测确认
+   - [x] move_shape 后绑定箭头不跟随 —— `updateScene` 绕过 Excalidraw 的绑定重算管线（与箭头注入同类问题），程序化改坐标不触发 `updateBoundElements`。修复：move_shape 记下被移动的 id，后处理里对"绑定到被移动形状的箭头"用 `reflowArrow` 自算边到边端点重排（与初始创建同一套 `edgePoint` 逻辑，不依赖管线）。代价：手动弯折会被拉直（模型移动场景可接受）。用户手动拖动不受影响（Excalidraw 原生管线照常）
+     - [x] 箭头压在外框线上 —— `GAP` 2→8，端点离形状边更明显（创建/移动同源，一处改两处生效）
+     - [x] 斜向连菱形/椭圆时箭头离形状较远（动一下才贴回）—— 第一版：`edgePoint` 改按 type 求真实边界交点（好了很多但仍有残留漂移，见下）
+     - [x] 残留漂移：动一下端点还会跳一点 —— 把原生端点几何按算法**重写为纯函数** `src/canvas/bindingGeometry.ts`（rect/diamond 轮廓按 gap 外扩后逐边求交、ellipse 半轴+gap 解析解、射线从另一端穿 focus 点取最近交点；两端绑定定点迭代）。算法移植自 Excalidraw（MIT，已注明）。但仍有 ~2px 残留，见下
+       - 真根因（探针实测确认）：**Excalidraw 才是 focus/gap 的真相源，端点是从它们派生的**。`bindLinearElement→calculateFocusAndGap` 会按几何**反推并存下 focus（常≠0，朝某个角）、gap**；而我固定 focus=0 算几何、移动时又不同步 binding → 不一致。第一次拖动原生用存的 focus(如0.49) 重算 → 端点从我的中心点跳到偏心点（"动一下后正常"正是此）。手画形状默认是**圆角**（`currentItemRoundness:"round"`），focus≠0 把端点推向圆角处，我的直边近似在角上差几十像素（曾"动得更多"）
+       - 最终修复：`reflowArrow` 把两端 binding **重置为 focus=0 / gap=8** 并写中心几何（不再沿用存的偏心 focus）。理由：① 中心瞄准使端点落在**边中段、远离圆角**，直边近似在那里零误差；② focus 在移动/微调时不被原生重算（探针证实其值恒定），故写 focus=0 后原生下次也瞄中心 → 复现我的点。探针实测：移动后再手动碰一下，`deltaStart/deltaEnd = {0,0}`（像素级吻合，零跳动）。代价：模型移动会把手画箭头的偏心贴附重置为中心贴附（与模型自建箭头一致，可接受）
+       - 单测 `bindingGeometry.test.ts` 8 例（菱形斜向、椭圆在轮廓上、不动点稳定、旋转、focus≠0）；`solveEndpoint` 已支持 focus≠0（为后续"多箭头按边分配"铺路，当前写入恒用 0）。删除旧 `edgePoint`
+     - [ ] （已评估放弃）合成 PointerEvent 模拟拖动 / fork 重编译 Excalidraw：前者无程序化拖动 API、pointer-capture 不稳、难 headless 测；后者 monorepo 构建+维护重、软锁定、仍不可测。vendor 纯函数几何已拿到同等保真且可测，故不走

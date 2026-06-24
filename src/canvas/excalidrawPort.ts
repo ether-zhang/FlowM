@@ -12,6 +12,7 @@ import type {
 } from '@excalidraw/excalidraw/element/types'
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
+import { solveArrowEndpoints } from './bindingGeometry'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -58,28 +59,10 @@ function withBoundArrow(el: ExcalidrawElement, arrowId: string): ExcalidrawEleme
   return newElementWith(el, { boundElements: [...bound, { id: arrowId, type: 'arrow' }] })
 }
 
-/** Px between an arrow tip and the shape it binds to. */
-const GAP = 2
-type Box = { x: number; y: number; width: number; height: number }
+/** Px between an arrow tip and the shape it binds to. Big enough that the tip
+ *  sits clearly off the shape's border rather than on top of its stroke. */
+const GAP = 8
 type Pt = { x: number; y: number }
-
-/**
- * Point where the ray from `box`'s center toward `toward` exits the box, pushed
- * GAP px further out. Approximating ellipse/diamond by their bounding rectangle
- * is close enough — the binding's focus/gap let Excalidraw refine on first edit.
- */
-function edgePoint(box: Box, toward: Pt): Pt {
-  const cx = box.x + box.width / 2
-  const cy = box.y + box.height / 2
-  const dx = toward.x - cx
-  const dy = toward.y - cy
-  const len = Math.hypot(dx, dy) || 1
-  const ux = dx / len
-  const uy = dy / len
-  const t =
-    Math.min(ux ? box.width / 2 / Math.abs(ux) : Infinity, uy ? box.height / 2 / Math.abs(uy) : Infinity) + GAP
-  return { x: cx + ux * t, y: cy + uy * t }
-}
 
 /**
  * Re-origin a linear element so points[0] = [0,0] (shifting the offset into x/y).
@@ -135,8 +118,12 @@ function computeBoundArrow(
   to: ExcalidrawElement,
   text?: string,
 ): ExcalidrawElement[] {
-  const start = edgePoint(from, center(to))
-  const end = edgePoint(to, center(from))
+  const { start, end } = solveArrowEndpoints({
+    start: { shape: from, focus: 0, gap: GAP },
+    end: { shape: to, focus: 0, gap: GAP },
+    curStart: center(from),
+    curEnd: center(to),
+  })
   return buildArrow(id, start, end, text).map((e) =>
     e.id === id
       ? newElementWith(e as ExcalidrawArrowElement, {
@@ -155,6 +142,50 @@ function computeUnboundArrow(
   text?: string,
 ): ExcalidrawElement[] {
   return buildArrow(id, from ? center(from) : { x: 0, y: 0 }, to ? center(to) : { x: 0, y: 0 }, text)
+}
+
+/**
+ * Recompute a bound arrow's endpoints from its endpoints' current positions.
+ * updateScene doesn't run Excalidraw's interactive binding pipeline, so after a
+ * programmatic move_shape the bound arrows keep their stale geometry — this is the
+ * manual equivalent of updateBoundElements (same faithful math, see
+ * bindingGeometry.ts).
+ *
+ * Excalidraw OWNS focus/gap and stores its own derived focus (often ≠0, aiming the
+ * arrow toward a shape corner). We deliberately RESET both ends to focus=0 / gap=GAP
+ * (centre-aimed) and write a matching binding, for two reasons: (1) a centre-aimed
+ * endpoint lands on the middle of an edge, far from rounded corners, where our
+ * outline math is exact — honouring a corner-ward focus would route the tip onto the
+ * rounded corner where our straight-edge approximation is off by many px; (2) focus
+ * is not re-derived on a plain move/nudge, so writing focus=0 makes the next native
+ * recompute also aim at centre and reproduce our geometry → no jump. A free end keeps
+ * its current point. Collapses any manual mid-bend to a straight line (fine for moves).
+ */
+function reflowArrow(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawElement>): ExcalidrawElement {
+  const startEl = a.startBinding ? lookup.get(a.startBinding.elementId) : undefined
+  const endEl = a.endBinding ? lookup.get(a.endBinding.elementId) : undefined
+  if (!startEl && !endEl) return a
+  const last = a.points[a.points.length - 1]
+  const startFree = { x: a.x, y: a.y }
+  const endFree = { x: a.x + last[0], y: a.y + last[1] }
+  const { start, end } = solveArrowEndpoints({
+    start: startEl ? { shape: startEl, focus: 0, gap: GAP } : undefined,
+    end: endEl ? { shape: endEl, focus: 0, gap: GAP } : undefined,
+    curStart: startEl ? center(startEl) : startFree,
+    curEnd: endEl ? center(endEl) : endFree,
+  })
+  return newElementWith(a, {
+    x: start.x,
+    y: start.y,
+    points: [
+      [0, 0],
+      [end.x - start.x, end.y - start.y],
+    ] as ExcalidrawArrowElement['points'],
+    // Reset the bindings to match the centre-aimed geometry we just wrote, so the
+    // native pipeline reproduces it instead of snapping back to a stored corner-focus.
+    ...(a.startBinding ? { startBinding: { ...a.startBinding, focus: 0, gap: GAP } } : {}),
+    ...(a.endBinding ? { endBinding: { ...a.endBinding, focus: 0, gap: GAP } } : {}),
+  })
 }
 
 /**
@@ -211,6 +242,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       const pending = new Map<string, { x: number; y: number; width: number; height: number }>()
       const skeleton: ExcalidrawElementSkeleton[] = []
       const connects: { id: string; from: string; to: string; text?: string }[] = []
+      const movedIds = new Set<string>() // shapes moved this batch → reflow their bound arrows
       const results: OpResult[] = new Array(ops.length)
 
       // Resolve an op's id/ref to a real element id (existing scene shape or a
@@ -270,6 +302,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             const dx = op.x - el.x
             const dy = op.y - el.y
             byId.set(el.id, newElementWith(el, { x: op.x, y: op.y }))
+            movedIds.add(el.id)
             // Bound text labels carry their own coordinates — shift them too.
             for (const t of byId.values()) {
               if (isText(t) && t.containerId === el.id) {
@@ -343,6 +376,19 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
           combined.set(to, withBoundArrow(b, id))
         } else {
           for (const el of computeUnboundArrow(id, a, b, text)) combined.set(el.id, el)
+        }
+      }
+
+      // updateScene skips Excalidraw's binding pipeline, so reflow arrows bound to
+      // any shape moved this batch — otherwise move_shape leaves them stale.
+      if (movedIds.size > 0) {
+        for (const el of combined.values()) {
+          if (el.type !== 'arrow') continue
+          const arrow = el as ExcalidrawArrowElement
+          const touchesMoved =
+            (arrow.startBinding && movedIds.has(arrow.startBinding.elementId)) ||
+            (arrow.endBinding && movedIds.has(arrow.endBinding.elementId))
+          if (touchesMoved) combined.set(arrow.id, reflowArrow(arrow, combined))
         }
       }
 
