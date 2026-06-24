@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOverlaps, routeBoundArrow, type LayoutBox } from './layout'
+import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, type LayoutBox } from './layout'
 import { type Shape } from './bindingGeometry'
 
 const box = (id: string, x: number, y: number, w: number, h: number, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
@@ -100,5 +100,68 @@ describe('routeBoundArrow (59 — bow only around a blocker)', () => {
     expect(r.mid).not.toBeNull()
     // start re-solved against the bend: still outside the shape (gap away), not the raw input
     expect(r.start.x).toBeGreaterThan(startShape.x + startShape.width) // right of the rect + gap
+  })
+})
+
+describe('labelBoxSize (67 — content-driven size)', () => {
+  it('grows height with line count', () => {
+    expect(labelBoxSize('a\nb\nc', 'rectangle').h).toBeGreaterThan(labelBoxSize('hello', 'rectangle').h)
+  })
+
+  it('CJK text is wider than the same number of ASCII chars', () => {
+    expect(labelBoxSize('结束判断符', 'rectangle').w).toBeGreaterThan(labelBoxSize('abcde', 'rectangle').w)
+  })
+
+  it('a diamond needs a bigger box than a rectangle for the same text', () => {
+    const r = labelBoxSize('结束?', 'rectangle')
+    const d = labelBoxSize('结束?', 'diamond')
+    expect(d.w).toBeGreaterThan(r.w)
+    expect(d.h).toBeGreaterThan(r.h)
+  })
+})
+
+describe('normalizeSpacing (2 — edge-direction gap rhythm)', () => {
+  const node = (id: string, x: number, y: number, w = 100, h = 60, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
+
+  it('evens a vertical chain to the target gap and aligns the column', () => {
+    const a = node('a', 100, 0)
+    const b = node('b', 118, 200) // small near-axis x jitter (~5°), gap 140
+    const c = node('c', 85, 360)
+    const moves = normalizeSpacing([a, b, c], [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }], { gap: 100 })
+    expect(moves.has('a')).toBe(false) // source anchored
+    const pb = moves.get('b')!
+    expect(pb.y).toBeCloseTo(a.y + a.h + 100, 6) // edge-to-edge gap = 100
+    expect(pb.x).toBeCloseTo(a.x, 6) // snapped to a's column
+    const pc = moves.get('c')!
+    expect(pc.y).toBeCloseTo(pb.y + b.h + 100, 6)
+    expect(pc.x).toBeCloseTo(pb.x, 6)
+  })
+
+  it('evens a horizontal chain and aligns the row', () => {
+    const a = node('a', 0, 100)
+    const b = node('b', 200, 130)
+    const pb = normalizeSpacing([a, b], [{ from: 'a', to: 'b' }], { gap: 80 }).get('b')!
+    expect(pb.x).toBeCloseTo(a.x + a.w + 80, 6)
+    expect(pb.y).toBeCloseTo(a.y, 6) // snapped to a's row
+  })
+
+  it('skips back-edges so a loop-back does not drag the source', () => {
+    const nodes = [node('a', 100, 0), node('b', 100, 300), node('c', 100, 600)]
+    const moves = normalizeSpacing(
+      nodes,
+      [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }, { from: 'c', to: 'a' }],
+      { gap: 100 },
+    )
+    expect(moves.has('a')).toBe(false) // c->a is a back-edge, ignored
+    expect(moves.get('b')!.y).toBeCloseTo(0 + 60 + 100, 6)
+  })
+
+  it('never moves a pinned (non-movable) child', () => {
+    const moves = normalizeSpacing(
+      [node('a', 0, 0), node('b', 40, 300, 100, 60, false)],
+      [{ from: 'a', to: 'b' }],
+      { gap: 100 },
+    )
+    expect(moves.has('b')).toBe(false)
   })
 })

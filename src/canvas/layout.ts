@@ -99,6 +99,140 @@ export function resolveOverlaps(
   return out
 }
 
+// --- content sizing + spacing normalisation (67 + 2) ---
+
+/**
+ * Rough box size needed to hold a label, by line count and longest line. CJK glyphs
+ * count ~1em wide, ASCII ~0.6em — a cheap estimate with no font metrics or DOM, so it
+ * stays unit-testable. Non-rectangular shapes inscribe their text in a smaller area,
+ * so diamonds/ellipses get a bigger box. Callers grow only (max with the model size).
+ */
+export function labelBoxSize(text: string, type: string, fontSize = 20): { w: number; h: number } {
+  const lineWidth = (s: string) => {
+    let w = 0
+    for (const ch of s) {
+      const cp = ch.codePointAt(0) ?? 0
+      // CJK ideographs/punctuation + fullwidth forms ≈ 1em; other (ASCII) ≈ 0.6em.
+      const wide = (cp >= 0x3000 && cp <= 0x9fff) || (cp >= 0xff00 && cp <= 0xffef)
+      w += wide ? fontSize : fontSize * 0.6
+    }
+    return w
+  }
+  const lines = text.split('\n')
+  const longest = lines.reduce((m, s) => Math.max(m, lineWidth(s)), 0)
+  let w = longest + fontSize * 2.4
+  let h = lines.length * fontSize * 1.25 + fontSize * 1.6
+  if (type === 'diamond') {
+    w *= 1.8
+    h *= 1.8
+  } else if (type === 'ellipse') {
+    w *= 1.35
+    h *= 1.35
+  }
+  return { w: Math.ceil(w), h: Math.ceil(h) }
+}
+
+export interface SpacingEdge {
+  from: string
+  to: string
+}
+
+/** Distance from a box centre to its border along unit direction (dx,dy) (AABB ray exit). */
+function halfExtentAlong(b: LayoutBox, dx: number, dy: number): number {
+  const tx = dx === 0 ? Infinity : b.w / 2 / Math.abs(dx)
+  const ty = dy === 0 ? Infinity : b.h / 2 / Math.abs(dy)
+  return Math.min(tx, ty)
+}
+
+/**
+ * Even out the edge-to-edge gap between connected boxes to `gap`, measured along each
+ * arrow's own direction — so it works for any layout direction, not just top-down. A
+ * forward sweep in topological order places each child off its parent at the target
+ * gap using real, content-sized extents; near-axis directions snap to the axis so
+ * chains stay straight and aligned. Back-edges (loop-backs) are found by DFS and
+ * skipped so they don't pull the flow together. Only `movable` boxes move; sources and
+ * pinned boxes anchor. Returns the boxes that moved.
+ */
+export function normalizeSpacing(
+  nodes: LayoutBox[],
+  edges: SpacingEdge[],
+  opts: { gap?: number } = {},
+): Map<string, Pt> {
+  const gap = opts.gap ?? 96
+  const byId = new Map(nodes.map((n) => [n.id, { ...n }]))
+  const ids = [...byId.keys()].sort()
+  const adj = new Map<string, string[]>(ids.map((id) => [id, []]))
+  for (const e of edges) {
+    if (e.from !== e.to && byId.has(e.from) && byId.has(e.to)) adj.get(e.from)!.push(e.to)
+  }
+  for (const id of ids) adj.get(id)!.sort()
+
+  // Iterative DFS: flag back-edges (edge into an on-stack node), collect a topo order.
+  const color = new Map<string, 0 | 1 | 2>(ids.map((id) => [id, 0])) // white | gray | black
+  const back = new Set<string>()
+  const topo: string[] = []
+  for (const root of ids) {
+    if (color.get(root) !== 0) continue
+    const stack: Array<{ u: string; i: number }> = [{ u: root, i: 0 }]
+    color.set(root, 1)
+    while (stack.length) {
+      const top = stack[stack.length - 1]
+      const kids = adj.get(top.u)!
+      if (top.i < kids.length) {
+        const v = kids[top.i++]
+        const c = color.get(v)
+        if (c === 1) back.add(`${top.u}->${v}`)
+        else if (c === 0) {
+          color.set(v, 1)
+          stack.push({ u: v, i: 0 })
+        }
+      } else {
+        color.set(top.u, 2)
+        topo.push(top.u)
+        stack.pop()
+      }
+    }
+  }
+  topo.reverse()
+
+  // Forward sweep: place each child off its first parent at the target edge-to-edge gap.
+  const placed = new Set<string>()
+  for (const u of topo) {
+    const cu = byId.get(u)!
+    for (const v of adj.get(u)!) {
+      if (back.has(`${u}->${v}`) || placed.has(v)) continue
+      const cv = byId.get(v)!
+      if (!cv.movable) continue
+      const ucx = cu.x + cu.w / 2
+      const ucy = cu.y + cu.h / 2
+      let dx = cv.x + cv.w / 2 - ucx
+      let dy = cv.y + cv.h / 2 - ucy
+      const L = Math.hypot(dx, dy) || 1
+      dx /= L
+      dy /= L
+      // Snap near-axis directions so chains stay straight and aligned.
+      if (Math.abs(dx) < 0.16) {
+        dx = 0
+        dy = dy >= 0 ? 1 : -1
+      } else if (Math.abs(dy) < 0.16) {
+        dy = 0
+        dx = dx >= 0 ? 1 : -1
+      }
+      const dist = halfExtentAlong(cu, dx, dy) + gap + halfExtentAlong(cv, dx, dy)
+      cv.x = ucx + dx * dist - cv.w / 2
+      cv.y = ucy + dy * dist - cv.h / 2
+      placed.add(v)
+    }
+  }
+
+  const out = new Map<string, Pt>()
+  for (const n of nodes) {
+    const c = byId.get(n.id)!
+    if (c.x !== n.x || c.y !== n.y) out.set(n.id, { x: c.x, y: c.y })
+  }
+  return out
+}
+
 // --- arrow routing (59) ---
 
 const dot = (a: Pt, b: Pt) => a.x * b.x + a.y * b.y

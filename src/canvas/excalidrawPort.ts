@@ -13,7 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { resolveOverlaps, routeBoundArrow, type LayoutBox } from './layout'
+import { resolveOverlaps, routeBoundArrow, normalizeSpacing, labelBoxSize, type LayoutBox, type SpacingEdge } from './layout'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -306,17 +306,27 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             // Excalidraw has no triangle; approximate with a diamond for now.
             // TODO: render true triangles via a closed 3-point line polygon.
             const geo = op.shape === 'triangle' ? 'diamond' : op.shape
+            // Grow the box to fit its label (model defaults are often too narrow, so
+            // text wraps); never shrink below what the model asked for.
+            const text = op.text ? decodeText(op.text) : undefined
+            let width = op.w
+            let height = op.h
+            if (text) {
+              const fit = labelBoxSize(text, geo)
+              width = Math.max(op.w, fit.w)
+              height = Math.max(op.h, fit.h)
+            }
             skeleton.push({
               type: geo,
               id,
               x: op.x,
               y: op.y,
-              width: op.w,
-              height: op.h,
-              ...(op.text ? { label: { text: decodeText(op.text) } } : {}),
+              width,
+              height,
+              ...(text ? { label: { text } } : {}),
             } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
-            pending.set(id, { x: op.x, y: op.y, width: op.w, height: op.h })
+            pending.set(id, { x: op.x, y: op.y, width, height })
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break
           }
@@ -433,30 +443,52 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
 
       // updateScene bypasses Excalidraw's binding/layout pipeline, so when this batch
       // touched any geometry we run the equivalent ourselves (all deterministic, see
-      // layout.ts): (1) push model-placed overlaps apart, (2) reflow bound arrows whose
-      // shapes moved, (3) bow each arrow around any shape it would otherwise cut through.
+      // layout.ts): (0) even out spacing when new shapes appear, (1) push leftover
+      // overlaps apart, (2) reflow bound arrows whose shapes moved, (3) bow each arrow
+      // around any shape it would otherwise cut through.
       if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0) {
-        // (1) Avoidance — only shapes created/moved this batch may be repositioned;
-        // pre-existing shapes are pinned so we never shuffle untouched content.
+        // Only shapes created/moved this batch may be repositioned; pre-existing shapes
+        // are pinned so we never shuffle untouched content.
         const movable = new Set<string>([...createdIds, ...movedIds])
-        const boxes: LayoutBox[] = []
-        for (const el of combined.values()) {
-          if (el.type === 'arrow') continue
-          if (isText(el) && el.containerId) continue // bound labels follow their container
-          boxes.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: movable.has(el.id) })
-        }
         const displaced = new Set<string>(movedIds)
-        for (const [id, p] of resolveOverlaps(boxes)) {
-          const el = combined.get(id)
-          if (!el) continue
-          const dx = p.x - el.x
-          const dy = p.y - el.y
-          combined.set(id, newElementWith(el, { x: p.x, y: p.y }))
-          for (const t of combined.values()) {
-            if (isText(t) && t.containerId === id) combined.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+        // Boxes (geo + standalone text) from the current scene; bound labels follow their container.
+        const boxes = (): LayoutBox[] => {
+          const out: LayoutBox[] = []
+          for (const el of combined.values()) {
+            if (el.type === 'arrow') continue
+            if (isText(el) && el.containerId) continue
+            out.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: movable.has(el.id) })
           }
-          displaced.add(id)
+          return out
         }
+        const applyMoves = (moves: Map<string, { x: number; y: number }>) => {
+          for (const [id, p] of moves) {
+            const el = combined.get(id)
+            if (!el) continue
+            const dx = p.x - el.x
+            const dy = p.y - el.y
+            combined.set(id, newElementWith(el, { x: p.x, y: p.y }))
+            for (const t of combined.values()) {
+              if (isText(t) && t.containerId === id) combined.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+            }
+            displaced.add(id)
+          }
+        }
+
+        // (0) Spacing rhythm — only when new shapes appear (a fresh/extended flowchart);
+        // a pure move is a deliberate reposition we don't want to re-flow.
+        if (createdIds.size > 0) {
+          const edges: SpacingEdge[] = []
+          for (const el of combined.values()) {
+            if (el.type !== 'arrow') continue
+            const a = el as ExcalidrawArrowElement
+            if (a.startBinding && a.endBinding) edges.push({ from: a.startBinding.elementId, to: a.endBinding.elementId })
+          }
+          applyMoves(normalizeSpacing(boxes(), edges))
+        }
+
+        // (1) Avoidance — clean up any residual overlap.
+        applyMoves(resolveOverlaps(boxes()))
 
         // (2)+(3) Reflow arrows touching a displaced shape (and every arrow created
         // this batch) to straight edge-to-edge endpoints, then route around obstacles.
