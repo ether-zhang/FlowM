@@ -316,17 +316,21 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               width = Math.max(op.w, fit.w)
               height = Math.max(op.h, fit.h)
             }
+            // Grow around the box's CENTRE, not its top-left — top-left growth drifts
+            // every centre by a different amount and breaks the alignment the model set.
+            const gx = op.x + (op.w - width) / 2
+            const gy = op.y + (op.h - height) / 2
             skeleton.push({
               type: geo,
               id,
-              x: op.x,
-              y: op.y,
+              x: gx,
+              y: gy,
               width,
               height,
               ...(text ? { label: { text } } : {}),
             } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
-            pending.set(id, { x: op.x, y: op.y, width, height })
+            pending.set(id, { x: gx, y: gy, width, height })
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break
           }
