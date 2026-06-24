@@ -174,6 +174,18 @@ describe('normalizeSpacing (2 — edge-direction gap rhythm)', () => {
     expect(labeled.x - (a.x + a.w)).toBeGreaterThanOrEqual(200) // edge-to-edge gap >= label width
   })
 
+  it('defaults the target gap to the model’s own median gap (scale stays the model’s)', () => {
+    // model gaps: a->b = 100, b->c = 140 → median 120; the framework evens both to 120.
+    const a = node('a', 100, 0, 100, 60) // bottom 60
+    const b = node('b', 100, 160, 100, 60) // gap 160-60 = 100; bottom 220
+    const c = node('c', 100, 360, 100, 60) // gap 360-220 = 140
+    const moves = normalizeSpacing([a, b, c], [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }]) // no gap → median
+    const pb = moves.get('b')!
+    const cy = moves.get('c')?.y ?? c.y // c may already sit at the median gap → not in moves
+    expect(pb.y - (a.y + a.h)).toBeCloseTo(120, 6)
+    expect(cy - (pb.y + b.h)).toBeCloseTo(120, 6)
+  })
+
   it('does not widen a labeled vertical edge (the label is orthogonal there)', () => {
     const a = node('a', 100, 0)
     const b = node('b', 100, 200)

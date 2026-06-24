@@ -151,6 +151,12 @@ function halfExtentAlong(b: LayoutBox, dx: number, dy: number): number {
   return Math.min(tx, ty)
 }
 
+const median = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b)
+  const m = s.length >> 1
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+
 /**
  * Even out the edge-to-edge gap between connected boxes to `gap`, measured along each
  * arrow's own direction — so it works for any layout direction, not just top-down. A
@@ -159,13 +165,17 @@ function halfExtentAlong(b: LayoutBox, dx: number, dy: number): number {
  * chains stay straight and aligned. Back-edges (loop-backs) are found by DFS and
  * skipped so they don't pull the flow together. Only `movable` boxes move; sources and
  * pinned boxes anchor. Returns the boxes that moved.
+ *
+ * `opts.gap` overrides the target; when omitted it defaults to the model's OWN median
+ * edge gap, so the model keeps control of the spacing scale and the framework only
+ * makes that rhythm consistent.
  */
 export function normalizeSpacing(
   nodes: LayoutBox[],
   edges: SpacingEdge[],
   opts: { gap?: number } = {},
 ): Map<string, Pt> {
-  const gap = opts.gap ?? 96
+  let gap = opts.gap
   const byId = new Map(nodes.map((n) => [n.id, { ...n }]))
   const ids = [...byId.keys()].sort()
   const adj = new Map<string, string[]>(ids.map((id) => [id, []]))
@@ -205,6 +215,25 @@ export function normalizeSpacing(
     }
   }
   topo.reverse()
+
+  // Target gap: honour an explicit value, else derive it from the model's OWN median
+  // forward-edge gap. The framework evens the rhythm but lets the model set the scale —
+  // it refines the model's spatial output rather than imposing a constant over it.
+  if (gap == null) {
+    const gaps: number[] = []
+    for (const u of ids) {
+      for (const v of adj.get(u)!) {
+        if (back.has(`${u}->${v}`)) continue
+        const cu = byId.get(u)!
+        const cv = byId.get(v)!
+        const dx = cv.x + cv.w / 2 - (cu.x + cu.w / 2)
+        const dy = cv.y + cv.h / 2 - (cu.y + cu.h / 2)
+        const cd = Math.hypot(dx, dy) || 1
+        gaps.push(cd - halfExtentAlong(cu, dx / cd, dy / cd) - halfExtentAlong(cv, dx / cd, dy / cd))
+      }
+    }
+    gap = gaps.length ? Math.max(MARGIN, median(gaps)) : 96
+  }
 
   // Forward sweep: place each child off its first parent at the target edge-to-edge gap.
   const placed = new Set<string>()
