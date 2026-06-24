@@ -30,9 +30,11 @@ export interface LayoutBox {
   movable: boolean
 }
 
-/** Default clear gap kept between boxes, and the arrow-routing clearance, in px. */
+/** Default clear gap kept between boxes, the arrow-routing clearance, and the
+ *  breathing room left around a bound arrow label, in px. */
 const MARGIN = 16
 const CLEARANCE = 10
+const LABEL_PAD = 12
 
 // --- overlap avoidance (58) ---
 
@@ -135,6 +137,11 @@ export function labelBoxSize(text: string, type: string, fontSize = 20): { w: nu
 export interface SpacingEdge {
   from: string
   to: string
+  /** Bound-arrow label size, if any. A horizontal label projects onto the edge
+   *  direction (full width on a horizontal edge, ~one line on a vertical one), so a
+   *  labeled diagonal/horizontal edge needs a wider gap for the label to fit. */
+  labelW?: number
+  labelH?: number
 }
 
 /** Distance from a box centre to its border along unit direction (dx,dy) (AABB ray exit). */
@@ -166,6 +173,10 @@ export function normalizeSpacing(
     if (e.from !== e.to && byId.has(e.from) && byId.has(e.to)) adj.get(e.from)!.push(e.to)
   }
   for (const id of ids) adj.get(id)!.sort()
+  const labelOf = new Map<string, { w: number; h: number }>()
+  for (const e of edges) {
+    if (e.labelW != null && e.labelH != null && e.from !== e.to) labelOf.set(`${e.from}->${e.to}`, { w: e.labelW, h: e.labelH })
+  }
 
   // Iterative DFS: flag back-edges (edge into an on-stack node), collect a topo order.
   const color = new Map<string, 0 | 1 | 2>(ids.map((id) => [id, 0])) // white | gray | black
@@ -218,7 +229,12 @@ export function normalizeSpacing(
         dy = 0
         dx = dx >= 0 ? 1 : -1
       }
-      const dist = halfExtentAlong(cu, dx, dy) + gap + halfExtentAlong(cv, dx, dy)
+      // A horizontal label projects onto the (snapped) edge direction; widen the gap
+      // so it fits between the two shapes instead of being clipped by them.
+      let effGap = gap
+      const lbl = labelOf.get(`${u}->${v}`)
+      if (lbl) effGap = Math.max(gap, Math.abs(lbl.w * dx) + Math.abs(lbl.h * dy) + 2 * LABEL_PAD)
+      const dist = halfExtentAlong(cu, dx, dy) + effGap + halfExtentAlong(cv, dx, dy)
       cv.x = ucx + dx * dist - cv.w / 2
       cv.y = ucy + dy * dist - cv.h / 2
       placed.add(v)

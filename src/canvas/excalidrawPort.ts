@@ -482,11 +482,18 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         // (0) Spacing rhythm — only when new shapes appear (a fresh/extended flowchart);
         // a pure move is a deliberate reposition we don't want to re-flow.
         if (createdIds.size > 0) {
+          // Bound-arrow label sizes, so labeled diagonal/horizontal edges get a wider gap.
+          const labelByArrow = new Map<string, { w: number; h: number }>()
+          for (const el of combined.values()) {
+            if (isText(el) && el.containerId) labelByArrow.set(el.containerId, { w: el.width, h: el.height })
+          }
           const edges: SpacingEdge[] = []
           for (const el of combined.values()) {
             if (el.type !== 'arrow') continue
             const a = el as ExcalidrawArrowElement
-            if (a.startBinding && a.endBinding) edges.push({ from: a.startBinding.elementId, to: a.endBinding.elementId })
+            if (!a.startBinding || !a.endBinding) continue
+            const lbl = labelByArrow.get(a.id)
+            edges.push({ from: a.startBinding.elementId, to: a.endBinding.elementId, labelW: lbl?.w, labelH: lbl?.h })
           }
           applyMoves(normalizeSpacing(boxes(), edges))
         }

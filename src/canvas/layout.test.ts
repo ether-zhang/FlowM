@@ -164,4 +164,21 @@ describe('normalizeSpacing (2 — edge-direction gap rhythm)', () => {
     )
     expect(moves.has('b')).toBe(false)
   })
+
+  it('widens a labeled near-horizontal edge so the long label fits in the gap', () => {
+    const a = node('a', 0, 100)
+    const b = node('b', 300, 110) // near-horizontal → snaps to a's row
+    const labeled = normalizeSpacing([a, b], [{ from: 'a', to: 'b', labelW: 200, labelH: 24 }], { gap: 80 }).get('b')!
+    const plain = normalizeSpacing([a, b], [{ from: 'a', to: 'b' }], { gap: 80 }).get('b')!
+    expect(labeled.x).toBeGreaterThan(plain.x) // pushed out to make room for the label
+    expect(labeled.x - (a.x + a.w)).toBeGreaterThanOrEqual(200) // edge-to-edge gap >= label width
+  })
+
+  it('does not widen a labeled vertical edge (the label is orthogonal there)', () => {
+    const a = node('a', 100, 0)
+    const b = node('b', 100, 200)
+    const labeled = normalizeSpacing([a, b], [{ from: 'a', to: 'b', labelW: 200, labelH: 24 }], { gap: 80 }).get('b')!
+    const plain = normalizeSpacing([a, b], [{ from: 'a', to: 'b' }], { gap: 80 }).get('b')!
+    expect(labeled.y).toBeCloseTo(plain.y, 6)
+  })
 })
