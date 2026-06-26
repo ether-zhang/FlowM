@@ -13,7 +13,8 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { resolveOverlaps, routeBoundArrow, normalizeSpacing, labelBoxSize, type LayoutBox, type SpacingEdge } from './layout'
+import { routeBoundArrow, labelBoxSize, type LayoutBox, type SpacingEdge } from './layout'
+import { runPasses, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -446,74 +447,81 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       }
 
       // updateScene bypasses Excalidraw's binding/layout pipeline, so when this batch
-      // touched any geometry we run the equivalent ourselves (all deterministic, see
-      // layout.ts): (0) even out spacing when new shapes appear, (1) push leftover
-      // overlaps apart, (2) reflow bound arrows whose shapes moved, (3) bow each arrow
-      // around any shape it would otherwise cut through.
+      // touched any geometry we run our own post-process pipeline (layoutPasses.ts):
+      // even spacing on fresh diagrams → clean leftover overlaps → reflow/route arrows.
+      // The passes and their order are library-agnostic; the port just supplies the
+      // Excalidraw-aware PassContext below. New post-process steps (e.g. colouring) join
+      // as another LayoutPass without touching this orchestration.
       if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0) {
         // Only shapes created/moved this batch may be repositioned; pre-existing shapes
         // are pinned so we never shuffle untouched content.
         const movable = new Set<string>([...createdIds, ...movedIds])
         const displaced = new Set<string>(movedIds)
-        // Boxes (geo + standalone text) from the current scene; bound labels follow their container.
-        const boxes = (): LayoutBox[] => {
-          const out: LayoutBox[] = []
-          for (const el of combined.values()) {
-            if (el.type === 'arrow') continue
-            if (isText(el) && el.containerId) continue
-            out.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: movable.has(el.id) })
-          }
-          return out
-        }
-        const applyMoves = (moves: Map<string, { x: number; y: number }>) => {
-          for (const [id, p] of moves) {
-            const el = combined.get(id)
-            if (!el) continue
-            const dx = p.x - el.x
-            const dy = p.y - el.y
-            combined.set(id, newElementWith(el, { x: p.x, y: p.y }))
-            for (const t of combined.values()) {
-              if (isText(t) && t.containerId === id) combined.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+        const ctx: PassContext = {
+          createdCount: createdIds.size,
+          // Boxes (geo + standalone text); bound labels follow their container.
+          boxes: () => {
+            const out: LayoutBox[] = []
+            for (const el of combined.values()) {
+              if (el.type === 'arrow') continue
+              if (isText(el) && el.containerId) continue
+              out.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: movable.has(el.id) })
             }
-            displaced.add(id)
-          }
+            return out
+          },
+          // Bound-arrow connections + label sizes (labeled diagonal edges get a wider gap).
+          edges: () => {
+            const labelByArrow = new Map<string, { w: number; h: number }>()
+            for (const el of combined.values()) {
+              if (isText(el) && el.containerId) labelByArrow.set(el.containerId, { w: el.width, h: el.height })
+            }
+            const out: SpacingEdge[] = []
+            for (const el of combined.values()) {
+              if (el.type !== 'arrow') continue
+              const a = el as ExcalidrawArrowElement
+              if (!a.startBinding || !a.endBinding) continue
+              const lbl = labelByArrow.get(a.id)
+              out.push({ from: a.startBinding.elementId, to: a.endBinding.elementId, labelW: lbl?.w, labelH: lbl?.h })
+            }
+            return out
+          },
+          applyMoves: (moves) => {
+            for (const [id, p] of moves) {
+              const el = combined.get(id)
+              if (!el) continue
+              const dx = p.x - el.x
+              const dy = p.y - el.y
+              combined.set(id, newElementWith(el, { x: p.x, y: p.y }))
+              for (const t of combined.values()) {
+                if (isText(t) && t.containerId === id) combined.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+              }
+              displaced.add(id)
+            }
+          },
+          // Arrows touching a displaced shape (and every arrow created this batch).
+          arrowsToUpdate: () => {
+            const out: string[] = []
+            for (const el of combined.values()) {
+              if (el.type !== 'arrow') continue
+              const a = el as ExcalidrawArrowElement
+              if (
+                createdArrowIds.has(a.id) ||
+                (a.startBinding && displaced.has(a.startBinding.elementId)) ||
+                (a.endBinding && displaced.has(a.endBinding.elementId))
+              )
+                out.push(a.id)
+            }
+            return out
+          },
+          // Straight edge-to-edge endpoints, then bow around any obstacle.
+          updateArrow: (id) => {
+            const el = combined.get(id)
+            if (!el || el.type !== 'arrow') return
+            const straight = reflowArrow(el as ExcalidrawArrowElement, combined) as ExcalidrawArrowElement
+            combined.set(id, routeArrowElement(straight, combined))
+          },
         }
-
-        // (0) Spacing rhythm — only when new shapes appear (a fresh/extended flowchart);
-        // a pure move is a deliberate reposition we don't want to re-flow.
-        if (createdIds.size > 0) {
-          // Bound-arrow label sizes, so labeled diagonal/horizontal edges get a wider gap.
-          const labelByArrow = new Map<string, { w: number; h: number }>()
-          for (const el of combined.values()) {
-            if (isText(el) && el.containerId) labelByArrow.set(el.containerId, { w: el.width, h: el.height })
-          }
-          const edges: SpacingEdge[] = []
-          for (const el of combined.values()) {
-            if (el.type !== 'arrow') continue
-            const a = el as ExcalidrawArrowElement
-            if (!a.startBinding || !a.endBinding) continue
-            const lbl = labelByArrow.get(a.id)
-            edges.push({ from: a.startBinding.elementId, to: a.endBinding.elementId, labelW: lbl?.w, labelH: lbl?.h })
-          }
-          applyMoves(normalizeSpacing(boxes(), edges))
-        }
-
-        // (1) Avoidance — clean up any residual overlap.
-        applyMoves(resolveOverlaps(boxes()))
-
-        // (2)+(3) Reflow arrows touching a displaced shape (and every arrow created
-        // this batch) to straight edge-to-edge endpoints, then route around obstacles.
-        for (const el of combined.values()) {
-          if (el.type !== 'arrow') continue
-          const arrow = el as ExcalidrawArrowElement
-          const touches =
-            createdArrowIds.has(arrow.id) ||
-            (arrow.startBinding && displaced.has(arrow.startBinding.elementId)) ||
-            (arrow.endBinding && displaced.has(arrow.endBinding.elementId))
-          if (!touches) continue
-          const straight = reflowArrow(arrow, combined) as ExcalidrawArrowElement
-          combined.set(arrow.id, routeArrowElement(straight, combined))
-        }
+        runPasses(ctx)
       }
 
       api.updateScene({ elements: [...combined.values()] })
