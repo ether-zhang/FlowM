@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseOp, type CanvasOp } from './schema'
+import { parseStructure } from './structure'
 import { formatCanvas } from './serialize'
 import { canvasTools, toolCallToOp } from './tools'
 
@@ -79,5 +80,44 @@ describe('formatCanvas', () => {
     expect(out).toContain('- [1] #s1 rectangle')
     expect(out).toContain('- [2] #s2 ellipse')
     expect(out).toContain('- #a1 arrow') // no [n] prefix
+  })
+})
+
+describe('parseStructure', () => {
+  it('keeps valid relations and reports the malformed ones', () => {
+    const { relations, errors } = parseStructure({
+      relations: [
+        { kind: 'flow', nodes: [1, 2, 3], dir: 'down' },
+        { kind: 'contain', parent: 4, children: [5, 6] },
+        { kind: 'flow', nodes: [1] }, // too few nodes → dropped
+        { kind: 'wat', nodes: [1, 2] }, // unknown kind → dropped
+      ],
+    })
+    expect(relations).toHaveLength(2)
+    expect(relations[0]).toEqual({ kind: 'flow', nodes: [1, 2, 3], dir: 'down' })
+    expect(relations[1]).toEqual({ kind: 'contain', parent: 4, children: [5, 6] })
+    expect(errors).toHaveLength(2)
+  })
+
+  it('tolerates a missing/empty relations payload', () => {
+    expect(parseStructure({}).relations).toEqual([])
+    expect(parseStructure(null).relations).toEqual([])
+    expect(parseStructure({ relations: [] }).relations).toEqual([])
+  })
+
+  it('validates each relation kind’s required fields', () => {
+    const ok = parseStructure({
+      relations: [
+        { kind: 'align', nodes: [1, 2], axis: 'row' },
+        { kind: 'grid', nodes: [1, 2, 3, 4], cols: 2 },
+        { kind: 'nonOverlap', nodes: [7, 8] },
+        { kind: 'freeze', nodes: [9] },
+      ],
+    })
+    expect(ok.relations).toHaveLength(4)
+    expect(ok.errors).toHaveLength(0)
+    // bad field values are rejected
+    expect(parseStructure({ relations: [{ kind: 'align', nodes: [1, 2], axis: 'diagonal' }] }).relations).toHaveLength(0)
+    expect(parseStructure({ relations: [{ kind: 'grid', nodes: [1], cols: 0 }] }).relations).toHaveLength(0)
   })
 })

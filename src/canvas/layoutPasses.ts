@@ -18,6 +18,19 @@ import { type Pt } from './bindingGeometry'
  * the concrete implementation. Grow this interface as new post-process concerns arrive
  * (a colour pass might add `recolor(id, …)`, an align pass `snapToGrid()`, etc.).
  */
+/**
+ * Which nodes each B pass may move, derived from the model's structure declarations
+ * (see docs/structure-schema.md). `null` ⇒ no declarations yet (pre-gate): the passes
+ * fall back to today's global behaviour. When present, a pass touches ONLY the ids in
+ * its set; everything else is frozen (kept as a pinned obstacle where relevant).
+ */
+export interface StructureScope {
+  /** Node ids the flow realiser (spacing pass) may move. */
+  spacing: Set<string>
+  /** Node ids the nonOverlap realiser (avoid pass) may move; the rest stay as obstacles. */
+  overlap: Set<string>
+}
+
 export interface PassContext {
   /** How many shapes were created this batch (spacing only re-flows fresh diagrams). */
   readonly createdCount: number
@@ -25,6 +38,8 @@ export interface PassContext {
   boxes(): LayoutBox[]
   /** Bound-arrow connections, each carrying its label size (for label-aware spacing). */
   edges(): SpacingEdge[]
+  /** Declared scope for the B passes, or null to run globally (pre-gate behaviour). */
+  structure(): StructureScope | null
   /** Apply position deltas to the scene (and record the shapes as displaced). */
   applyMoves(moves: Map<string, Pt>): void
   /** Ids of arrows whose geometry must be recomputed (they touch a new/displaced shape). */
@@ -50,21 +65,40 @@ export interface LayoutPass {
   run(ctx: PassContext): void
 }
 
-/** Even out spacing — only when new shapes appear (a pure move is left as placed). */
+/** Even out spacing — only when new shapes appear (a pure move is left as placed).
+ *  With a declared scope, only the flow nodes flow; others are excluded (frozen). */
 export const spacingPass: LayoutPass = {
   name: 'spacing',
   kind: 'intent', // moves nodes → B
   run(ctx) {
-    if (ctx.createdCount > 0) ctx.applyMoves(normalizeSpacing(ctx.boxes(), ctx.edges()))
+    if (ctx.createdCount <= 0) return
+    const scope = ctx.structure()
+    const boxes = ctx.boxes()
+    const edges = ctx.edges()
+    if (!scope) {
+      ctx.applyMoves(normalizeSpacing(boxes, edges))
+      return
+    }
+    const nodes = boxes.filter((b) => scope.spacing.has(b.id))
+    const flowEdges = edges.filter((e) => scope.spacing.has(e.from) && scope.spacing.has(e.to))
+    ctx.applyMoves(normalizeSpacing(nodes, flowEdges))
   },
 }
 
-/** Push any genuinely-overlapping boxes apart. */
+/** Push any genuinely-overlapping boxes apart. With a declared scope, only the
+ *  nonOverlap nodes may move; the rest stay put but still act as obstacles. */
 export const avoidPass: LayoutPass = {
   name: 'avoid',
   kind: 'intent', // moves nodes → B
   run(ctx) {
-    ctx.applyMoves(resolveOverlaps(ctx.boxes()))
+    const scope = ctx.structure()
+    const boxes = ctx.boxes()
+    if (!scope) {
+      ctx.applyMoves(resolveOverlaps(boxes))
+      return
+    }
+    const scoped = boxes.map((b) => (scope.overlap.has(b.id) ? b : { ...b, movable: false }))
+    ctx.applyMoves(resolveOverlaps(scoped))
   },
 }
 

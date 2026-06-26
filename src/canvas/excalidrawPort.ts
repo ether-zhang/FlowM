@@ -575,6 +575,9 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             }
             return out
           },
+          // No structure declarations yet (the gate that supplies them isn't wired);
+          // null keeps the B passes global, i.e. today's behaviour. See structure-schema.md.
+          structure: () => null,
           applyMoves: (moves) => {
             for (const [id, p] of moves) {
               const el = combined.get(id)
