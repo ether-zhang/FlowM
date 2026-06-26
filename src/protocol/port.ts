@@ -15,9 +15,11 @@ export interface CanvasPort {
    * Render the given scope to a PNG data URL (or null if empty), so the model can
    * be sent a *visual* of the canvas alongside the serialized text — letting it
    * judge intent (structured flowchart vs free-form arrangement) from how things
-   * actually look, not just the shape list.
+   * actually look, not just the shape list. When `marks` is given (id → mark number),
+   * each shape is tagged with its number on the image (set-of-mark), so the model can
+   * ground what it sees to specific ids — the same number prefixes the shape's text line.
    */
-  exportImage(scope: 'selection' | 'all'): Promise<string | null>
+  exportImage(scope: 'selection' | 'all', marks?: Map<string, number>): Promise<string | null>
   /**
    * Serialize the entire canvas to a JSON-safe value for project persistence.
    * The shape of this value is the concrete canvas's business — the protocol and

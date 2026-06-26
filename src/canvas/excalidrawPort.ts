@@ -55,6 +55,37 @@ const decodeText = (s: string) => s.replace(/\\r\\n|\\r|\\n/g, '\n').replace(/\\
 const BINDABLE = new Set(['rectangle', 'ellipse', 'diamond'])
 
 /**
+ * Build ephemeral "set-of-mark" chip elements: a small high-contrast labelled square
+ * pinned to each marked shape's top-left corner, showing its mark number. Returned as
+ * ordinary Excalidraw elements in page space so the export pipeline positions them
+ * correctly; the caller appends them to the export only (never to the live scene).
+ * Arrows are skipped — marks ground NODES, which is what structure declarations key on.
+ */
+function buildMarkElements(elements: readonly ExcalidrawElement[], marks: Map<string, number>): ExcalidrawElement[] {
+  const skeleton: ExcalidrawElementSkeleton[] = []
+  for (const el of elements) {
+    const n = marks.get(el.id)
+    if (n == null || el.type === 'arrow') continue
+    skeleton.push({
+      type: 'rectangle',
+      x: el.x,
+      y: el.y,
+      width: 30,
+      height: 24,
+      backgroundColor: '#ffec99',
+      strokeColor: '#e8590c',
+      fillStyle: 'solid',
+      strokeWidth: 1,
+      roundness: null,
+      label: { text: String(n), fontSize: 16, strokeColor: '#c92a2a' },
+    } as ExcalidrawElementSkeleton)
+  }
+  return skeleton.length
+    ? (convertToExcalidrawElements(skeleton, { regenerateIds: true }) as ExcalidrawElement[])
+    : []
+}
+
+/**
  * Proactively load the canvas fonts Excalidraw measures text with (the hand-drawn
  * Excalifont, plus Xiaolai for CJK fallback). When a labeled shape is added via
  * updateScene before its font has loaded, Excalidraw measures and line-wraps the
@@ -601,7 +632,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       api.updateScene({ elements: (data as ExcalidrawElement[]) ?? [] })
     },
 
-    async exportImage(scope) {
+    async exportImage(scope, marks) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
       const useSelection = scope === 'selection' && Object.keys(selected).length > 0
@@ -611,9 +642,16 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         : all
       if (elements.length === 0) return null
 
+      // Set-of-mark: overlay each shape's mark number as ephemeral chip elements so the
+      // model can ground image regions to specific ids (the same number prefixes the
+      // shape's text line). Rendered as real elements in page space, so Excalidraw's
+      // export handles the page→pixel transform — no manual maths, exact alignment.
+      // These never touch the live scene; they exist only for this export.
+      const overlay = marks ? buildMarkElements(elements, marks) : []
+
       try {
         const canvas = await exportToCanvas({
-          elements,
+          elements: [...elements, ...overlay],
           files: api.getFiles(),
           exportPadding: 16,
           maxWidthOrHeight: 1280, // cap so the data URL stays a reasonable token cost

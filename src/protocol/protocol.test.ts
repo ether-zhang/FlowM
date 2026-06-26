@@ -66,4 +66,16 @@ describe('formatCanvas', () => {
     ])
     expect(out).toContain('#a1 arrow @(0,0) s1→s2 text="yes"')
   })
+
+  it('prefixes each line with its set-of-mark number when marks are given', () => {
+    const out = formatCanvas(
+      [
+        { id: 's1', type: 'rectangle', x: 0, y: 0, w: 120, h: 80, text: 'A' },
+        { id: 's2', type: 'ellipse', x: 0, y: 200, w: 120, h: 80, text: 'B' },
+      ],
+      new Map([['s1', 1], ['s2', 2]]),
+    )
+    expect(out).toContain('- [1] #s1 rectangle')
+    expect(out).toContain('- [2] #s2 ellipse')
+  })
 })
