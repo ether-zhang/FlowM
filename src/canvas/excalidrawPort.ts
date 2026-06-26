@@ -54,6 +54,24 @@ const decodeText = (s: string) => s.replace(/\\r\\n|\\r|\\n/g, '\n').replace(/\\
 /** Excalidraw element types an arrow can bind to. */
 const BINDABLE = new Set(['rectangle', 'ellipse', 'diamond'])
 
+/**
+ * Proactively load the canvas fonts Excalidraw measures text with (the hand-drawn
+ * Excalifont, plus Xiaolai for CJK fallback). When a labeled shape is added via
+ * updateScene before its font has loaded, Excalidraw measures and line-wraps the
+ * text with a fallback font, then renders it with the real (wider) one — so the
+ * text overflows its box and is clipped until a click forces a remeasure. Excalidraw
+ * only auto-remeasures on a font-load *transition*, which never fires for a font that
+ * loaded earlier for the UI. We load them once when the editor mounts; the model
+ * round-trip before any generated text dwarfs this local fetch, so by apply() time
+ * the fonts are ready and the very first measurement is correct.
+ */
+function ensureCanvasFonts(): void {
+  if (typeof document === 'undefined' || !document.fonts) return
+  for (const family of ['Excalifont', 'Xiaolai']) {
+    document.fonts.load(`20px "${family}"`).catch(() => {})
+  }
+}
+
 /** Register an arrow in a shape's boundElements so moving the shape moves the arrow. */
 function withBoundArrow(el: ExcalidrawElement, arrowId: string): ExcalidrawElement {
   const bound = el.boundElements ?? []
@@ -257,6 +275,9 @@ function routeArrowElement(
  * scene, mutates a working copy, and writes it back once.
  */
 export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
+  // Warm the canvas fonts so the first labeled shape is measured with the real font
+  // (not a fallback) and never renders clipped until clicked. See ensureCanvasFonts.
+  ensureCanvasFonts()
   return {
     snapshot(scope) {
       const all = getNonDeletedElements(api.getSceneElements())

@@ -88,6 +88,7 @@ Windows、macOS、iPad。
      - [ ] `update_text` 给原本无标签的容器新增标签（需新建绑定 text 元素 + boundElements 接线）
      - [ ] bundle 瘦身：Excalidraw 拉入 mermaid/katex/cytoscape（多为按需懒加载），评估关闭 TTD/mermaid 特性
 - BUG
+   - [x] 生成的文字像素级截断（"`_ogits → Softma›`"），点一下才正常 —— **字体加载竞态**：标签随 `updateScene` 加入时手写字体 Excalifont 尚未载完，Excalidraw 用 fallback 字体测量+决定换行，渲染时换成真(更宽)字体 → 溢出被裁；Excalidraw 只在字体**未载→已载跃迁**时自动重测，而该字体常已为 UI 提前载入(无跃迁) → 卡到点击强制重测。修复：`ensureCanvasFonts()` 在端口创建(editor 一就绪)时主动 `document.fonts.load` 预载 Excalifont + Xiaolai(CJK)；模型一次往返(秒级)远长于本地字体取用，到 `apply()` 时已就绪、首次测量即正确。待实测确认
    - [x] 生成的文本只有 `\n` 而没有换行 —— 模型在 JSON 工具参数里把换行**过度转义**成 `\\n`，`JSON.parse` 后是"反斜杠+n"两个字符，Excalidraw 原样渲染（tldraw 时代 `toRichText` 恰好吃掉了所以没暴露）。修复：`decodeText()` 把字面量 `\n`/`\r\n`/`\t` 还原为真字符，作用于 create_geo/create_text/connect_shapes/update_text 的文本（真换行符不匹配该正则、不受影响）。待下次生成实测确认
    - [x] move_shape 后绑定箭头不跟随 —— `updateScene` 绕过 Excalidraw 的绑定重算管线（与箭头注入同类问题），程序化改坐标不触发 `updateBoundElements`。修复：move_shape 记下被移动的 id，后处理里对"绑定到被移动形状的箭头"用 `reflowArrow` 自算边到边端点重排（与初始创建同一套 `edgePoint` 逻辑，不依赖管线）。代价：手动弯折会被拉直（模型移动场景可接受）。用户手动拖动不受影响（Excalidraw 原生管线照常）
      - [x] 箭头压在外框线上 —— `GAP` 2→8，端点离形状边更明显（创建/移动同源，一处改两处生效）
