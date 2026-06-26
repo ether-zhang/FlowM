@@ -333,9 +333,28 @@ export function routeBoundArrow(opts: {
   obstacles: LayoutBox[]
   gap: number
   clearance?: number
+  /** Perpendicular bow for an arrow that shares its endpoint pair with siblings
+   *  (parallel/antiparallel edges), so they — and their labels — don't overlap. */
+  offset?: number
 }): ArrowRoute {
   const { startShape, endShape, start, end, obstacles, gap } = opts
+  const offset = opts.offset ?? 0
   const clearance = opts.clearance ?? CLEARANCE
+
+  // Sibling edge between the same pair: bow by the assigned offset at the midpoint.
+  // The offset is pre-signed for the arrow's direction (see assignParallelOffsets),
+  // so antiparallel edges land on opposite physical sides instead of coinciding.
+  if (offset !== 0) {
+    const dx = end.x - start.x
+    const dy = end.y - start.y
+    const L = Math.hypot(dx, dy) || 1
+    const base = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+    const mid = { x: base.x - (dy / L) * offset, y: base.y + (dx / L) * offset }
+    const s = startShape ? solveEndpoint(startShape, 0, gap, mid) : start
+    const e = endShape ? solveEndpoint(endShape, 0, gap, mid) : end
+    return { start: s, end: e, mid }
+  }
+
   const blockers = obstacles.filter((o) => segmentHitsBox(start, end, o, clearance))
   if (blockers.length === 0) return { start, end, mid: null }
 
@@ -374,4 +393,42 @@ export function routeBoundArrow(opts: {
   const s = startShape ? solveEndpoint(startShape, 0, gap, mid) : start
   const e = endShape ? solveEndpoint(endShape, 0, gap, mid) : end
   return { start: s, end: e, mid }
+}
+
+export interface PairedEdge {
+  id: string
+  from: string
+  to: string
+}
+
+/**
+ * Spread arrows that share an endpoint pair so they (and their labels) don't sit on
+ * top of each other. Edges are grouped by their *unordered* pair, so a bidirectional
+ * loop (a→b and b→a) counts as one group of two. Each gets a perpendicular bow
+ * `offset` for `routeBoundArrow`; the value is signed against a canonical pair
+ * direction so antiparallel edges land on opposite physical sides (not the same one).
+ * A lone edge gets 0 (stays straight). Returns id → offset.
+ */
+export function assignParallelOffsets(edges: PairedEdge[], step = 48): Map<string, number> {
+  const groups = new Map<string, PairedEdge[]>()
+  for (const e of edges) {
+    const key = e.from < e.to ? `${e.from} ${e.to}` : `${e.to} ${e.from}`
+    const g = groups.get(key)
+    if (g) g.push(e)
+    else groups.set(key, [e])
+  }
+  const out = new Map<string, number>()
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      out.set(group[0].id, 0)
+      continue
+    }
+    const sorted = [...group].sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+    const n = sorted.length
+    sorted.forEach((e, j) => {
+      const side = (j - (n - 1) / 2) * step // distinct physical side along the canonical normal
+      out.set(e.id, e.from < e.to ? side : -side) // un-flip for reversed edges
+    })
+  }
+  return out
 }

@@ -13,7 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { routeBoundArrow, labelBoxSize, type LayoutBox, type SpacingEdge } from './layout'
+import { routeBoundArrow, labelBoxSize, assignParallelOffsets, type LayoutBox, type SpacingEdge, type PairedEdge } from './layout'
 import { runPasses, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
@@ -197,7 +197,11 @@ function reflowArrow(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawEl
  * arrow's own two endpoints. Same stance as reflowArrow — model ops own
  * bound-arrow geometry. Routing math lives in layout.ts (pure, unit-tested).
  */
-function routeArrowElement(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawElement>): ExcalidrawElement {
+function routeArrowElement(
+  a: ExcalidrawArrowElement,
+  lookup: Map<string, ExcalidrawElement>,
+  offset = 0,
+): ExcalidrawElement {
   const startEl = a.startBinding ? lookup.get(a.startBinding.elementId) : undefined
   const endEl = a.endBinding ? lookup.get(a.endBinding.elementId) : undefined
   if (!startEl && !endEl) return a
@@ -213,7 +217,7 @@ function routeArrowElement(a: ExcalidrawArrowElement, lookup: Map<string, Excali
     obstacles.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false })
   }
 
-  const r = routeBoundArrow({ startShape: startEl, endShape: endEl, start, end, obstacles, gap: GAP })
+  const r = routeBoundArrow({ startShape: startEl, endShape: endEl, start, end, obstacles, gap: GAP, offset })
   if (!r.mid) {
     if (a.points.length === 2) return a // already straight
     return newElementWith(a, {
@@ -457,6 +461,15 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         // are pinned so we never shuffle untouched content.
         const movable = new Set<string>([...createdIds, ...movedIds])
         const displaced = new Set<string>(movedIds)
+        // Spread arrows that share an endpoint pair (parallel/antiparallel) so they and
+        // their labels don't overlap. Bindings don't move, so compute this once.
+        const boundEdges: PairedEdge[] = []
+        for (const el of combined.values()) {
+          if (el.type !== 'arrow') continue
+          const ar = el as ExcalidrawArrowElement
+          if (ar.startBinding && ar.endBinding) boundEdges.push({ id: ar.id, from: ar.startBinding.elementId, to: ar.endBinding.elementId })
+        }
+        const arrowOffsets = assignParallelOffsets(boundEdges)
         const ctx: PassContext = {
           createdCount: createdIds.size,
           // Boxes (geo + standalone text); bound labels follow their container.
@@ -513,12 +526,13 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             }
             return out
           },
-          // Straight edge-to-edge endpoints, then bow around any obstacle.
+          // Straight edge-to-edge endpoints, then bow (around obstacles, or by the
+          // same-pair offset so parallel/antiparallel edges don't overlap).
           updateArrow: (id) => {
             const el = combined.get(id)
             if (!el || el.type !== 'arrow') return
             const straight = reflowArrow(el as ExcalidrawArrowElement, combined) as ExcalidrawArrowElement
-            combined.set(id, routeArrowElement(straight, combined))
+            combined.set(id, routeArrowElement(straight, combined, arrowOffsets.get(id) ?? 0))
           },
         }
         runPasses(ctx)

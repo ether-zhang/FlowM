@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, type LayoutBox } from './layout'
+import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, assignParallelOffsets, type LayoutBox } from './layout'
 import { type Shape } from './bindingGeometry'
 
 const box = (id: string, x: number, y: number, w: number, h: number, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
@@ -100,6 +100,36 @@ describe('routeBoundArrow (59 — bow only around a blocker)', () => {
     expect(r.mid).not.toBeNull()
     // start re-solved against the bend: still outside the shape (gap away), not the raw input
     expect(r.start.x).toBeGreaterThan(startShape.x + startShape.width) // right of the rect + gap
+  })
+})
+
+describe('assignParallelOffsets + routeBoundArrow (same-pair separation)', () => {
+  const rect = (x: number, y: number, w: number, h: number): Shape => ({ x, y, width: w, height: h, type: 'rectangle' })
+
+  it('a lone edge gets no offset (stays straight)', () => {
+    expect(assignParallelOffsets([{ id: 'e', from: 'a', to: 'b' }]).get('e')).toBe(0)
+  })
+
+  it('routes an antiparallel loop (a→b, b→a) onto opposite sides', () => {
+    const a = rect(0, 0, 80, 80)
+    const b = rect(300, 0, 80, 80)
+    const offs = assignParallelOffsets([{ id: 'e1', from: 'a', to: 'b' }, { id: 'e2', from: 'b', to: 'a' }])
+    const r1 = routeBoundArrow({ startShape: a, endShape: b, start: { x: 80, y: 40 }, end: { x: 300, y: 40 }, obstacles: [], gap: 8, offset: offs.get('e1')! })
+    const r2 = routeBoundArrow({ startShape: b, endShape: a, start: { x: 300, y: 40 }, end: { x: 80, y: 40 }, obstacles: [], gap: 8, offset: offs.get('e2')! })
+    expect(r1.mid).not.toBeNull()
+    expect(r2.mid).not.toBeNull()
+    expect(Math.sign(r1.mid!.y - 40)).toBe(-Math.sign(r2.mid!.y - 40)) // opposite sides of the line
+  })
+
+  it('spreads two parallel edges onto opposite sides too', () => {
+    const a = rect(0, 0, 80, 80)
+    const b = rect(300, 0, 80, 80)
+    const offs = assignParallelOffsets([{ id: 'e1', from: 'a', to: 'b' }, { id: 'e2', from: 'a', to: 'b' }])
+    const mk = (id: string) =>
+      routeBoundArrow({ startShape: a, endShape: b, start: { x: 80, y: 40 }, end: { x: 300, y: 40 }, obstacles: [], gap: 8, offset: offs.get(id)! })
+    const r1 = mk('e1')
+    const r2 = mk('e2')
+    expect(Math.sign(r1.mid!.y - 40)).toBe(-Math.sign(r2.mid!.y - 40))
   })
 })
 
