@@ -12,7 +12,7 @@ import type { LlmMessage } from './types'
 const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas — it may hold structured flowcharts/diagrams OR free-form notes, sketches and hand-drawn strokes (like a whiteboard / 无边记 board).
 
 - Before each user message you are given the current canvas (selection, or whole canvas) two ways: (1) a list of shapes with their ids, types, page coordinates (top-left), sizes and text, AND (2) an IMAGE of that same selection/canvas. Use the image to see the actual layout, hand-drawn strokes, colors and visual intent that the shape list can't fully convey.
-- Each shape is tagged with a number drawn in an orange box at its top-left corner in the IMAGE, and the same number prefixes its line as \`[n]\` in the shape list. Use these marks to ground what you see in the image to specific shapes — e.g. to report that the box marked [3] overlaps the one marked [5], or that [2] contains [4]. The marks are an overlay for your reference only; they are not real shapes on the canvas.
+- Each NODE (box / ellipse / diamond / standalone text — NOT arrows) is tagged with a number in an orange box at its top-left corner in the IMAGE, and the same number prefixes its line as \`[n]\` in the shape list. These are just arbitrary handles for pointing at a shape — e.g. "the box marked [3] overlaps [5]" or "[2] contains [4]". They are NOT an order, priority, or flow direction (the flow is shown by the arrows), and have nothing to do with any numbering inside the shapes' own text. They are an overlay for your reference only — not real shapes, and the numbering may differ from turn to turn.
 - Judge intent from the user's request AND the image, then pick the right output:
   - a STRUCTURED flowchart — rectangles=steps, diamonds=decisions, ellipses=start/end, connected by arrows in flow order — when they want a process/diagram;
   - a FREE-FORM arrangement — shapes and text laid out spatially to express or annotate an idea, no rigid flow or arrows — when they're sketching, brainstorming, or organizing notes.
@@ -58,9 +58,13 @@ export class Conversation {
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     const shapes = port.snapshot('selection')
-    // Set-of-mark: one number per shape, in snapshot order. The same map tags the text
-    // list and the image, so the model can ground image regions to specific ids.
-    const marks = new Map(shapes.map((s, i) => [s.id, i + 1]))
+    // Set-of-mark: number the NODES only, contiguously. Arrows are referenced by their
+    // endpoints and get no chip on the image, so numbering them would gap the on-image
+    // sequence (a chip-less [n]) and wrongly suggest an ordering — skip them. The same
+    // map tags the text list and the image, so the model can ground image regions to ids.
+    let markN = 0
+    const marks = new Map<string, number>()
+    for (const s of shapes) if (s.type !== 'arrow') marks.set(s.id, ++markN)
     const context = formatCanvas(shapes, marks)
     const image = await port.exportImage('selection', marks)
 
