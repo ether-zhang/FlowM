@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, type LayoutBox } from './layout'
+import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox } from './layout'
 import { solveEndpoint, type Shape, type Pt } from './bindingGeometry'
 
 const box = (id: string, x: number, y: number, w: number, h: number, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
@@ -165,6 +165,33 @@ describe('assignPortFocus (① — multi-port distribution)', () => {
     )
     expect(f.get('e1')).toEqual({ start: 0, end: 0 })
     expect(f.get('e2')).toEqual({ start: 0, end: 0 })
+  })
+
+  it('does not let a bowed (skipped) back-edge crowd a node and slant its clean edge', () => {
+    // a's bottom carries a clean forward edge (a→b) and a back-edge (c→a, bowed past b).
+    // Skipping the back-edge leaves the forward edge alone → stays centre-aimed (straight).
+    const centers = { a: { x: 50, y: 30 }, b: { x: 50, y: 230 }, c: { x: 50, y: 460 } }
+    const edges = [
+      { id: 'fwd', from: 'a', to: 'b' },
+      { id: 'back', from: 'c', to: 'a' },
+    ]
+    const f = assignPortFocus(edges, centerOf(centers), { skip: new Set(['back']) })
+    expect(f.get('fwd')).toEqual({ start: 0, end: 0 })
+    expect(f.get('back')).toEqual({ start: 0, end: 0 })
+  })
+})
+
+describe('bowedEdges (multi-port gate — self-separating edges)', () => {
+  it('flags an edge whose straight path crosses a third box', () => {
+    const boxes = [box('a', 0, 0, 100, 60), box('mid', 0, 200, 100, 60), box('b', 0, 400, 100, 60)]
+    const skip = bowedEdges([{ id: 'e', from: 'a', to: 'b' }], boxes)
+    expect(skip.has('e')).toBe(true)
+  })
+
+  it('does not flag a clear adjacent edge', () => {
+    const boxes = [box('a', 0, 0, 100, 60), box('b', 0, 200, 100, 60)]
+    const skip = bowedEdges([{ id: 'e', from: 'a', to: 'b' }], boxes)
+    expect(skip.has('e')).toBe(false)
   })
 })
 

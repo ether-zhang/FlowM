@@ -13,7 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
+import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
@@ -477,11 +477,24 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         const arrowOffsets = assignParallelOffsets(boundEdges)
         // Fan apart arrows that crowd one side of a shape (different pairs sharing a
         // node) by assigning each end a small binding focus. Centre lookup spans the
-        // whole scene so a new arrow re-fans the side's pre-existing arrows too.
-        const portFocus = assignPortFocus(boundEdges, (id) => {
-          const el = combined.get(id)
-          return el ? center(el) : undefined
-        })
+        // whole scene so a new arrow re-fans the side's pre-existing arrows too. Edges
+        // that will be bowed around an obstacle separate on their own, so exclude them
+        // (else a back-edge looping past a node would slant that node's clean edges).
+        const portBoxes: LayoutBox[] = []
+        for (const el of combined.values()) {
+          if (el.type === 'arrow') continue
+          if (isText(el) && el.containerId) continue
+          portBoxes.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false })
+        }
+        const skip = bowedEdges(boundEdges, portBoxes)
+        const portFocus = assignPortFocus(
+          boundEdges,
+          (id) => {
+            const el = combined.get(id)
+            return el ? center(el) : undefined
+          },
+          { skip },
+        )
         const ctx: PassContext = {
           createdCount: createdIds.size,
           // Boxes (geo + standalone text); bound labels follow their container.

@@ -445,6 +445,32 @@ export interface PortFocus {
   end: number
 }
 
+/**
+ * Ids of edges whose straight centre-to-centre path crosses a third box. These get
+ * bowed away by routeBoundArrow and so separate on their own — port allocation must
+ * NOT count them as crowding a side, or it would needlessly fan (and slant) the clean
+ * straight edges that share that side. Mirrors routeBoundArrow's obstacle test.
+ */
+export function bowedEdges(edges: PairedEdge[], boxes: LayoutBox[]): Set<string> {
+  const byId = new Map(boxes.map((b) => [b.id, b]))
+  const out = new Set<string>()
+  for (const e of edges) {
+    const a = byId.get(e.from)
+    const b = byId.get(e.to)
+    if (!a || !b) continue
+    const pa = { x: a.x + a.w / 2, y: a.y + a.h / 2 }
+    const pb = { x: b.x + b.w / 2, y: b.y + b.h / 2 }
+    for (const o of boxes) {
+      if (o.id === e.from || o.id === e.to) continue
+      if (segmentHitsBox(pa, pb, o, CLEARANCE)) {
+        out.add(e.id)
+        break
+      }
+    }
+  }
+  return out
+}
+
 /** Within-side offset of an azimuth (radians) from a side's outward axis, in degrees. */
 function sideOffset(theta: number, side: number): number {
   let d = (theta * 180) / Math.PI - side * 90
@@ -465,15 +491,18 @@ function sideOffset(theta: number, side: number): number {
  * without crossing. A side with a lone end keeps focus 0 — its endpoint sits at the
  * exact edge midpoint where our outline math is most accurate. Arrows that share an
  * unordered pair (a↔b more than once) are left to assignParallelOffsets and skipped
- * here, so the two mechanisms never fight over the same arrows. Returns id → PortFocus.
+ * here, so the two mechanisms never fight over the same arrows. Edges in `opts.skip`
+ * (those that will be bowed around an obstacle — see bowedEdges) are left out entirely:
+ * a bowed arrow separates on its own and must not crowd a side. Returns id → PortFocus.
  */
 export function assignPortFocus(
   edges: PairedEdge[],
   center: (id: string) => Pt | undefined,
-  opts: { step?: number; max?: number } = {},
+  opts: { step?: number; max?: number; skip?: Set<string> } = {},
 ): Map<string, PortFocus> {
   const step = opts.step ?? 0.3
   const max = opts.max ?? 0.6
+  const skip = opts.skip
   const out = new Map<string, PortFocus>()
   for (const e of edges) out.set(e.id, { start: 0, end: 0 })
 
@@ -495,6 +524,7 @@ export function assignPortFocus(
     else byShape.set(shape, [inc])
   }
   for (const e of edges) {
+    if (skip?.has(e.id)) continue
     if ((pairCount.get(pairKey(e.from, e.to)) ?? 0) > 1) continue
     const cf = center(e.from)
     const ct = center(e.to)
