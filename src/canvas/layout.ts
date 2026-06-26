@@ -336,9 +336,15 @@ export function routeBoundArrow(opts: {
   /** Perpendicular bow for an arrow that shares its endpoint pair with siblings
    *  (parallel/antiparallel edges), so they — and their labels — don't overlap. */
   offset?: number
+  /** Binding focus per end (see assignPortFocus); endpoints re-solved against a bend
+   *  must use the same focus the binding stores, or they'd snap back to centre. */
+  startFocus?: number
+  endFocus?: number
 }): ArrowRoute {
   const { startShape, endShape, start, end, obstacles, gap } = opts
   const offset = opts.offset ?? 0
+  const sf = opts.startFocus ?? 0
+  const ef = opts.endFocus ?? 0
   const clearance = opts.clearance ?? CLEARANCE
 
   // Sibling edge between the same pair: bow by the assigned offset at the midpoint.
@@ -350,8 +356,8 @@ export function routeBoundArrow(opts: {
     const L = Math.hypot(dx, dy) || 1
     const base = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
     const mid = { x: base.x - (dy / L) * offset, y: base.y + (dx / L) * offset }
-    const s = startShape ? solveEndpoint(startShape, 0, gap, mid) : start
-    const e = endShape ? solveEndpoint(endShape, 0, gap, mid) : end
+    const s = startShape ? solveEndpoint(startShape, sf, gap, mid) : start
+    const e = endShape ? solveEndpoint(endShape, ef, gap, mid) : end
     return { start: s, end: e, mid }
   }
 
@@ -390,8 +396,8 @@ export function routeBoundArrow(opts: {
   const mid = { x: base.x + n.x * off, y: base.y + n.y * off }
 
   // Re-aim bound endpoints at the bend (Excalidraw recomputes ends from points[1]).
-  const s = startShape ? solveEndpoint(startShape, 0, gap, mid) : start
-  const e = endShape ? solveEndpoint(endShape, 0, gap, mid) : end
+  const s = startShape ? solveEndpoint(startShape, sf, gap, mid) : start
+  const e = endShape ? solveEndpoint(endShape, ef, gap, mid) : end
   return { start: s, end: e, mid }
 }
 
@@ -429,6 +435,94 @@ export function assignParallelOffsets(edges: PairedEdge[], step = 48): Map<strin
       const side = (j - (n - 1) / 2) * step // distinct physical side along the canonical normal
       out.set(e.id, e.from < e.to ? side : -side) // un-flip for reversed edges
     })
+  }
+  return out
+}
+
+/** Binding focus for an arrow's two ends (0 = aim at the shape centre). */
+export interface PortFocus {
+  start: number
+  end: number
+}
+
+/** Within-side offset of an azimuth (radians) from a side's outward axis, in degrees. */
+function sideOffset(theta: number, side: number): number {
+  let d = (theta * 180) / Math.PI - side * 90
+  while (d > 180) d -= 360
+  while (d < -180) d += 360
+  return d
+}
+
+/**
+ * Distribute the binding focus of arrows that crowd the same side of a shape, so
+ * their endpoints fan out along that edge instead of piling onto one contact point.
+ *
+ * Excalidraw stores where a bound arrow meets a shape as a scalar `focus` (0 = centre;
+ * ±|focus| slides the contact toward a corner — see determineFocusPoint in
+ * bindingGeometry). For every shape we bucket its incident arrow-ends by which side
+ * they exit (the azimuth of the far shape), and on any side carrying ≥2 ends assign
+ * evenly-spaced focus values centred on 0 and ordered along the edge, so the fan opens
+ * without crossing. A side with a lone end keeps focus 0 — its endpoint sits at the
+ * exact edge midpoint where our outline math is most accurate. Arrows that share an
+ * unordered pair (a↔b more than once) are left to assignParallelOffsets and skipped
+ * here, so the two mechanisms never fight over the same arrows. Returns id → PortFocus.
+ */
+export function assignPortFocus(
+  edges: PairedEdge[],
+  center: (id: string) => Pt | undefined,
+  opts: { step?: number; max?: number } = {},
+): Map<string, PortFocus> {
+  const step = opts.step ?? 0.3
+  const max = opts.max ?? 0.6
+  const out = new Map<string, PortFocus>()
+  for (const e of edges) out.set(e.id, { start: 0, end: 0 })
+
+  // Skip edges whose unordered pair occurs more than once — assignParallelOffsets
+  // separates those (parallel/antiparallel) by bowing, not by moving the endpoint.
+  const pairKey = (a: string, b: string) => (a < b ? `${a} ${b}` : `${b} ${a}`)
+  const pairCount = new Map<string, number>()
+  for (const e of edges) pairCount.set(pairKey(e.from, e.to), (pairCount.get(pairKey(e.from, e.to)) ?? 0) + 1)
+
+  interface Inc {
+    id: string
+    end: 'start' | 'end'
+    theta: number
+  }
+  const byShape = new Map<string, Inc[]>()
+  const add = (shape: string, inc: Inc) => {
+    const list = byShape.get(shape)
+    if (list) list.push(inc)
+    else byShape.set(shape, [inc])
+  }
+  for (const e of edges) {
+    if ((pairCount.get(pairKey(e.from, e.to)) ?? 0) > 1) continue
+    const cf = center(e.from)
+    const ct = center(e.to)
+    if (!cf || !ct) continue
+    add(e.from, { id: e.id, end: 'start', theta: Math.atan2(ct.y - cf.y, ct.x - cf.x) })
+    add(e.to, { id: e.id, end: 'end', theta: Math.atan2(cf.y - ct.y, cf.x - ct.x) })
+  }
+
+  for (const incs of byShape.values()) {
+    const sides = new Map<number, Inc[]>()
+    for (const inc of incs) {
+      const deg = ((inc.theta * 180) / Math.PI + 360) % 360
+      const side = Math.round(deg / 90) % 4 // 0 right · 1 bottom · 2 left · 3 top
+      const list = sides.get(side)
+      if (list) list.push(inc)
+      else sides.set(side, [inc])
+    }
+    for (const [side, group] of sides) {
+      if (group.length < 2) continue
+      group.sort((a, b) => sideOffset(a.theta, side) - sideOffset(b.theta, side))
+      const n = group.length
+      group.forEach((inc, j) => {
+        const f = Math.max(-max, Math.min(max, (j - (n - 1) / 2) * step))
+        const slot = out.get(inc.id)!
+        if (inc.end === 'start') slot.start = f
+        else slot.end = f
+      })
+    }
   }
   return out
 }

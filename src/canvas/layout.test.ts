@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, assignParallelOffsets, type LayoutBox } from './layout'
-import { type Shape } from './bindingGeometry'
+import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, type LayoutBox } from './layout'
+import { solveEndpoint, type Shape, type Pt } from './bindingGeometry'
 
 const box = (id: string, x: number, y: number, w: number, h: number, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
 
@@ -130,6 +130,41 @@ describe('assignParallelOffsets + routeBoundArrow (same-pair separation)', () =>
     const r1 = mk('e1')
     const r2 = mk('e2')
     expect(Math.sign(r1.mid!.y - 40)).toBe(-Math.sign(r2.mid!.y - 40))
+  })
+})
+
+describe('assignPortFocus (① — multi-port distribution)', () => {
+  const T: Shape = { x: 0, y: 0, width: 100, height: 60, type: 'rectangle' }
+  const centerOf = (m: Record<string, Pt>) => (id: string) => m[id]
+
+  it('leaves a lone edge centre-aimed (focus 0 both ends)', () => {
+    const f = assignPortFocus([{ id: 'e', from: 'a', to: 'b' }], centerOf({ a: { x: 0, y: 0 }, b: { x: 0, y: 200 } }))
+    expect(f.get('e')).toEqual({ start: 0, end: 0 })
+  })
+
+  it('fans three edges crowding one side onto distinct contact points', () => {
+    // three sources stacked directly below t → identical azimuth; centre-aimed (focus 0)
+    // all three would meet t's bottom edge at the same x≈50. Port focus must spread them.
+    const centers = { t: { x: 50, y: 30 }, s1: { x: 50, y: 200 }, s2: { x: 50, y: 400 }, s3: { x: 50, y: 600 } }
+    const edges = [
+      { id: 'e1', from: 's1', to: 't' },
+      { id: 'e2', from: 's2', to: 't' },
+      { id: 'e3', from: 's3', to: 't' },
+    ]
+    const focus = assignPortFocus(edges, centerOf(centers))
+    const contactX = (id: string, src: Pt) => solveEndpoint(T, focus.get(id)!.end, 8, src).x
+    const xs = [contactX('e1', centers.s1), contactX('e2', centers.s2), contactX('e3', centers.s3)]
+    expect(new Set(xs.map((x) => Math.round(x))).size).toBe(3) // three distinct contact points
+    expect(xs[1]).toBeCloseTo(50, 0) // the middle slot stays centre-aimed
+  })
+
+  it('leaves same-pair arrows to assignParallelOffsets (focus 0)', () => {
+    const f = assignPortFocus(
+      [{ id: 'e1', from: 'a', to: 'b' }, { id: 'e2', from: 'a', to: 'b' }],
+      centerOf({ a: { x: 0, y: 0 }, b: { x: 0, y: 200 } }),
+    )
+    expect(f.get('e1')).toEqual({ start: 0, end: 0 })
+    expect(f.get('e2')).toEqual({ start: 0, end: 0 })
   })
 })
 

@@ -13,7 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { routeBoundArrow, labelBoxSize, assignParallelOffsets, type LayoutBox, type SpacingEdge, type PairedEdge } from './layout'
+import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
@@ -153,17 +153,21 @@ function computeUnboundArrow(
  * manual equivalent of updateBoundElements (same faithful math, see
  * bindingGeometry.ts).
  *
- * Excalidraw OWNS focus/gap and stores its own derived focus (often ≠0, aiming the
- * arrow toward a shape corner). We deliberately RESET both ends to focus=0 / gap=GAP
- * (centre-aimed) and write a matching binding, for two reasons: (1) a centre-aimed
- * endpoint lands on the middle of an edge, far from rounded corners, where our
- * outline math is exact — honouring a corner-ward focus would route the tip onto the
- * rounded corner where our straight-edge approximation is off by many px; (2) focus
- * is not re-derived on a plain move/nudge, so writing focus=0 makes the next native
- * recompute also aim at centre and reproduce our geometry → no jump. A free end keeps
- * its current point. Collapses any manual mid-bend to a straight line (fine for moves).
+ * Excalidraw OWNS focus/gap and stores its own derived focus. We write the focus
+ * OURSELVES: by default 0 (centre-aimed) so the endpoint lands at the middle of an
+ * edge, far from rounded corners where our outline math is exact; but when a shape
+ * carries several arrows crowding one side, the caller passes a small assigned
+ * `focus` per end (see assignPortFocus) to fan their contact points apart. Either
+ * way we (a) solve the endpoint with that exact focus and (b) write the same focus
+ * into the binding, so the value isn't re-derived on a plain move/nudge and the next
+ * native recompute reproduces our geometry → no jump. A free end keeps its current
+ * point. Collapses any manual mid-bend to a straight line (fine for moves).
  */
-function reflowArrow(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawElement>): ExcalidrawElement {
+function reflowArrow(
+  a: ExcalidrawArrowElement,
+  lookup: Map<string, ExcalidrawElement>,
+  focus: PortFocus = { start: 0, end: 0 },
+): ExcalidrawElement {
   const startEl = a.startBinding ? lookup.get(a.startBinding.elementId) : undefined
   const endEl = a.endBinding ? lookup.get(a.endBinding.elementId) : undefined
   if (!startEl && !endEl) return a
@@ -171,8 +175,8 @@ function reflowArrow(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawEl
   const startFree = { x: a.x, y: a.y }
   const endFree = { x: a.x + last[0], y: a.y + last[1] }
   const { start, end } = solveArrowEndpoints({
-    start: startEl ? { shape: startEl, focus: 0, gap: GAP } : undefined,
-    end: endEl ? { shape: endEl, focus: 0, gap: GAP } : undefined,
+    start: startEl ? { shape: startEl, focus: focus.start, gap: GAP } : undefined,
+    end: endEl ? { shape: endEl, focus: focus.end, gap: GAP } : undefined,
     curStart: startEl ? center(startEl) : startFree,
     curEnd: endEl ? center(endEl) : endFree,
   })
@@ -183,10 +187,10 @@ function reflowArrow(a: ExcalidrawArrowElement, lookup: Map<string, ExcalidrawEl
       [0, 0],
       [end.x - start.x, end.y - start.y],
     ] as ExcalidrawArrowElement['points'],
-    // Reset the bindings to match the centre-aimed geometry we just wrote, so the
-    // native pipeline reproduces it instead of snapping back to a stored corner-focus.
-    ...(a.startBinding ? { startBinding: { ...a.startBinding, focus: 0, gap: GAP } } : {}),
-    ...(a.endBinding ? { endBinding: { ...a.endBinding, focus: 0, gap: GAP } } : {}),
+    // Write the bindings to match the focus we just solved with, so the native
+    // pipeline reproduces this geometry instead of snapping back to a stored focus.
+    ...(a.startBinding ? { startBinding: { ...a.startBinding, focus: focus.start, gap: GAP } } : {}),
+    ...(a.endBinding ? { endBinding: { ...a.endBinding, focus: focus.end, gap: GAP } } : {}),
   })
 }
 
@@ -201,6 +205,7 @@ function routeArrowElement(
   a: ExcalidrawArrowElement,
   lookup: Map<string, ExcalidrawElement>,
   offset = 0,
+  focus: PortFocus = { start: 0, end: 0 },
 ): ExcalidrawElement {
   const startEl = a.startBinding ? lookup.get(a.startBinding.elementId) : undefined
   const endEl = a.endBinding ? lookup.get(a.endBinding.elementId) : undefined
@@ -217,7 +222,7 @@ function routeArrowElement(
     obstacles.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false })
   }
 
-  const r = routeBoundArrow({ startShape: startEl, endShape: endEl, start, end, obstacles, gap: GAP, offset })
+  const r = routeBoundArrow({ startShape: startEl, endShape: endEl, start, end, obstacles, gap: GAP, offset, startFocus: focus.start, endFocus: focus.end })
   if (!r.mid) {
     if (a.points.length === 2) return a // already straight
     return newElementWith(a, {
@@ -470,6 +475,13 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
           if (ar.startBinding && ar.endBinding) boundEdges.push({ id: ar.id, from: ar.startBinding.elementId, to: ar.endBinding.elementId })
         }
         const arrowOffsets = assignParallelOffsets(boundEdges)
+        // Fan apart arrows that crowd one side of a shape (different pairs sharing a
+        // node) by assigning each end a small binding focus. Centre lookup spans the
+        // whole scene so a new arrow re-fans the side's pre-existing arrows too.
+        const portFocus = assignPortFocus(boundEdges, (id) => {
+          const el = combined.get(id)
+          return el ? center(el) : undefined
+        })
         const ctx: PassContext = {
           createdCount: createdIds.size,
           // Boxes (geo + standalone text); bound labels follow their container.
@@ -511,16 +523,19 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               displaced.add(id)
             }
           },
-          // Arrows touching a displaced shape (and every arrow created this batch).
+          // Arrows created this batch, touching a displaced shape, or assigned a port
+          // focus (so an existing arrow re-fans when a new sibling crowds its side).
           arrowsToUpdate: () => {
             const out: string[] = []
             for (const el of combined.values()) {
               if (el.type !== 'arrow') continue
               const a = el as ExcalidrawArrowElement
+              const f = portFocus.get(a.id)
               if (
                 createdArrowIds.has(a.id) ||
                 (a.startBinding && displaced.has(a.startBinding.elementId)) ||
-                (a.endBinding && displaced.has(a.endBinding.elementId))
+                (a.endBinding && displaced.has(a.endBinding.elementId)) ||
+                (f && (f.start !== 0 || f.end !== 0))
               )
                 out.push(a.id)
             }
@@ -531,8 +546,9 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
           updateArrow: (id) => {
             const el = combined.get(id)
             if (!el || el.type !== 'arrow') return
-            const straight = reflowArrow(el as ExcalidrawArrowElement, combined) as ExcalidrawArrowElement
-            combined.set(id, routeArrowElement(straight, combined, arrowOffsets.get(id) ?? 0))
+            const focus = portFocus.get(id) ?? { start: 0, end: 0 }
+            const straight = reflowArrow(el as ExcalidrawArrowElement, combined, focus) as ExcalidrawArrowElement
+            combined.set(id, routeArrowElement(straight, combined, arrowOffsets.get(id) ?? 0, focus))
           },
         }
         runPasses(ctx)

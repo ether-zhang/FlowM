@@ -56,9 +56,10 @@ Windows、macOS、iPad。
         - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
-        - [ ] 多输入/输出端点端口分配 + 轻度弯曲（部分完成）：shape 挂多条进/出箭头时全瞄中心 → 挤在同一边界点；改为按对方方位把各边分到周边**不同端口**（focus≠0 求解器 `solveEndpoint`/`determineFocusPoint` 已支持，**写入侧待接**），重合/返回边轻弯错开，label 随各自边走 + 法向小偏移离开节点。介于"中心瞄准+单弓"与正交寻路之间；**不做 B 版**（elbow/全局寻路太深）。本质是"否，继续生成"那类标签贴节点问题的根治
+        - [x] 多输入/输出端点端口分配 + 轻度弯曲：shape 挂多条进/出箭头时全瞄中心 → 挤在同一边界点；改为按对方方位把各边分到周边**不同端口**（focus≠0 求解器 `solveEndpoint`/`determineFocusPoint` 已支持，**写入侧已接** `assignPortFocus`），重合/返回边轻弯错开（`assignParallelOffsets`），label 随各自边走。介于"中心瞄准+单弓"与正交寻路之间；**不做 B 版**（elbow/全局寻路太深）。本质是"否，继续生成"那类标签贴节点问题的根治
             - [x] 同对/反向边分离：`assignParallelOffsets`（按**无序端点对**分组、按规范方向定号使**反向边落两侧**而非同侧）+ `routeBoundArrow` 的 `offset` 在中点垂直起弓（端点对弓点重解、不动点照旧）；port 每批预算各箭头偏移传入 `updateArrow`。治了 `boundary↔buffer` 那种双向箭头+标签重叠（"拼接否截断ken"乱码）。单测 3 例
-            - [ ] **仍待**：一个 shape 上**多条不同对**的出/入边按方位分端口（focus≠0 写入侧）；`offset` 暂定值 48、未按 label 尺寸自适应；offset 路径暂未叠加绕障
+            - [x] 多端口分配：一个 shape 上**多条不同对**的出/入边按方位分端口 —— 纯函数 `assignPortFocus`（`layout.ts`）：每个 shape 把入射箭头端按出口**侧**（右/下/左/上，按对方方位 90° 扇区）分桶，**≥2 条挤同一侧**才给各端均匀分配小 `focus`（绕 0 对称、按沿边偏角排序使扇形不交叉），独占一侧仍 focus 0（落边中点、轮廓数学最准）；**同对/反向边跳过**（交给 `assignParallelOffsets`，二者不抢同一批箭头）。写入侧已接：`reflowArrow`/`routeBoundArrow` 都吃 `PortFocus`，端点用该 focus 求解、binding 也写同值（不动点不破，nudge 不跳）；新增一条边会触发同侧旧边一起重扇（centre 查找跨全场景 + `arrowsToUpdate` 纳入带非零 focus 的箭头）。单测 3 例（独占→0、三条挤一侧落点互异、同对→0）
+            - [ ] **仍待**：`focus` step/max 暂定值（0.3/0.6）、未按边数/label 自适应；`offset` 暂定值 48、未按 label 尺寸自适应；offset 路径暂未叠加绕障；diamond/ellipse 侧分桶用 bbox 方位近似
         ~~- [ ] 箭头端点几何自算（edgePoint + computeBoundArrow），也许可以用shape自带初始指明端点优化~~
         - [ ] 提高模型操作画布的精准度，脚本修改大模型返回的xywh，**一个自动避障与优化排布的脚本也许才是这个模块的核心**?
             - [x] 杠杆2·算而不信：把箭头"系统算、不信模型坐标"泛化到布局——纯函数 `resolveOverlaps`（`layout.ts`：仅修**真重叠**、按最小穿透轴推开留 margin、仅作用于本批新建/移动形状，pinned 不动），`apply` 后处理里应用位移并复用 `reflowArrow` 重排受影响箭头。与 `bindingGeometry` 同范式（确定性、留仓库、可测），单测 `layout.test.ts`
