@@ -33,14 +33,27 @@ export interface PassContext {
   updateArrow(id: string): void
 }
 
+/**
+ * Two kinds of pass, by whether it moves/resizes a NODE (see docs/structured-refine.md):
+ *  - 'invariant' (A): only resolves how arrows attach to / route between already-placed
+ *    nodes. Given the model's topology + placement, the geometry is a forced, unique
+ *    value no intent ever objects to (an arrow must touch its shape) → runs blind, always.
+ *  - 'intent' (B): repositions or resizes the nodes themselves. The right answer depends
+ *    on the intended structure (nest vs accident, grid vs free) → must be authorised by
+ *    the model's vision over a declared scope; with no authorisation it FREEZES (no-op).
+ */
+export type PassKind = 'invariant' | 'intent'
+
 export interface LayoutPass {
   readonly name: string
+  readonly kind: PassKind
   run(ctx: PassContext): void
 }
 
 /** Even out spacing — only when new shapes appear (a pure move is left as placed). */
 export const spacingPass: LayoutPass = {
   name: 'spacing',
+  kind: 'intent', // moves nodes → B
   run(ctx) {
     if (ctx.createdCount > 0) ctx.applyMoves(normalizeSpacing(ctx.boxes(), ctx.edges()))
   },
@@ -49,6 +62,7 @@ export const spacingPass: LayoutPass = {
 /** Push any genuinely-overlapping boxes apart. */
 export const avoidPass: LayoutPass = {
   name: 'avoid',
+  kind: 'intent', // moves nodes → B
   run(ctx) {
     ctx.applyMoves(resolveOverlaps(ctx.boxes()))
   },
@@ -57,13 +71,24 @@ export const avoidPass: LayoutPass = {
 /** Re-solve + route every arrow whose endpoints moved. */
 export const arrowPass: LayoutPass = {
   name: 'arrows',
+  kind: 'invariant', // touches only arrows → A
   run(ctx) {
     for (const id of ctx.arrowsToUpdate()) ctx.updateArrow(id)
   },
 }
 
-/** Order matters: space → clean leftover overlaps → fix arrows last. */
+/**
+ * Order matters: intent passes (B) move nodes first, then the invariant arrow pass (A)
+ * re-attaches arrows to the settled nodes. The eventual gated pipeline runs A on the
+ * model's raw nodes for the first image, gates B on the model's structure declarations,
+ * then A again — see docs/structured-refine.md §2. For now (no gate yet) B runs on the
+ * whole batch as before, so behaviour is unchanged.
+ */
 export const DEFAULT_PASSES: readonly LayoutPass[] = [spacingPass, avoidPass, arrowPass]
+
+/** Passes split by kind, for the gated pipeline to schedule A and B separately. */
+export const INVARIANT_PASSES: readonly LayoutPass[] = DEFAULT_PASSES.filter((p) => p.kind === 'invariant')
+export const INTENT_PASSES: readonly LayoutPass[] = DEFAULT_PASSES.filter((p) => p.kind === 'intent')
 
 export function runPasses(ctx: PassContext, passes: readonly LayoutPass[] = DEFAULT_PASSES): void {
   for (const pass of passes) pass.run(ctx)

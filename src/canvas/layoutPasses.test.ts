@@ -27,13 +27,20 @@ function stubCtx(over: Partial<PassContext> = {}): PassContext & { log: string[]
 describe('runPasses', () => {
   it('runs passes in order', () => {
     const order: string[] = []
-    const p = (name: string): LayoutPass => ({ name, run: () => order.push(name) })
+    const p = (name: string): LayoutPass => ({ name, kind: 'intent', run: () => order.push(name) })
     runPasses(stubCtx(), [p('a'), p('b'), p('c')])
     expect(order).toEqual(['a', 'b', 'c'])
   })
 
   it('DEFAULT_PASSES is space → avoid → arrows', () => {
     expect(DEFAULT_PASSES.map((p) => p.name)).toEqual(['spacing', 'avoid', 'arrows'])
+  })
+
+  it('classifies node-moving passes as intent (B) and arrow-only as invariant (A)', () => {
+    // see docs/structured-refine.md §1: only arrow geometry runs blind; node moves gate.
+    expect(spacingPass.kind).toBe('intent')
+    expect(avoidPass.kind).toBe('intent')
+    expect(arrowPass.kind).toBe('invariant')
   })
 })
 
