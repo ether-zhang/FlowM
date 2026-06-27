@@ -29,7 +29,7 @@ const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user 
 - To connect shapes, give each new shape a short \`ref\` and pass those refs (or existing shape ids from the canvas context) to connect_shapes. You can create and connect in the same response, or connect shapes from earlier turns by their id — arrows bind to their endpoints and follow them when moved either way.
 - For flowcharts: rectangle = step, diamond = decision, ellipse = start/end. Connect with arrows in flow order.
 - Lay flowcharts on a VERTICAL SPINE: the main path (start → steps → the success/"是" branch of each decision → end) runs straight down a single shared column (same x, increasing y), with the terminal/end node placed directly BELOW the last node — not off to one side. Send only the SECONDARY exits sideways: a decision's "否"/failure branch and loop-backs leave from the side and return to the spine, so the main flow reads as one clean top-to-bottom line.
-- After you finish drawing you'll be shown the rendered result ONCE. Use that review to call \`declare_structure\` for any region the framework should lay out precisely (flow / align / grid / contain), and \`move_shape\` to fix clear misplacements; if it already looks right, just reply without tools.
+- After you finish drawing you'll be shown the rendered result ONCE. In that review you MUST call \`declare_structure\` with a \`flow\` for each chain of nodes you connected in sequence (the framework then straightens the column and evens the spacing — do it even if it looks roughly fine), plus grid / align / contain where they apply, and \`move_shape\` to fix clear misplacements.
 - Keep prose brief; let the canvas do the talking.`
 
 const MAX_ITERATIONS = 8
@@ -37,10 +37,10 @@ const MAX_ITERATIONS = 8
 /** Tools the model may call: the canvas ops plus the review-step structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
 
-const REVIEW_PROMPT = `Here is your drawing as it actually rendered, each node tagged with its mark number. Review it ONCE:
-- If a region should be laid out precisely by the framework, call declare_structure — e.g. flow for a chain down a column, align to share a row/column, grid for a matrix, contain for nesting. Reference nodes by their [n] marks.
-- If something is clearly misplaced (e.g. a card flung far off to one side), fix it with move_shape.
-- If it already looks right, just reply briefly with NO tool calls.`
+const REVIEW_PROMPT = `Here is your drawing as it actually rendered, each node tagged with its mark number. Review it ONCE and do BOTH:
+1. DECLARE STRUCTURE (declare_structure): for EVERY chain of nodes you connected in sequence, declare a \`flow\` over its [n] marks — the main spine, and each sub-flow column. Do this even if the chain already looks roughly aligned: the framework will straighten the column and even the spacing far more precisely than your hand-placed coordinates (e.g. a diamond whose centre drifted off the column gets pulled back into line). Also declare grid / align / contain where they apply.
+2. FIX MISPLACEMENTS (move_shape): for anything clearly in the wrong place — a sub-flow flung far from its parent, a node overlapping another.
+Reference nodes by their [n] marks. Reply with NO tool calls only if there is genuinely no chain to declare and nothing misplaced (e.g. a few free-form scribbles).`
 
 interface OpCall {
   id: string

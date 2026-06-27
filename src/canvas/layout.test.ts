@@ -229,6 +229,15 @@ describe('normalizeSpacing (2 — edge-direction gap rhythm)', () => {
     expect(pc.x).toBeCloseTo(pb.x, 6)
   })
 
+  it('snaps a node nudged ~11° off the column back into line (declared-flow alignment)', () => {
+    // the transcript case: a wider diamond whose centre sat 40px (≈11°) right of the
+    // column. The old 9° threshold missed it; a declared flow should straighten it.
+    const a = node('a', 100, 0) // centre x = 150
+    const b = node('b', 100, 200, 180, 60) // centre x = 190 → 40px (~11°) off a's column
+    const moves = normalizeSpacing([a, b], [{ from: 'a', to: 'b' }], { gap: 100 })
+    expect(moves.get('b')!.x + 180 / 2).toBeCloseTo(a.x + a.w / 2, 6) // centre snapped to a's
+  })
+
   it('evens a horizontal chain and aligns the row', () => {
     const a = node('a', 0, 100)
     const b = node('b', 200, 130)

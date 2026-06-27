@@ -35,6 +35,11 @@ export interface LayoutBox {
 const MARGIN = 16
 const CLEARANCE = 10
 const LABEL_PAD = 12
+/** How near an axis (as |sin θ| of the edge direction) a flow edge must be to snap
+ *  straight. normalizeSpacing now runs only on a model-DECLARED flow, where the intent
+ *  is an aligned column/row — so this is generous (~17°): a node the model nudged a bit
+ *  off the column (e.g. a wider diamond) still gets pulled into line. */
+const AXIS_SNAP = 0.3
 
 // --- overlap avoidance (58) ---
 
@@ -251,10 +256,10 @@ export function normalizeSpacing(
       dx /= L
       dy /= L
       // Snap near-axis directions so chains stay straight and aligned.
-      if (Math.abs(dx) < 0.16) {
+      if (Math.abs(dx) < AXIS_SNAP) {
         dx = 0
         dy = dy >= 0 ? 1 : -1
-      } else if (Math.abs(dy) < 0.16) {
+      } else if (Math.abs(dy) < AXIS_SNAP) {
         dy = 0
         dx = dx >= 0 ? 1 : -1
       }
