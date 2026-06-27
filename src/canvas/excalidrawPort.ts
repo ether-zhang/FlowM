@@ -391,7 +391,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         })
     },
 
-    apply(ops: CanvasOp[], scope: LayoutScope | null = null): OpResult[] {
+    async apply(ops: CanvasOp[], scope: LayoutScope | null = null): Promise<OpResult[]> {
       const byId = new Map<string, ExcalidrawElement>()
       for (const el of getNonDeletedElements(api.getSceneElements())) byId.set(el.id, el)
 
@@ -530,10 +530,12 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         ? convertToExcalidrawElements(skeleton, { regenerateIds: false })
         : []
       const createdIds = new Set(created.map((e) => e.id))
-      // Did this batch add any text? (standalone text AND container labels are text
-      // elements in `created`.) If so we re-measure after the fonts settle — see the
-      // post-updateScene re-dispatch below.
-      const addedText = created.some((e) => e.type === 'text')
+      // All text added this batch (standalone text AND container labels are text elements
+      // in `created`) — used below to load exactly the needed glyph subset before drawing.
+      const batchText = created
+        .filter((e) => e.type === 'text')
+        .map((e) => (e as ExcalidrawTextElement).text)
+        .join('')
 
       // Single source of truth for this batch's scene; arrows are added below.
       const combined = new Map<string, ExcalidrawElement>()
@@ -678,22 +680,20 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         runPasses(ctx, INVARIANT_PASSES)
       }
 
-      api.updateScene({ elements: [...combined.values()] })
-
-      // Font-measure race: Excalidraw lazily loads each font's per-character SUBSET only
-      // once text using it is in the scene, and re-measures only when a NEW face finishes
-      // loading. So text we just added may have been laid out against a fallback metric and
-      // render clipped until nudged. Now that the text exists, document.fonts.ready truly
-      // waits for those subset faces; once they settle, re-dispatch the text elements
-      // (fresh objects → bumped version) so Excalidraw re-measures them with the real font.
-      if (addedText && typeof document !== 'undefined' && document.fonts) {
-        document.fonts.ready.then(() => {
-          const refreshed = getNonDeletedElements(api.getSceneElements()).map((el) =>
-            isText(el) || (el.boundElements?.some((b) => b.type === 'text') ?? false) ? newElementWith(el, {}) : el,
-          )
-          api.updateScene({ elements: refreshed })
-        })
+      // Font-measure race: Excalidraw loads each font's per-character SUBSET lazily, and
+      // measures a label's width when it first enters the scene. If the glyphs for this
+      // batch's text aren't loaded yet, it measures against a fallback metric and the real
+      // (wider) font renders clipped until nudged. FontFaceSet.load(font, text) loads
+      // exactly the subset those characters need, so we await it BEFORE updateScene — the
+      // very first measurement is then correct (no clip, and no post-draw reflow flash).
+      if (batchText && typeof document !== 'undefined' && document.fonts) {
+        await Promise.all([
+          document.fonts.load(`20px "Excalifont"`, batchText),
+          document.fonts.load(`20px "Xiaolai"`, batchText),
+        ]).catch(() => [])
       }
+
+      api.updateScene({ elements: [...combined.values()] })
       return results
     },
 
