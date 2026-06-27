@@ -82,6 +82,23 @@ function nodeMarks(shapes: CanvasShape[]): Map<string, number> {
   return m
 }
 
+/**
+ * Grow the review set with the shapes this turn's new arrows attach to — including
+ * pre-existing parents the new work hangs off. Without this, those arrows dangle in
+ * the review image and the model can't judge the new region's placement relative to
+ * what it connects into (e.g. a sub-flow flung far from its parent). One hop only.
+ */
+function withConnectedContext(port: CanvasPort, changed: ReadonlySet<string>): Set<string> {
+  const out = new Set(changed)
+  for (const s of port.snapshot('all')) {
+    if (s.type === 'arrow' && changed.has(s.id)) {
+      if (s.from) out.add(s.from)
+      if (s.to) out.add(s.to)
+    }
+  }
+  return out
+}
+
 export interface SendCallbacks {
   onText(text: string): void
   /** Fired after a batch of canvas ops is applied, with a short human summary. */
@@ -128,10 +145,10 @@ export class Conversation {
     })
 
     const changed = await this.runBuildLoop(port, cb)
-    // One visual-review round over exactly what the model created/changed this turn — not
-    // the whole canvas (which would drown a complex board) nor the user's selection (which
-    // wouldn't include the model's new shapes).
-    if (changed.size > 0) await this.reviewGate(port, cb, changed)
+    // One visual-review round over what the model created/changed this turn (plus the
+    // shapes its new arrows attach to) — not the whole canvas (which would drown a complex
+    // board) nor the user's selection (which wouldn't include the model's new shapes).
+    if (changed.size > 0) await this.reviewGate(port, cb, withConnectedContext(port, changed))
   }
 
   /** Build phase: let the model create/connect/move until it stops calling tools.
