@@ -29,7 +29,7 @@ const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user 
 - To connect shapes, give each new shape a short \`ref\` and pass those refs (or existing shape ids from the canvas context) to connect_shapes. You can create and connect in the same response, or connect shapes from earlier turns by their id — arrows bind to their endpoints and follow them when moved either way.
 - For flowcharts: rectangle = step, diamond = decision, ellipse = start/end. Connect with arrows in flow order.
 - Lay flowcharts on a VERTICAL SPINE: the main path (start → steps → the success/"是" branch of each decision → end) runs straight down a single shared column (same x, increasing y), with the terminal/end node placed directly BELOW the last node — not off to one side. Send only the SECONDARY exits sideways: a decision's "否"/failure branch and loop-backs leave from the side and return to the spine, so the main flow reads as one clean top-to-bottom line.
-- After you finish drawing you'll be shown the rendered result ONCE. In that review you MUST call \`declare_structure\` with a \`flow\` for each chain of nodes you connected in sequence (the framework then straightens the column and evens the spacing — do it even if it looks roughly fine), plus grid / align / contain where they apply, and \`move_shape\` to fix clear misplacements.
+- While drawing, use ONLY the create/connect/move tools — do NOT call \`declare_structure\` yet (it isn't available until the review). When you finish, you'll be shown the rendered result ONCE and asked to review; in THAT step you MUST call \`declare_structure\` with a \`flow\` for each chain of nodes you connected in sequence (the framework then straightens the column and evens the spacing — do it even if it looks roughly fine), plus grid / align / contain where they apply, and \`move_shape\` to fix clear misplacements.
 - Keep prose brief; let the canvas do the talking.`
 
 const MAX_ITERATIONS = 8
@@ -165,7 +165,16 @@ export class Conversation {
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
 
-      const { opCalls } = splitTools(turn.toolCalls)
+      const { opCalls, declareCalls } = splitTools(turn.toolCalls)
+      // The model sometimes calls declare_structure mid-draw (the system prompt asks for
+      // it), but it's only offered/meaningful in the review. EVERY tool call must still get
+      // a result or the next request has a dangling tool_call and the API rejects it.
+      for (const d of declareCalls)
+        this.history.push({
+          role: 'tool',
+          toolCallId: d.id,
+          content: 'Not yet — declare_structure is for the review step, which comes after you finish drawing and see the rendered image. Keep drawing, or stop to trigger the review.',
+        })
       const applied = this.applyOpCalls(port, opCalls, null, changed)
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
