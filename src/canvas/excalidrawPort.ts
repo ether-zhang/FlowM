@@ -440,7 +440,12 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             const from = resolve(op.from)
             const to = resolve(op.to)
             if (!from || !to) {
-              results[i] = { op: op.op, ok: false, error: `unresolved ${op.from} or ${op.to}` }
+              const bad = [!from ? op.from : null, !to ? op.to : null].filter(Boolean).join(', ')
+              results[i] = {
+                op: op.op,
+                ok: false,
+                error: `unresolved endpoint(s): ${bad}. A 'ref' only resolves within the response that created the shape — to connect shapes from an earlier turn, use the real id returned by create_geo (e.g. flowm-…), not the ref.`,
+              }
               break
             }
             // Defer arrow creation to the post-convert pass: the endpoints may be

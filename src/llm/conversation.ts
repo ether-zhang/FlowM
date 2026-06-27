@@ -132,6 +132,15 @@ export class Conversation {
    * we keep it for the turn and pass it to every `apply`. Reset at the start of each send.
    */
   private turnScope: LayoutScope | null = null
+  /**
+   * create-ref → real id, accumulated across THIS user turn. A `ref` (e.g. "p1") is
+   * minted and resolved inside one `apply` batch, so a model that creates in one batch
+   * then connects with that ref a batch later fails (`unresolved p1`). We remember the
+   * refs from every create result this turn and rewrite later batches' connect from/to
+   * to the real id, so the model's shorthand works regardless of batching. A ref created
+   * in the same batch shadows this map (the port resolves those locally). Reset each send.
+   */
+  private refMap = new Map<string, string>()
 
   constructor(adapter: LlmAdapter) {
     this.adapter = adapter
@@ -147,6 +156,7 @@ export class Conversation {
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     this.turnScope = null // declarations are scoped to this user turn; start fresh
+    this.refMap.clear() // create-refs likewise live only within this user turn
     const shapes = port.snapshot('selection')
     const marks = nodeMarks(shapes)
     const context = formatCanvas(shapes, marks)
@@ -232,6 +242,23 @@ export class Conversation {
     return this.applyOpCalls(port, opCalls, this.turnScope, changed)
   }
 
+  /**
+   * Rewrite connect_shapes endpoints that name a ref minted in an EARLIER batch this turn
+   * (now a real id in refMap) — the port only resolves refs created in the current batch.
+   * A ref created in THIS batch shadows the map (left untouched; the port resolves it).
+   */
+  private resolveCrossBatchRefs(ops: CanvasOp[]): CanvasOp[] {
+    const localRefs = new Set<string>()
+    for (const op of ops) if ((op.op === 'create_geo' || op.op === 'create_text') && op.ref) localRefs.add(op.ref)
+    const lookup = (key: string): string | undefined => (localRefs.has(key) ? undefined : this.refMap.get(key))
+    return ops.map((op) => {
+      if (op.op !== 'connect_shapes') return op
+      const from = lookup(op.from)
+      const to = lookup(op.to)
+      return from || to ? { ...op, from: from ?? op.from, to: to ?? op.to } : op
+    })
+  }
+
   /** Apply the op tool calls (with an optional B-pass scope) and push each result back.
    *  A scope with no ops still re-lays out the declared nodes. Collects created/moved ids
    *  into `changed` (for the review). Returns the success count. */
@@ -242,7 +269,10 @@ export class Conversation {
     changed?: Set<string>,
   ): number {
     const validOps: CanvasOp[] = opCalls.filter((c) => c.op).map((c) => c.op as CanvasOp)
-    const results = validOps.length || scope ? port.apply(validOps, scope) : []
+    const resolved = this.resolveCrossBatchRefs(validOps)
+    const results = resolved.length || scope ? port.apply(resolved, scope) : []
+    // Remember this batch's create-refs so a later batch's connect can target them by ref.
+    for (const r of results) if (r.ok && r.id && r.ref) this.refMap.set(r.ref, r.id)
     let vi = 0
     let applied = 0
     for (const c of opCalls) {
