@@ -36,6 +36,38 @@ function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
 }
 
 const isText = (el: ExcalidrawElement): el is ExcalidrawTextElement => el.type === 'text'
+
+/**
+ * Ids of every shape lying within the bounding box of the currently-selected shapes —
+ * the "selection region", not just the selected shapes themselves. The image/list are
+ * for spatial understanding, so showing the region's whole contents (a sub-flow's parent,
+ * a neighbour it must not collide with) lets the model place and judge things in context.
+ * Returns null when nothing is selected, so callers fall back to the whole canvas.
+ * Bound labels are excluded (they follow their container).
+ */
+function selectionRegion(
+  all: readonly ExcalidrawElement[],
+  selected: Record<string, boolean>,
+): Set<string> | null {
+  const sel = all.filter((el) => selected[el.id])
+  if (sel.length === 0) return null
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const el of sel) {
+    minX = Math.min(minX, el.x)
+    minY = Math.min(minY, el.y)
+    maxX = Math.max(maxX, el.x + el.width)
+    maxY = Math.max(maxY, el.y + el.height)
+  }
+  const ids = new Set<string>()
+  for (const el of all) {
+    if (isText(el) && el.containerId) continue
+    if (el.x <= maxX && el.x + el.width >= minX && el.y <= maxY && el.y + el.height >= minY) ids.add(el.id)
+  }
+  return ids
+}
 const center = (el: { x: number; y: number; width: number; height: number }) => ({
   x: el.x + el.width / 2,
   y: el.y + el.height / 2,
@@ -313,7 +345,8 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
     snapshot(scope, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
-      const useSelection = scope === 'selection' && Object.keys(selected).length > 0
+      // Explicit ids win; else a selection means its whole region; else the whole canvas.
+      const keep = ids ?? (scope === 'selection' ? selectionRegion(all, selected) : null)
 
       // A labeled container stores its text as a separate child element
       // (containerId === container.id). Fold those into the container's `text`
@@ -325,7 +358,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
 
       return all
         .filter((el) => !(isText(el) && el.containerId)) // drop bound labels
-        .filter((el) => (ids ? ids.has(el.id) : useSelection ? selected[el.id] : true))
+        .filter((el) => (keep ? keep.has(el.id) : true))
         .map((el): CanvasShape => {
           const shape: CanvasShape = {
             id: el.id,
@@ -644,13 +677,12 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
     async exportImage(scope, marks, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
-      const useSelection = scope === 'selection' && Object.keys(selected).length > 0
-      // Include bound text labels (of the selected/explicit containers) so labels aren't dropped.
-      const elements = ids
-        ? all.filter((el) => ids.has(el.id) || (isText(el) && el.containerId && ids.has(el.containerId)))
-        : useSelection
-          ? all.filter((el) => selected[el.id] || (isText(el) && el.containerId && selected[el.containerId]))
-          : all
+      // Explicit ids win; else a selection means its whole region; else the whole canvas.
+      const keep = ids ?? (scope === 'selection' ? selectionRegion(all, selected) : null)
+      // Include bound text labels (of kept containers) so labels aren't dropped.
+      const elements = keep
+        ? all.filter((el) => keep.has(el.id) || (isText(el) && el.containerId && keep.has(el.containerId)))
+        : all
       if (elements.length === 0) return null
 
       // Set-of-mark: overlay each shape's mark number as ephemeral chip elements so the
