@@ -134,17 +134,16 @@ export class Conversation {
   private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<boolean> {
     let mutated = false
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
+      // declare_structure is NOT offered here — only in the review step, where the marks
+      // it must reference actually exist. Offering it now invites a premature declaration
+      // with fabricated mark numbers (and the model then skips the real review one).
+      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: canvasTools }
       cb.onRequest?.(params, i)
       const turn = await this.adapter.runTurn(params, { onText: cb.onText })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
 
-      const { opCalls, declareCalls } = splitTools(turn.toolCalls)
-      // Structure is declared in the review step; ack any premature declaration and skip it.
-      for (const d of declareCalls)
-        this.history.push({ role: 'tool', toolCallId: d.id, content: 'noted — declare structure in the review step' })
-
+      const { opCalls } = splitTools(turn.toolCalls)
       const applied = this.applyOpCalls(port, opCalls, null)
       if (applied > 0) mutated = true
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
@@ -152,11 +151,13 @@ export class Conversation {
     return mutated
   }
 
-  /** Show the rendered drawing once and let the model declare structure + correct it. */
+  /** Show the rendered drawing once and let the model declare structure + correct it.
+   *  Reviews the WHOLE canvas, not the selection: the shapes the model just created
+   *  aren't in the user's selection, so a 'selection' scope would hide its own work. */
   private async reviewGate(port: CanvasPort, cb: SendCallbacks): Promise<void> {
-    const shapes = port.snapshot('selection')
+    const shapes = port.snapshot('all')
     const marks = nodeMarks(shapes)
-    const image = await port.exportImage('selection', marks)
+    const image = await port.exportImage('all', marks)
     if (!image) return
 
     for (const m of this.history) if (m.role === 'user') delete m.image
