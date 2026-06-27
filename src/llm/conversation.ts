@@ -74,6 +74,14 @@ function splitTools(toolCalls: LlmToolCall[]): { opCalls: OpCall[]; declareCalls
  *  looks at exactly these (not the whole canvas, which would drown a complex board). */
 const REVIEWABLE_OPS = new Set(['create_geo', 'create_text', 'connect_shapes', 'move_shape'])
 
+/** Union two B-pass scopes (the per-batch declaration into the accumulated turn scope). */
+function mergeScope(into: LayoutScope | null, add: LayoutScope): LayoutScope {
+  if (!into) return add
+  for (const id of add.spacing) into.spacing.add(id)
+  for (const id of add.overlap) into.overlap.add(id)
+  return into
+}
+
 /** One set-of-mark number per NODE (arrows aren't marked), in snapshot order. */
 function nodeMarks(shapes: CanvasShape[]): Map<string, number> {
   let n = 0
@@ -115,6 +123,15 @@ export interface SendCallbacks {
 export class Conversation {
   private history: LlmMessage[] = []
   private adapter: LlmAdapter
+  /**
+   * Structure scope declared so far in THIS user turn (build loop + review), accumulated.
+   * A flow's `declare_structure` and the `connect_shapes` forming its edges often land in
+   * different tool batches (e.g. the model declares early, then re-connects with real ids
+   * a turn later because cross-turn refs failed). The B passes only straighten when scope
+   * AND edges are live in the same `apply`, so the authorisation must outlive one batch:
+   * we keep it for the turn and pass it to every `apply`. Reset at the start of each send.
+   */
+  private turnScope: LayoutScope | null = null
 
   constructor(adapter: LlmAdapter) {
     this.adapter = adapter
@@ -129,6 +146,7 @@ export class Conversation {
   }
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
+    this.turnScope = null // declarations are scoped to this user turn; start fresh
     const shapes = port.snapshot('selection')
     const marks = nodeMarks(shapes)
     const context = formatCanvas(shapes, marks)
@@ -208,8 +226,10 @@ export class Conversation {
         content: JSON.stringify({ ok: true, accepted: parsed.relations.length, errors: parsed.errors }),
       })
     }
-    const scope = relations.length ? resolveScope(relations) : null
-    return this.applyOpCalls(port, opCalls, scope, changed)
+    // Accumulate this batch's declarations into the turn scope (it must outlive a single
+    // apply — the edges that make a declared flow straightenable often arrive a batch later).
+    if (relations.length) this.turnScope = mergeScope(this.turnScope, resolveScope(relations))
+    return this.applyOpCalls(port, opCalls, this.turnScope, changed)
   }
 
   /** Apply the op tool calls (with an optional B-pass scope) and push each result back.

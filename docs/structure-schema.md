@@ -46,7 +46,10 @@ interface StructureDecl { relations: StructureRelation[] }
   **由模型自行判断**——有真实结构（链/网格/嵌套）才声明,自由排布**不声明**;不强制 flow。
 - **校验** `parseStructure`（纯函数，protocol 层，类比 `parseOp`）：字段/类型不合法即丢弃并回报，
   不阻断其余。id 是否指向真实形状由 `apply` 兜底（只移动场景里实际存在且在 scope 内的形状）。
-- 声明随建图批次的 scope 传入 `apply`，B 类 pass 当批就按 scope 跑（不必等单独一轮）。
+- 声明的 scope **按整个用户回合累积**（build loop + review），每次 `apply` 都带上，**不是单批次即弃**。
+  因为一条 flow 的 `declare_structure` 与组成它的 `connect_shapes` 常落在不同批次（模型先声明、
+  下一批才用真 id 补连——跨回合的 ref 会失效）。B 类 pass 只有在**同一次 apply 里 scope 与 edges 同时在场**
+  才会拉直，所以授权必须活过单批：留到回合结束，下一批补出边时仍然生效。每次 `send` 开头清空。
 
 ## 4. 默认 & 冲突（关键语义）
 
