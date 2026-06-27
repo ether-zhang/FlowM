@@ -14,7 +14,7 @@ import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/tran
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult, LayoutScope } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
 import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
-import { runPasses, type PassContext } from './layoutPasses'
+import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -621,7 +621,11 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             combined.set(id, routeArrowElement(straight, combined, arrowOffsets.get(id) ?? 0, focus))
           },
         }
-        runPasses(ctx)
+        // Intent passes (B) move nodes only where the model declared structure — never
+        // un-scoped, so the first image (build phase, scope=null) and any free-form region
+        // are left exactly as placed. Invariant passes (A) always run so arrows stay bound.
+        if (scope) runPasses(ctx, INTENT_PASSES)
+        runPasses(ctx, INVARIANT_PASSES)
       }
 
       api.updateScene({ elements: [...combined.values()] })

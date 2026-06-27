@@ -1,13 +1,19 @@
 import {
   type CanvasPort,
+  type CanvasShape,
   type CanvasOp,
+  type LayoutScope,
+  type StructureRelation,
   canvasTools,
+  declareStructureTool,
   formatCanvas,
   parseOp,
+  parseStructure,
+  resolveScope,
   toolCallToOp,
 } from '../protocol'
 import type { LlmAdapter, RunTurnParams } from './adapter'
-import type { LlmMessage } from './types'
+import type { LlmMessage, LlmToolCall } from './types'
 
 const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas — it may hold structured flowcharts/diagrams OR free-form notes, sketches and hand-drawn strokes (like a whiteboard / 无边记 board).
 
@@ -23,9 +29,54 @@ const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user 
 - To connect shapes, give each new shape a short \`ref\` and pass those refs (or existing shape ids from the canvas context) to connect_shapes. You can create and connect in the same response, or connect shapes from earlier turns by their id — arrows bind to their endpoints and follow them when moved either way.
 - For flowcharts: rectangle = step, diamond = decision, ellipse = start/end. Connect with arrows in flow order.
 - Lay flowcharts on a VERTICAL SPINE: the main path (start → steps → the success/"是" branch of each decision → end) runs straight down a single shared column (same x, increasing y), with the terminal/end node placed directly BELOW the last node — not off to one side. Send only the SECONDARY exits sideways: a decision's "否"/failure branch and loop-backs leave from the side and return to the spine, so the main flow reads as one clean top-to-bottom line.
+- After you finish drawing you'll be shown the rendered result ONCE. Use that review to call \`declare_structure\` for any region the framework should lay out precisely (flow / align / grid / contain), and \`move_shape\` to fix clear misplacements; if it already looks right, just reply without tools.
 - Keep prose brief; let the canvas do the talking.`
 
 const MAX_ITERATIONS = 8
+
+/** Tools the model may call: the canvas ops plus the review-step structure declaration. */
+const ALL_TOOLS = [...canvasTools, declareStructureTool]
+
+const REVIEW_PROMPT = `Here is your drawing as it actually rendered, each node tagged with its mark number. Review it ONCE:
+- If a region should be laid out precisely by the framework, call declare_structure — e.g. flow for a chain down a column, align to share a row/column, grid for a matrix, contain for nesting. Reference nodes by their [n] marks.
+- If something is clearly misplaced (e.g. a card flung far off to one side), fix it with move_shape.
+- If it already looks right, just reply briefly with NO tool calls.`
+
+interface OpCall {
+  id: string
+  op?: CanvasOp
+  error?: string
+}
+interface DeclareCall {
+  id: string
+  args: Record<string, unknown>
+}
+
+/** Split a turn's tool calls into canvas ops (validated) and structure declarations. */
+function splitTools(toolCalls: LlmToolCall[]): { opCalls: OpCall[]; declareCalls: DeclareCall[] } {
+  const opCalls: OpCall[] = []
+  const declareCalls: DeclareCall[] = []
+  for (const tc of toolCalls) {
+    if (tc.name === 'declare_structure') {
+      declareCalls.push({ id: tc.id, args: tc.args })
+      continue
+    }
+    try {
+      opCalls.push({ id: tc.id, op: parseOp(toolCallToOp(tc.name, tc.args)) })
+    } catch (e) {
+      opCalls.push({ id: tc.id, error: (e as Error).message })
+    }
+  }
+  return { opCalls, declareCalls }
+}
+
+/** One set-of-mark number per NODE (arrows aren't marked), in snapshot order. */
+function nodeMarks(shapes: CanvasShape[]): Map<string, number> {
+  let n = 0
+  const m = new Map<string, number>()
+  for (const s of shapes) if (s.type !== 'arrow') m.set(s.id, ++n)
+  return m
+}
 
 export interface SendCallbacks {
   onText(text: string): void
@@ -58,13 +109,7 @@ export class Conversation {
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     const shapes = port.snapshot('selection')
-    // Set-of-mark: number the NODES only, contiguously. Arrows are referenced by their
-    // endpoints and get no chip on the image, so numbering them would gap the on-image
-    // sequence (a chip-less [n]) and wrongly suggest an ordering — skip them. The same
-    // map tags the text list and the image, so the model can ground image regions to ids.
-    let markN = 0
-    const marks = new Map<string, number>()
-    for (const s of shapes) if (s.type !== 'arrow') marks.set(s.id, ++markN)
+    const marks = nodeMarks(shapes)
     const context = formatCanvas(shapes, marks)
     const image = await port.exportImage('selection', marks)
 
@@ -78,41 +123,90 @@ export class Conversation {
       ...(image ? { image } : {}),
     })
 
+    const mutated = await this.runBuildLoop(port, cb)
+    // One visual-review round: show the rendered result so the model can declare the
+    // intended structure (laid out precisely by the framework) and fix any misplacement.
+    if (mutated) await this.reviewGate(port, cb)
+  }
+
+  /** Build phase: let the model create/connect/move until it stops calling tools.
+   *  Returns whether any canvas mutation was actually applied. */
+  private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<boolean> {
+    let mutated = false
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: canvasTools }
+      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
       cb.onRequest?.(params, i)
       const turn = await this.adapter.runTurn(params, { onText: cb.onText })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
+      if (turn.toolCalls.length === 0) break
 
-      if (turn.toolCalls.length === 0) return
+      const { opCalls, declareCalls } = splitTools(turn.toolCalls)
+      // Structure is declared in the review step; ack any premature declaration and skip it.
+      for (const d of declareCalls)
+        this.history.push({ role: 'tool', toolCallId: d.id, content: 'noted — declare structure in the review step' })
 
-      // Validate each tool call into a CanvasOp, then apply the valid ones as one
-      // batch so create-refs resolve for later ops (e.g. connect_shapes).
-      const validOps: CanvasOp[] = []
-      const meta: { id: string; error?: string }[] = []
-      for (const tc of turn.toolCalls) {
-        try {
-          validOps.push(parseOp(toolCallToOp(tc.name, tc.args)))
-          meta.push({ id: tc.id })
-        } catch (e) {
-          meta.push({ id: tc.id, error: (e as Error).message })
-        }
-      }
-      const results = port.apply(validOps)
-
-      let vi = 0
-      let applied = 0
-      for (const m of meta) {
-        if (m.error) {
-          this.history.push({ role: 'tool', toolCallId: m.id, content: `error: ${m.error}` })
-          continue
-        }
-        const r = results[vi++]
-        if (r.ok) applied++
-        this.history.push({ role: 'tool', toolCallId: m.id, content: JSON.stringify(r) })
-      }
-
+      const applied = this.applyOpCalls(port, opCalls, null)
+      if (applied > 0) mutated = true
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
+    return mutated
+  }
+
+  /** Show the rendered drawing once and let the model declare structure + correct it. */
+  private async reviewGate(port: CanvasPort, cb: SendCallbacks): Promise<void> {
+    const shapes = port.snapshot('selection')
+    const marks = nodeMarks(shapes)
+    const image = await port.exportImage('selection', marks)
+    if (!image) return
+
+    for (const m of this.history) if (m.role === 'user') delete m.image
+    this.history.push({
+      role: 'user',
+      content: `${REVIEW_PROMPT}\n\nRendered canvas:\n${formatCanvas(shapes, marks)}`,
+      image,
+    })
+
+    const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
+    cb.onRequest?.(params, MAX_ITERATIONS)
+    const turn = await this.adapter.runTurn(params, { onText: cb.onText })
+    this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
+    if (turn.toolCalls.length === 0) return // model judged it already good
+
+    const { opCalls, declareCalls } = splitTools(turn.toolCalls)
+    const relations: StructureRelation[] = []
+    for (const d of declareCalls) {
+      const parsed = parseStructure(d.args)
+      relations.push(...parsed.relations)
+      this.history.push({
+        role: 'tool',
+        toolCallId: d.id,
+        content: JSON.stringify({ ok: true, accepted: parsed.relations.length, errors: parsed.errors }),
+      })
+    }
+    const idByMark = new Map<number, string>()
+    for (const [id, mk] of marks) idByMark.set(mk, id)
+    const scope = relations.length ? resolveScope(relations, (mk) => idByMark.get(mk)) : null
+
+    const applied = this.applyOpCalls(port, opCalls, scope)
+    cb.onToolsApplied(`复核：结构 ${relations.length} 项，操作 ${applied} 个`)
+  }
+
+  /** Apply the op tool calls (with an optional B-pass scope) and push each result back.
+   *  A scope with no ops still re-lays out the declared nodes. Returns the success count. */
+  private applyOpCalls(port: CanvasPort, opCalls: OpCall[], scope: LayoutScope | null): number {
+    const validOps: CanvasOp[] = opCalls.filter((c) => c.op).map((c) => c.op as CanvasOp)
+    const results = validOps.length || scope ? port.apply(validOps, scope) : []
+    let vi = 0
+    let applied = 0
+    for (const c of opCalls) {
+      if (c.error) {
+        this.history.push({ role: 'tool', toolCallId: c.id, content: `error: ${c.error}` })
+        continue
+      }
+      const r = results[vi++]
+      if (r.ok) applied++
+      this.history.push({ role: 'tool', toolCallId: c.id, content: JSON.stringify(r) })
+    }
+    return applied
   }
 }
