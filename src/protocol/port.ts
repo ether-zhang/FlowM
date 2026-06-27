@@ -11,6 +11,10 @@ export interface CanvasPort {
    *  to all shapes when nothing is selected. `scope: 'all'` always returns all.
    *  When `ids` is given it overrides scope: exactly the shapes with those ids
    *  (used by the review gate to look at only what the model just created/changed). */
+  /** Resolves once the canvas fonts are loaded. The LLM layer awaits this before drawing
+   *  so text is never measured against a fallback metric (which renders clipped until the
+   *  element is nudged). Optional — a port without async fonts can omit it. */
+  whenReady?(): Promise<void>
   snapshot(scope: 'selection' | 'all', ids?: ReadonlySet<string>): CanvasShape[]
   /** Ids of the current selection REGION (every shape within the selected shapes'
    *  bounding box), or null when nothing is selected. The LLM layer captures this at

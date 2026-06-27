@@ -124,15 +124,20 @@ function buildMarkElements(elements: readonly ExcalidrawElement[], marks: Map<st
  * text with a fallback font, then renders it with the real (wider) one — so the
  * text overflows its box and is clipped until a click forces a remeasure. Excalidraw
  * only auto-remeasures on a font-load *transition*, which never fires for a font that
- * loaded earlier for the UI. We load them once when the editor mounts; the model
- * round-trip before any generated text dwarfs this local fetch, so by apply() time
- * the fonts are ready and the very first measurement is correct.
+ * loaded earlier for the UI — so a draw that lands before the load settles stays
+ * clipped with no self-heal.
+ *
+ * So we don't just kick the load — we return a promise the LLM layer AWAITS before
+ * drawing (see CanvasPort.whenReady / Conversation.send): kick our two faces, then wait
+ * for the whole FontFaceSet to settle (which also covers Excalidraw's own lazily-loaded
+ * faces). After it resolves, the very first text measurement uses the real font.
  */
-function ensureCanvasFonts(): void {
-  if (typeof document === 'undefined' || !document.fonts) return
-  for (const family of ['Excalifont', 'Xiaolai']) {
-    document.fonts.load(`20px "${family}"`).catch(() => {})
-  }
+function ensureCanvasFonts(): Promise<void> {
+  if (typeof document === 'undefined' || !document.fonts) return Promise.resolve()
+  const kicks = ['Excalifont', 'Xiaolai'].map((family) => document.fonts.load(`20px "${family}"`).catch(() => []))
+  return Promise.all(kicks)
+    .then(() => document.fonts.ready)
+    .then(() => undefined)
 }
 
 /** Register an arrow in a shape's boundElements so moving the shape moves the arrow. */
@@ -338,10 +343,13 @@ function routeArrowElement(
  * scene, mutates a working copy, and writes it back once.
  */
 export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
-  // Warm the canvas fonts so the first labeled shape is measured with the real font
-  // (not a fallback) and never renders clipped until clicked. See ensureCanvasFonts.
-  ensureCanvasFonts()
+  // Kick the canvas-font load now and keep the promise; the LLM layer awaits whenReady()
+  // before drawing so the first labeled shape is measured with the real font (not a
+  // fallback) and never renders clipped until clicked. See ensureCanvasFonts.
+  const fontsReady = ensureCanvasFonts()
   return {
+    whenReady: () => fontsReady,
+
     selectionScope() {
       const all = getNonDeletedElements(api.getSceneElements())
       return selectionRegion(all, api.getAppState().selectedElementIds)

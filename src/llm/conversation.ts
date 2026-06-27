@@ -157,6 +157,9 @@ export class Conversation {
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn
+    // Block until the canvas fonts are loaded, so any text we draw this turn is measured
+    // with the real font, not a fallback (which renders clipped until the shape is nudged).
+    await port.whenReady?.()
     // What the user selected at request time — folded into the review set so the model's
     // new work is shown stitched to the diagram it was asked to expand, not in isolation.
     const selection = port.selectionScope()
