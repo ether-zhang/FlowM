@@ -310,7 +310,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
   // (not a fallback) and never renders clipped until clicked. See ensureCanvasFonts.
   ensureCanvasFonts()
   return {
-    snapshot(scope) {
+    snapshot(scope, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
       const useSelection = scope === 'selection' && Object.keys(selected).length > 0
@@ -325,7 +325,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
 
       return all
         .filter((el) => !(isText(el) && el.containerId)) // drop bound labels
-        .filter((el) => (useSelection ? selected[el.id] : true))
+        .filter((el) => (ids ? ids.has(el.id) : useSelection ? selected[el.id] : true))
         .map((el): CanvasShape => {
           const shape: CanvasShape = {
             id: el.id,
@@ -641,14 +641,16 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       api.updateScene({ elements: (data as ExcalidrawElement[]) ?? [] })
     },
 
-    async exportImage(scope, marks) {
+    async exportImage(scope, marks, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
       const useSelection = scope === 'selection' && Object.keys(selected).length > 0
-      // Include bound text labels of selected containers so labels aren't dropped.
-      const elements = useSelection
-        ? all.filter((el) => selected[el.id] || (isText(el) && el.containerId && selected[el.containerId]))
-        : all
+      // Include bound text labels (of the selected/explicit containers) so labels aren't dropped.
+      const elements = ids
+        ? all.filter((el) => ids.has(el.id) || (isText(el) && el.containerId && ids.has(el.containerId)))
+        : useSelection
+          ? all.filter((el) => selected[el.id] || (isText(el) && el.containerId && selected[el.containerId]))
+          : all
       if (elements.length === 0) return null
 
       // Set-of-mark: overlay each shape's mark number as ephemeral chip elements so the

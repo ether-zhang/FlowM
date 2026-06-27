@@ -8,8 +8,10 @@ import type { LayoutScope } from './structure'
  */
 export interface CanvasPort {
   /** Read shapes. `scope: 'selection'` returns only selected shapes, falling back
-   *  to all shapes when nothing is selected. `scope: 'all'` always returns all. */
-  snapshot(scope: 'selection' | 'all'): CanvasShape[]
+   *  to all shapes when nothing is selected. `scope: 'all'` always returns all.
+   *  When `ids` is given it overrides scope: exactly the shapes with those ids
+   *  (used by the review gate to look at only what the model just created/changed). */
+  snapshot(scope: 'selection' | 'all', ids?: ReadonlySet<string>): CanvasShape[]
   /**
    * Apply a batch of ops in order, resolving create-refs so later ops can target them.
    * `scope` (from the gate's structure declarations) limits which nodes the intent
@@ -23,8 +25,10 @@ export interface CanvasPort {
    * actually look, not just the shape list. When `marks` is given (id → mark number),
    * each shape is tagged with its number on the image (set-of-mark), so the model can
    * ground what it sees to specific ids — the same number prefixes the shape's text line.
+   * When `ids` is given it overrides scope: only those shapes (plus their bound labels)
+   * are rendered — the review gate uses this to show just what the model just changed.
    */
-  exportImage(scope: 'selection' | 'all', marks?: Map<string, number>): Promise<string | null>
+  exportImage(scope: 'selection' | 'all', marks?: Map<string, number>, ids?: ReadonlySet<string>): Promise<string | null>
   /**
    * Serialize the entire canvas to a JSON-safe value for project persistence.
    * The shape of this value is the concrete canvas's business — the protocol and

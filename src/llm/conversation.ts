@@ -70,6 +70,10 @@ function splitTools(toolCalls: LlmToolCall[]): { opCalls: OpCall[]; declareCalls
   return { opCalls, declareCalls }
 }
 
+/** Ops whose ok result id is a shape the model created/moved this turn — the review
+ *  looks at exactly these (not the whole canvas, which would drown a complex board). */
+const REVIEWABLE_OPS = new Set(['create_geo', 'create_text', 'connect_shapes', 'move_shape'])
+
 /** One set-of-mark number per NODE (arrows aren't marked), in snapshot order. */
 function nodeMarks(shapes: CanvasShape[]): Map<string, number> {
   let n = 0
@@ -123,16 +127,17 @@ export class Conversation {
       ...(image ? { image } : {}),
     })
 
-    const mutated = await this.runBuildLoop(port, cb)
-    // One visual-review round: show the rendered result so the model can declare the
-    // intended structure (laid out precisely by the framework) and fix any misplacement.
-    if (mutated) await this.reviewGate(port, cb)
+    const changed = await this.runBuildLoop(port, cb)
+    // One visual-review round over exactly what the model created/changed this turn — not
+    // the whole canvas (which would drown a complex board) nor the user's selection (which
+    // wouldn't include the model's new shapes).
+    if (changed.size > 0) await this.reviewGate(port, cb, changed)
   }
 
   /** Build phase: let the model create/connect/move until it stops calling tools.
-   *  Returns whether any canvas mutation was actually applied. */
-  private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<boolean> {
-    let mutated = false
+   *  Returns the ids of shapes it created/moved this turn (what the review will inspect). */
+  private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<Set<string>> {
+    const changed = new Set<string>()
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       // declare_structure is NOT offered here — only in the review step, where the marks
       // it must reference actually exist. Offering it now invites a premature declaration
@@ -144,20 +149,19 @@ export class Conversation {
       if (turn.toolCalls.length === 0) break
 
       const { opCalls } = splitTools(turn.toolCalls)
-      const applied = this.applyOpCalls(port, opCalls, null)
-      if (applied > 0) mutated = true
+      const applied = this.applyOpCalls(port, opCalls, null, changed)
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
-    return mutated
+    return changed
   }
 
-  /** Show the rendered drawing once and let the model declare structure + correct it.
-   *  Reviews the WHOLE canvas, not the selection: the shapes the model just created
-   *  aren't in the user's selection, so a 'selection' scope would hide its own work. */
-  private async reviewGate(port: CanvasPort, cb: SendCallbacks): Promise<void> {
-    const shapes = port.snapshot('all')
+  /** Show just the shapes the model created/changed this turn and let it declare their
+   *  structure + correct any misplacement. Scoped to `ids`, so a big existing board stays
+   *  out of the way and the model only reasons about its own fresh work. */
+  private async reviewGate(port: CanvasPort, cb: SendCallbacks, ids: ReadonlySet<string>): Promise<void> {
+    const shapes = port.snapshot('all', ids)
     const marks = nodeMarks(shapes)
-    const image = await port.exportImage('all', marks)
+    const image = await port.exportImage('all', marks, ids)
     if (!image) return
 
     for (const m of this.history) if (m.role === 'user') delete m.image
@@ -193,8 +197,14 @@ export class Conversation {
   }
 
   /** Apply the op tool calls (with an optional B-pass scope) and push each result back.
-   *  A scope with no ops still re-lays out the declared nodes. Returns the success count. */
-  private applyOpCalls(port: CanvasPort, opCalls: OpCall[], scope: LayoutScope | null): number {
+   *  A scope with no ops still re-lays out the declared nodes. Collects created/moved ids
+   *  into `changed` (for the review). Returns the success count. */
+  private applyOpCalls(
+    port: CanvasPort,
+    opCalls: OpCall[],
+    scope: LayoutScope | null,
+    changed?: Set<string>,
+  ): number {
     const validOps: CanvasOp[] = opCalls.filter((c) => c.op).map((c) => c.op as CanvasOp)
     const results = validOps.length || scope ? port.apply(validOps, scope) : []
     let vi = 0
@@ -205,7 +215,10 @@ export class Conversation {
         continue
       }
       const r = results[vi++]
-      if (r.ok) applied++
+      if (r.ok) {
+        applied++
+        if (changed && r.id && REVIEWABLE_OPS.has(r.op)) changed.add(r.id)
+      }
       this.history.push({ role: 'tool', toolCallId: c.id, content: JSON.stringify(r) })
     }
     return applied
