@@ -189,7 +189,7 @@ export class Conversation {
       const turn = await this.adapter.runTurn(params, { onText: cb.onText })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
-      const applied = this.processToolCalls(port, turn.toolCalls, changed)
+      const applied = this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
     return changed
@@ -217,14 +217,22 @@ export class Conversation {
     this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
     if (turn.toolCalls.length === 0) return // model judged it already good
 
-    const applied = this.processToolCalls(port, turn.toolCalls)
+    // Review uses ONLY a scope freshly declared in this review turn — never the persisted
+    // build scope. Otherwise a move_shape correcting a flow node would be immediately
+    // re-flowed (clobbered) by the build's still-active straighten. The build already
+    // straightened; review is for manual fixes + any newly-spotted structure.
+    const applied = this.processToolCalls(port, turn.toolCalls, { persistScope: false })
     cb.onToolsApplied(`复核：执行 ${applied} 项调整`)
   }
 
   /** Process one turn's tool calls: parse any structure declarations into a B-pass scope,
    *  apply the canvas ops under that scope, and push a result for EVERY call (so the next
    *  request never has a dangling tool_call). Returns the success count. */
-  private processToolCalls(port: CanvasPort, toolCalls: LlmToolCall[], changed?: Set<string>): number {
+  private processToolCalls(
+    port: CanvasPort,
+    toolCalls: LlmToolCall[],
+    opts: { changed?: Set<string>; persistScope: boolean },
+  ): number {
     const { opCalls, declareCalls } = splitTools(toolCalls)
     const relations: StructureRelation[] = []
     for (const d of declareCalls) {
@@ -236,10 +244,19 @@ export class Conversation {
         content: JSON.stringify({ ok: true, accepted: parsed.relations.length, errors: parsed.errors }),
       })
     }
-    // Accumulate this batch's declarations into the turn scope (it must outlive a single
-    // apply — the edges that make a declared flow straightenable often arrive a batch later).
-    if (relations.length) this.turnScope = mergeScope(this.turnScope, resolveScope(relations))
-    return this.applyOpCalls(port, opCalls, this.turnScope, changed)
+    const batchScope = relations.length ? resolveScope(relations) : null
+    // Build phase: accumulate into the turn scope (it must outlive a single apply — the
+    // edges that make a declared flow straightenable often arrive a batch later) and apply
+    // it. Review phase: apply ONLY this turn's fresh declaration, never the persisted build
+    // scope, so a manual move_shape fix isn't immediately re-flowed away.
+    let scope: LayoutScope | null
+    if (opts.persistScope) {
+      if (batchScope) this.turnScope = mergeScope(this.turnScope, batchScope)
+      scope = this.turnScope
+    } else {
+      scope = batchScope
+    }
+    return this.applyOpCalls(port, opCalls, scope, opts.changed)
   }
 
   /**
