@@ -47,13 +47,20 @@ Windows、macOS、iPad。
 
 - 人机交互相关
     - 自由笔触模式的识别
-        - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**待运行时确认 Poe/Claude 视觉是否真生效**
-        - [ ] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——现已能"看到"（图片入参），但理解与执行待打磨，提醒结合图片与实际坐标？
-            - [ ] 杠杆1·视觉锚点（Set-of-Mark）：导出前在 PNG 上叠加每个 shape 的 id 徽标 + 场景坐标网格/原点轴，把"图↔序列化坐标"对应关系**直接画出来**而非靠模型脑补（纯提示词太薄）；在 `exportImage` 内做，映射 `px=(scene-bboxMin+padding)*scale` 单测先行。VLM grounding 成熟手法，确定性可测。提示词只是它的说明书
-        - [ ] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
-            - [ ] 自反馈视觉做成**显式 refine 模式**（应用后重渲染→喂回让模型挑错），默认关、控成本/延迟，不做默认每轮
+        - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**已确认生效**（模型据图纠错、声明结构、判流程图/自由排布）
+        - [x] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——已能"看到"并据图操作；自由排布（CUDA SM 这类复杂拼块）已能大体组装。下面三条杠杆均落地（见 [docs/structured-refine.md](docs/structured-refine.md)）
+            - [x] 杠杆1·视觉锚点（Set-of-Mark）：导出 PNG 前给每个 **NODE** 叠橙色编号徽标（`buildMarkElements`，临时元素只进导出不入实景），序列化文本同步 `[n]` 前缀（`serialize.ts` + `nodeMarks`）。模型据此把图像区域 ground 到真实 shape id（"`[3]` 压住 `[5]`"）。仅标 NODE、连续编号；徽标非真实形状、每轮可变
+        - [x] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
+            - [x] 自反馈视觉做成**显式 refine 门控**（结构化精修）：建图 → 渲首图喂回模型**复核一次** → 模型用 `move_shape` 纠位 / 补 `declare_structure`。详见下「结构化精修门控」与 [docs/structured-refine.md](docs/structured-refine.md)
         - [ ] 让模型在真正布置前划定操作区？操作区在完成前的不可操作？
         - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
+    - 结构化精修门控（本期，见 [docs/structured-refine.md](docs/structured-refine.md) / [docs/structure-schema.md](docs/structure-schema.md)）
+        - [x] **唯一权威 = 模型声明，框架只实现**：后处理 pass 分两类——**A 不变式**（只动箭头几何：端点绑定/路由/端口，给定拓扑就是唯一解，永远跑）与 **B 意图**（移动/缩放 NODE：消重叠/匀缝，必须**模型授权**才跑、未授权即冻结）。判据「是否动了一个 NODE」。`PassKind` + `INVARIANT_PASSES`/`INTENT_PASSES`（`layoutPasses.ts`），`apply` 只在有 scope 时跑 B、A 恒跑
+        - [x] **`declare_structure` 工具**：模型**按 shape id**声明结构关系（flow / align / grid / contain / nonOverlap / freeze），框架据此**限定作用域**精修。仅 flow / nonOverlap 有实现器（`normalizeSpacing` / `resolveOverlaps`），其余解析但暂冻结。纯函数 `parseStructure` / `resolveScope`（`structure.ts`），坏关系丢弃并回报、不阻断
+        - [x] **建图→复核门控**：`Conversation.send` = 建图循环（模型边画边可选声明）→ 复核一轮（带 marks 的渲染图喂回，只修 `move_shape` 错位 + 补声明）。复核集 = 本轮新建/改动 + 一跳相连 **∪ 用户选区**（新内容与所展开的图拼在一起）
+        - [x] **支撑修复**：① 声明 scope **按整回合累积**（边晚于声明到达也能拉直），但**只在建图阶段**生效——复核的 `move_shape` 不被重排冲掉；② **durable refs**：create-ref 跨批次（限本回合）存活，模型跨回合用 ref 连线不再 `unresolved`；③ `declare_structure` 全程一等公民、每个 tool call 都回 result（杜绝悬空 tool_call → "出错:undefined"）
+        - [x] **尺寸=intent、字号=refine 旋钮**：框尺寸是模型意图——`w/h` 改为**可选**（省略才按 label 估默认框），不再撑框覆盖；文字改用 `fitFontSize`**缩字号塞进框**（`labelBoxSize` 逆运算，下限 9px）。治了 SM 那种紧密拼块被撑破列界的重叠
+        - [ ] **仍待**：`align`/`grid`/`contain` 实现器（当前解析即冻结）；长回边标签与宽节点的避让；cluster 级避障；箭头几何（focus/offset/路由）仍按整画布重算（O(N²)、跨区可互扰，远距未显形）
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
         - [x] 多输入/输出端点端口分配 + 轻度弯曲：shape 挂多条进/出箭头时全瞄中心 → 挤在同一边界点；改为按对方方位把各边分到周边**不同端口**（focus≠0 求解器 `solveEndpoint`/`determineFocusPoint` 已支持，**写入侧已接** `assignPortFocus`），重合/返回边轻弯错开（`assignParallelOffsets`），label 随各自边走。介于"中心瞄准+单弓"与正交寻路之间；**不做 B 版**（elbow/全局寻路太深）。本质是"否，继续生成"那类标签贴节点问题的根治
@@ -68,6 +75,7 @@ Windows、macOS、iPad。
             - [ ] UI 拖放精准度（用户手动拖放/吸附）：部分已随原生 Excalidraw 吸附/绑定生效，余下待细化
             - [ ] 进一步：多障碍 / 双向避让 / 全局寻路（本期只做单中点单障碍）
         - [x] 内容驱动的尺寸 + 间距节律归一：先按文本定盒（`labelBoxSize`：行数×行高、最长行宽，CJK≈字号 / ASCII≈0.6×，**只增不减**，菱形/椭圆额外放大，**撑盒围中心生长**——不动模型对齐），再 `normalizeSpacing` **逐边沿箭头方向**把边到边缝归一到目标缝（**默认取模型自己的中位缝**——尺度归模型、节律归框架，不写死常量）——用真实盒厚、**任意方向通用**、近轴方向吸附对齐、回边经 DFS 排除、仅动本批 movable、源锚定。**带标签的斜/横边按标签在箭头方向的投影 `|w·dx|+|h·dy|` 加宽间距**（水平文字越不正交越占缝，文字不被遮）。排在 `resolveOverlaps` 前；纯函数 `layout.ts`，可单测。（合并原 67「按文本定盒长宽」与 ②「间距归一」）
+                - **本期修订**：「撑盒围中心生长（只增不减）」已废——它会把模型精确拼好的紧密格子（CUDA SM 表头）撑破列界、互相重叠。改为 **尺寸=模型 intent（`w/h` 可选、给了就冻结）+ `fitFontSize` 缩字号塞进框**（见上「结构化精修门控」）。`labelBoxSize` 仅在模型未给尺寸时供默认框、及作 `fitFontSize` 的内核
             - **原则（已定）：模型与框架分工，框架不捂住模型** —— ①**模型层**始终据「序列化文本 + 图片」给出*它认为合理*的坐标与大小（不偷懒、不被回收）；②**框架层**只在其输出**之上**调优（消重叠/匀节律/绕障/贴标签）。**尺度、方向、原点、拓扑、尺寸下限都归模型**，框架只做一致化与正确性兜底，**不做收走全部坐标的布局引擎**（过激，已否决）。守则：系统提示词永远要模型好好排版（决不"反正脚本会修"）；改善排版优先走**杠杆1（标注图增强模型感知）**而非下游硬补
             - **后处理架构**：已抽象为可插拔 `LayoutPass` 管线（`layoutPasses.ts`）——pass 只对抽象 `PassContext` 编排，**库无关、可 headless 单测**（顺序/行为都测）；port 提供 Excalidraw 实现（boxes/edges/applyMoves/arrowsToUpdate/updateArrow）。**新增后处理（如上色）只实现 `LayoutPass` 接口并入 `DEFAULT_PASSES`，不动编排**。算法纯函数在 `layout.ts`，编排在 `layoutPasses.ts`，库胶水在 port——三层解耦
 
@@ -88,7 +96,9 @@ Windows、macOS、iPad。
      - [ ] `update_text` 给原本无标签的容器新增标签（需新建绑定 text 元素 + boundElements 接线）
      - [ ] bundle 瘦身：Excalidraw 拉入 mermaid/katex/cytoscape（多为按需懒加载），评估关闭 TTD/mermaid 特性
 - BUG
-   - [x] 生成的文字像素级截断（"`_ogits → Softma›`"），点一下才正常 —— **字体加载竞态**：标签随 `updateScene` 加入时手写字体 Excalifont 尚未载完，Excalidraw 用 fallback 字体测量+决定换行，渲染时换成真(更宽)字体 → 溢出被裁；Excalidraw 只在字体**未载→已载跃迁**时自动重测，而该字体常已为 UI 提前载入(无跃迁) → 卡到点击强制重测。修复：`ensureCanvasFonts()` 在端口创建(editor 一就绪)时主动 `document.fonts.load` 预载 Excalifont + Xiaolai(CJK)；模型一次往返(秒级)远长于本地字体取用，到 `apply()` 时已就绪、首次测量即正确。待实测确认
+   - [x] 生成的文字像素级截断（"`_ogits → Softma›`" / "`egister File`"），点一下才正常 —— **字体加载竞态**：标签随 `updateScene` 加入时手写字体 Excalifont 尚未载完，Excalidraw 用 fallback 字体测量+决定换行，渲染时换成真(更宽)字体 → 溢出被裁；Excalidraw 只在字体**未载→已载跃迁**时自动重测、且按字符**子集懒加载**，故"点一下"(nudge) 强制重测才贴正
+       - 几番试错（`ensureCanvasFonts` 预载 / 画后 re-dispatch / 画前 `updateScene` 前 load）都未根治，**已回滚**（见 `5c40e54`）。真根因：文字宽度/换行是在 **`convertToExcalidrawElements` 内部**测的，而前几版的 `await font` 都发生在 convert **之后**(updateScene 前) → 测量早已用 fallback
+       - **最终修复（`0974239`）**：`apply` 改 async，在 **convert 之前** `await document.fonts.load('20px "Excalifont"', 本批文字)` + Xiaolai —— `FontFaceSet.load(font, text)` 精确加载该串字符所需子集（size 无关，20px 覆盖所有渲染尺寸）。于是首次测量即用真字体，**首帧不裁、无重排闪烁**。调用链 `applyOpCalls→processToolCalls→建图/复核` 全 async 透传
    - [x] 生成的文本只有 `\n` 而没有换行 —— 模型在 JSON 工具参数里把换行**过度转义**成 `\\n`，`JSON.parse` 后是"反斜杠+n"两个字符，Excalidraw 原样渲染（tldraw 时代 `toRichText` 恰好吃掉了所以没暴露）。修复：`decodeText()` 把字面量 `\n`/`\r\n`/`\t` 还原为真字符，作用于 create_geo/create_text/connect_shapes/update_text 的文本（真换行符不匹配该正则、不受影响）。待下次生成实测确认
    - [x] move_shape 后绑定箭头不跟随 —— `updateScene` 绕过 Excalidraw 的绑定重算管线（与箭头注入同类问题），程序化改坐标不触发 `updateBoundElements`。修复：move_shape 记下被移动的 id，后处理里对"绑定到被移动形状的箭头"用 `reflowArrow` 自算边到边端点重排（与初始创建同一套 `edgePoint` 逻辑，不依赖管线）。代价：手动弯折会被拉直（模型移动场景可接受）。用户手动拖动不受影响（Excalidraw 原生管线照常）
      - [x] 箭头压在外框线上 —— `GAP` 2→8，端点离形状边更明显（创建/移动同源，一处改两处生效）
