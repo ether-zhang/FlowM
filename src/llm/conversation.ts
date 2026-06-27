@@ -29,18 +29,18 @@ const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user 
 - To connect shapes, give each new shape a short \`ref\` and pass those refs (or existing shape ids from the canvas context) to connect_shapes. You can create and connect in the same response, or connect shapes from earlier turns by their id — arrows bind to their endpoints and follow them when moved either way.
 - For flowcharts: rectangle = step, diamond = decision, ellipse = start/end. Connect with arrows in flow order.
 - Lay flowcharts on a VERTICAL SPINE: the main path (start → steps → the success/"是" branch of each decision → end) runs straight down a single shared column (same x, increasing y), with the terminal/end node placed directly BELOW the last node — not off to one side. Send only the SECONDARY exits sideways: a decision's "否"/failure branch and loop-backs leave from the side and return to the spine, so the main flow reads as one clean top-to-bottom line.
-- While drawing, use ONLY the create/connect/move tools — do NOT call \`declare_structure\` yet (it isn't available until the review). When you finish, you'll be shown the rendered result ONCE and asked to review; in THAT step you MUST call \`declare_structure\` with a \`flow\` for each chain of nodes you connected in sequence (the framework then straightens the column and evens the spacing — do it even if it looks roughly fine), plus grid / align / contain where they apply, and \`move_shape\` to fix clear misplacements.
+- When you draw a STRUCTURED region — a chain of connected nodes, a grid, a nested group — call \`declare_structure\` referencing the shapes by id, so the framework positions it precisely (straightens columns, evens spacing). Use your judgment: NOT everything is a flow; for free-form arrangements declare nothing. You can declare as you draw (you already have the ids). After you finish you'll also be shown the rendered result ONCE to fix any clear misplacement with \`move_shape\` (and declare any structure you missed).
 - Keep prose brief; let the canvas do the talking.`
 
 const MAX_ITERATIONS = 8
 
-/** Tools the model may call: the canvas ops plus the review-step structure declaration. */
+/** Tools the model may call: the canvas ops plus the structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
 
-const REVIEW_PROMPT = `Here is your drawing as it actually rendered, each node tagged with its mark number. Review it ONCE and do BOTH:
-1. DECLARE STRUCTURE (declare_structure): for EVERY chain of nodes you connected in sequence, declare a \`flow\` over its [n] marks — the main spine, and each sub-flow column. Do this even if the chain already looks roughly aligned: the framework will straighten the column and even the spacing far more precisely than your hand-placed coordinates (e.g. a diamond whose centre drifted off the column gets pulled back into line). Also declare grid / align / contain where they apply.
-2. FIX MISPLACEMENTS (move_shape): for anything clearly in the wrong place — a sub-flow flung far from its parent, a node overlapping another.
-Reference nodes by their [n] marks. Reply with NO tool calls only if there is genuinely no chain to declare and nothing misplaced (e.g. a few free-form scribbles).`
+const REVIEW_PROMPT = `Here is your drawing as it actually rendered. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Review it ONCE:
+- Fix anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping).
+- If you spot a real structure you didn't already declare — a connected chain, a grid, a nesting — call \`declare_structure\` for it (by shape id).
+- If it already looks right, reply briefly with NO tool calls.`
 
 interface OpCall {
   id: string
@@ -151,38 +151,24 @@ export class Conversation {
     if (changed.size > 0) await this.reviewGate(port, cb, withConnectedContext(port, changed))
   }
 
-  /** Build phase: let the model create/connect/move until it stops calling tools.
+  /** Build phase: let the model create/connect/move/declare until it stops calling tools.
    *  Returns the ids of shapes it created/moved this turn (what the review will inspect). */
   private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<Set<string>> {
     const changed = new Set<string>()
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      // declare_structure is NOT offered here — only in the review step, where the marks
-      // it must reference actually exist. Offering it now invites a premature declaration
-      // with fabricated mark numbers (and the model then skips the real review one).
-      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: canvasTools }
+      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
       cb.onRequest?.(params, i)
       const turn = await this.adapter.runTurn(params, { onText: cb.onText })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
-
-      const { opCalls, declareCalls } = splitTools(turn.toolCalls)
-      // The model sometimes calls declare_structure mid-draw (the system prompt asks for
-      // it), but it's only offered/meaningful in the review. EVERY tool call must still get
-      // a result or the next request has a dangling tool_call and the API rejects it.
-      for (const d of declareCalls)
-        this.history.push({
-          role: 'tool',
-          toolCallId: d.id,
-          content: 'Not yet — declare_structure is for the review step, which comes after you finish drawing and see the rendered image. Keep drawing, or stop to trigger the review.',
-        })
-      const applied = this.applyOpCalls(port, opCalls, null, changed)
+      const applied = this.processToolCalls(port, turn.toolCalls, changed)
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
     return changed
   }
 
-  /** Show just the shapes the model created/changed this turn and let it declare their
-   *  structure + correct any misplacement. Scoped to `ids`, so a big existing board stays
+  /** Show just the shapes the model created/changed this turn and let it fix misplacements
+   *  (and declare any structure it missed). Scoped to `ids`, so a big existing board stays
    *  out of the way and the model only reasons about its own fresh work. */
   private async reviewGate(port: CanvasPort, cb: SendCallbacks, ids: ReadonlySet<string>): Promise<void> {
     const shapes = port.snapshot('all', ids)
@@ -203,7 +189,15 @@ export class Conversation {
     this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
     if (turn.toolCalls.length === 0) return // model judged it already good
 
-    const { opCalls, declareCalls } = splitTools(turn.toolCalls)
+    const applied = this.processToolCalls(port, turn.toolCalls)
+    cb.onToolsApplied(`复核：执行 ${applied} 项调整`)
+  }
+
+  /** Process one turn's tool calls: parse any structure declarations into a B-pass scope,
+   *  apply the canvas ops under that scope, and push a result for EVERY call (so the next
+   *  request never has a dangling tool_call). Returns the success count. */
+  private processToolCalls(port: CanvasPort, toolCalls: LlmToolCall[], changed?: Set<string>): number {
+    const { opCalls, declareCalls } = splitTools(toolCalls)
     const relations: StructureRelation[] = []
     for (const d of declareCalls) {
       const parsed = parseStructure(d.args)
@@ -214,12 +208,8 @@ export class Conversation {
         content: JSON.stringify({ ok: true, accepted: parsed.relations.length, errors: parsed.errors }),
       })
     }
-    const idByMark = new Map<number, string>()
-    for (const [id, mk] of marks) idByMark.set(mk, id)
-    const scope = relations.length ? resolveScope(relations, (mk) => idByMark.get(mk)) : null
-
-    const applied = this.applyOpCalls(port, opCalls, scope)
-    cb.onToolsApplied(`复核：结构 ${relations.length} 项，操作 ${applied} 个`)
+    const scope = relations.length ? resolveScope(relations) : null
+    return this.applyOpCalls(port, opCalls, scope, changed)
   }
 
   /** Apply the op tool calls (with an optional B-pass scope) and push each result back.

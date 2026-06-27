@@ -87,15 +87,15 @@ describe('parseStructure', () => {
   it('keeps valid relations and reports the malformed ones', () => {
     const { relations, errors } = parseStructure({
       relations: [
-        { kind: 'flow', nodes: [1, 2, 3], dir: 'down' },
-        { kind: 'contain', parent: 4, children: [5, 6] },
-        { kind: 'flow', nodes: [1] }, // too few nodes → dropped
-        { kind: 'wat', nodes: [1, 2] }, // unknown kind → dropped
+        { kind: 'flow', nodes: ['a', 'b', 'c'], dir: 'down' },
+        { kind: 'contain', parent: 'p', children: ['x', 'y'] },
+        { kind: 'flow', nodes: ['a'] }, // too few nodes → dropped
+        { kind: 'wat', nodes: ['a', 'b'] }, // unknown kind → dropped
       ],
     })
     expect(relations).toHaveLength(2)
-    expect(relations[0]).toEqual({ kind: 'flow', nodes: [1, 2, 3], dir: 'down' })
-    expect(relations[1]).toEqual({ kind: 'contain', parent: 4, children: [5, 6] })
+    expect(relations[0]).toEqual({ kind: 'flow', nodes: ['a', 'b', 'c'], dir: 'down' })
+    expect(relations[1]).toEqual({ kind: 'contain', parent: 'p', children: ['x', 'y'] })
     expect(errors).toHaveLength(2)
   })
 
@@ -108,50 +108,38 @@ describe('parseStructure', () => {
   it('validates each relation kind’s required fields', () => {
     const ok = parseStructure({
       relations: [
-        { kind: 'align', nodes: [1, 2], axis: 'row' },
-        { kind: 'grid', nodes: [1, 2, 3, 4], cols: 2 },
-        { kind: 'nonOverlap', nodes: [7, 8] },
-        { kind: 'freeze', nodes: [9] },
+        { kind: 'align', nodes: ['a', 'b'], axis: 'row' },
+        { kind: 'grid', nodes: ['a', 'b', 'c', 'd'], cols: 2 },
+        { kind: 'nonOverlap', nodes: ['g', 'h'] },
+        { kind: 'freeze', nodes: ['i'] },
       ],
     })
     expect(ok.relations).toHaveLength(4)
     expect(ok.errors).toHaveLength(0)
     // bad field values are rejected
-    expect(parseStructure({ relations: [{ kind: 'align', nodes: [1, 2], axis: 'diagonal' }] }).relations).toHaveLength(0)
-    expect(parseStructure({ relations: [{ kind: 'grid', nodes: [1], cols: 0 }] }).relations).toHaveLength(0)
+    expect(parseStructure({ relations: [{ kind: 'align', nodes: ['a', 'b'], axis: 'diagonal' }] }).relations).toHaveLength(0)
+    expect(parseStructure({ relations: [{ kind: 'grid', nodes: ['a'], cols: 0 }] }).relations).toHaveLength(0)
+    expect(parseStructure({ relations: [{ kind: 'flow', nodes: [1, 2] }] }).relations).toHaveLength(0) // ids are strings
   })
 })
 
 describe('resolveScope', () => {
-  const markToId = (m: number) => (m >= 1 && m <= 5 ? `id${m}` : undefined)
-
   it('flow nodes get spacing + overlap; nonOverlap nodes get overlap only', () => {
-    const scope = resolveScope(
-      [
-        { kind: 'flow', nodes: [1, 2, 3] },
-        { kind: 'nonOverlap', nodes: [4, 5] },
-      ],
-      markToId,
-    )
+    const scope = resolveScope([
+      { kind: 'flow', nodes: ['id1', 'id2', 'id3'] },
+      { kind: 'nonOverlap', nodes: ['id4', 'id5'] },
+    ])
     expect([...scope.spacing].sort()).toEqual(['id1', 'id2', 'id3'])
     expect([...scope.overlap].sort()).toEqual(['id1', 'id2', 'id3', 'id4', 'id5'])
   })
 
   it('relations with no realiser yet (align/grid/contain/freeze) contribute nothing', () => {
-    const scope = resolveScope(
-      [
-        { kind: 'align', nodes: [1, 2], axis: 'row' },
-        { kind: 'grid', nodes: [1, 2, 3, 4], cols: 2 },
-        { kind: 'freeze', nodes: [5] },
-      ],
-      markToId,
-    )
+    const scope = resolveScope([
+      { kind: 'align', nodes: ['a', 'b'], axis: 'row' },
+      { kind: 'grid', nodes: ['a', 'b', 'c', 'd'], cols: 2 },
+      { kind: 'freeze', nodes: ['e'] },
+    ])
     expect(scope.spacing.size).toBe(0)
     expect(scope.overlap.size).toBe(0)
-  })
-
-  it('skips marks that resolve to no shape', () => {
-    const scope = resolveScope([{ kind: 'flow', nodes: [1, 99] }], markToId)
-    expect([...scope.spacing]).toEqual(['id1']) // 99 unresolved → dropped
   })
 })

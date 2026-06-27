@@ -5,25 +5,26 @@
 
 ## 1. 声明格式
 
-引用的是**节点的 mark 号**（模型在图上看到的、文本表 `[n]` 的那个号）。conversation 层把
-mark → 真实 id 翻译后交给实现器。箭头不参与（它由端点派生）。
+引用的是**节点的 shape id**（create 返回的、文本表里的真实 id）。**用 id 而非 mark** 的原因：
+模型建图当下就握着 id，可以**边画边声明**，不必等渲染出 marks 再来一轮。marks 仍保留，但只作
+**复核图上的视觉索引**（帮模型在图里指认该改哪个），声明本身走 id。箭头不参与（由端点派生）。
 
 ```ts
-type Mark = number
+type NodeId = string  // shape id
 
 type StructureRelation =
   // 流链：自上而下/左右单列推进 → 匀缝 + 近轴吸附
-  | { kind: 'flow';       nodes: Mark[]; dir?: 'down' | 'right' }
+  | { kind: 'flow';       nodes: NodeId[]; dir?: 'down' | 'right' }
   // 对齐成行/列：投影到公共轴
-  | { kind: 'align';      nodes: Mark[]; axis: 'col' | 'row'; at?: 'min' | 'center' | 'max' }
+  | { kind: 'align';      nodes: NodeId[]; axis: 'col' | 'row'; at?: 'min' | 'center' | 'max' }
   // 等尺寸等距网格（行主序，rows 由 count/cols 推出）
-  | { kind: 'grid';       nodes: Mark[]; cols: number; gap?: number }
+  | { kind: 'grid';       nodes: NodeId[]; cols: number; gap?: number }
   // 嵌套：children 在 parent 内；父按子长大，子不被推出父界
-  | { kind: 'contain';    parent: Mark; children: Mark[] }
+  | { kind: 'contain';    parent: NodeId; children: NodeId[] }
   // 互不重叠（限定这组）
-  | { kind: 'nonOverlap'; nodes: Mark[] }
+  | { kind: 'nonOverlap'; nodes: NodeId[] }
   // 原样冻结（手绘/草图，或否决自动推断）
-  | { kind: 'freeze';     nodes: Mark[] }
+  | { kind: 'freeze';     nodes: NodeId[] }
 
 interface StructureDecl { relations: StructureRelation[] }
 ```
@@ -41,11 +42,11 @@ interface StructureDecl { relations: StructureRelation[] }
 
 ## 3. 怎么发出 + 校验
 
-- **工具** `declare_structure({ relations })`：模型在**门控轮**（看完首图后）调用，可与纠错
-  `move_shape` 等 op **同批**发出。
-- **校验** `parseStructure`（纯函数，protocol 层，类比 `parseOp`）：拒绝未知 mark、字段不合法、
-  作用域冲突；坏声明丢弃并回报，不阻断其余。
-- **marks → ids**：conversation 层翻译（marks 只覆盖节点，正好）。
+- **工具** `declare_structure({ relations })`：**建图阶段就可调**（模型有 id），也可在复核轮补声明。
+  **由模型自行判断**——有真实结构（链/网格/嵌套）才声明,自由排布**不声明**;不强制 flow。
+- **校验** `parseStructure`（纯函数，protocol 层，类比 `parseOp`）：字段/类型不合法即丢弃并回报，
+  不阻断其余。id 是否指向真实形状由 `apply` 兜底（只移动场景里实际存在且在 scope 内的形状）。
+- 声明随建图批次的 scope 传入 `apply`，B 类 pass 当批就按 scope 跑（不必等单独一轮）。
 
 ## 4. 默认 & 冲突（关键语义）
 

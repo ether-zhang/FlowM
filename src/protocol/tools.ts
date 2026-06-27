@@ -105,16 +105,18 @@ export const canvasTools: ToolDef[] = [
 ]
 
 /**
- * The structure-declaration tool, offered in the visual review step (not an op — it
- * doesn't mutate shapes; it tells the framework how to lay a region out). Nodes are
- * referenced by their set-of-mark numbers. JSON Schema can't express the per-kind field
- * union, so every possible field is listed with only `kind` required; parseStructure
- * (zod) validates the real per-kind shape and drops malformed relations.
+ * The structure-declaration tool (not an op — it doesn't mutate shapes; it tells the
+ * framework how to lay a region out). Nodes are referenced by SHAPE ID (the ids returned
+ * by create_geo / shown in the canvas list), so the model can declare as it draws. Use it
+ * by judgment — only where a real structure applies; skip free-form work. JSON Schema
+ * can't express the per-kind field union, so every possible field is listed with only
+ * `kind` required; parseStructure (zod) validates the real per-kind shape and drops
+ * malformed relations.
  */
 export const declareStructureTool: ToolDef = {
   name: 'declare_structure',
   description:
-    'Declare the intended layout STRUCTURE of one or more regions so the framework lays them out precisely. Reference nodes by their mark numbers (the [n] tags / orange chips). Call this in the review step after seeing the rendered image. Kinds: flow (a chain running down a column / across a row), align (share a row or column), grid (uniform matrix), contain (a parent box holding children), nonOverlap (must not overlap), freeze (leave exactly as drawn). Omit any region you want left untouched.',
+    'Declare the layout STRUCTURE of a region so the framework positions it precisely — ONLY where a real structure applies (a chain of connected nodes, a grid, a nested group). Skip it entirely for free-form arrangements; not everything is a flow. Reference shapes by their ids (returned when you create them, and shown in the canvas list). Kinds: flow (a chain down a column / across a row → straightened + evenly spaced), align (share a row or column), grid (uniform matrix), contain (a parent box holding children), nonOverlap (must not overlap), freeze (leave exactly as drawn).',
   parameters: {
     type: 'object',
     properties: {
@@ -124,9 +126,9 @@ export const declareStructureTool: ToolDef = {
           type: 'object',
           properties: {
             kind: { type: 'string', enum: ['flow', 'align', 'grid', 'contain', 'nonOverlap', 'freeze'] },
-            nodes: { type: 'array', items: { type: 'integer' }, description: 'node mark numbers this relation applies to' },
-            parent: { type: 'integer', description: 'contain: the container node mark' },
-            children: { type: 'array', items: { type: 'integer' }, description: 'contain: the contained node marks' },
+            nodes: { type: 'array', items: { type: 'string' }, description: 'shape ids this relation applies to' },
+            parent: { type: 'string', description: 'contain: the container shape id' },
+            children: { type: 'array', items: { type: 'string' }, description: 'contain: the contained shape ids' },
             dir: { type: 'string', enum: ['down', 'right'], description: 'flow: chain direction' },
             axis: { type: 'string', enum: ['col', 'row'], description: 'align: shared axis' },
             at: { type: 'string', enum: ['min', 'center', 'max'], description: 'align: where on the axis' },
