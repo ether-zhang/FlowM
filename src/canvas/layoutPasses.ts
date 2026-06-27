@@ -71,17 +71,20 @@ export const spacingPass: LayoutPass = {
   name: 'spacing',
   kind: 'intent', // moves nodes → B
   run(ctx) {
-    if (ctx.createdCount <= 0) return
     const scope = ctx.structure()
     const boxes = ctx.boxes()
     const edges = ctx.edges()
-    if (!scope) {
-      ctx.applyMoves(normalizeSpacing(boxes, edges))
+    if (scope) {
+      // Structure-driven: flow exactly the declared nodes, regardless of createdCount
+      // (the model explicitly asked for this layout, so re-flow even on a pure review).
+      const nodes = boxes.filter((b) => scope.spacing.has(b.id))
+      if (nodes.length === 0) return
+      const flowEdges = edges.filter((e) => scope.spacing.has(e.from) && scope.spacing.has(e.to))
+      ctx.applyMoves(normalizeSpacing(nodes, flowEdges))
       return
     }
-    const nodes = boxes.filter((b) => scope.spacing.has(b.id))
-    const flowEdges = edges.filter((e) => scope.spacing.has(e.from) && scope.spacing.has(e.to))
-    ctx.applyMoves(normalizeSpacing(nodes, flowEdges))
+    // No declarations (pre-gate): only re-flow when fresh shapes appear.
+    if (ctx.createdCount > 0) ctx.applyMoves(normalizeSpacing(boxes, edges))
   },
 }
 

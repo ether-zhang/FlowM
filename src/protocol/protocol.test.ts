@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseOp, type CanvasOp } from './schema'
-import { parseStructure } from './structure'
+import { parseStructure, resolveScope } from './structure'
 import { formatCanvas } from './serialize'
 import { canvasTools, toolCallToOp } from './tools'
 
@@ -119,5 +119,39 @@ describe('parseStructure', () => {
     // bad field values are rejected
     expect(parseStructure({ relations: [{ kind: 'align', nodes: [1, 2], axis: 'diagonal' }] }).relations).toHaveLength(0)
     expect(parseStructure({ relations: [{ kind: 'grid', nodes: [1], cols: 0 }] }).relations).toHaveLength(0)
+  })
+})
+
+describe('resolveScope', () => {
+  const markToId = (m: number) => (m >= 1 && m <= 5 ? `id${m}` : undefined)
+
+  it('flow nodes get spacing + overlap; nonOverlap nodes get overlap only', () => {
+    const scope = resolveScope(
+      [
+        { kind: 'flow', nodes: [1, 2, 3] },
+        { kind: 'nonOverlap', nodes: [4, 5] },
+      ],
+      markToId,
+    )
+    expect([...scope.spacing].sort()).toEqual(['id1', 'id2', 'id3'])
+    expect([...scope.overlap].sort()).toEqual(['id1', 'id2', 'id3', 'id4', 'id5'])
+  })
+
+  it('relations with no realiser yet (align/grid/contain/freeze) contribute nothing', () => {
+    const scope = resolveScope(
+      [
+        { kind: 'align', nodes: [1, 2], axis: 'row' },
+        { kind: 'grid', nodes: [1, 2, 3, 4], cols: 2 },
+        { kind: 'freeze', nodes: [5] },
+      ],
+      markToId,
+    )
+    expect(scope.spacing.size).toBe(0)
+    expect(scope.overlap.size).toBe(0)
+  })
+
+  it('skips marks that resolve to no shape', () => {
+    const scope = resolveScope([{ kind: 'flow', nodes: [1, 99] }], markToId)
+    expect([...scope.spacing]).toEqual(['id1']) // 99 unresolved → dropped
   })
 })

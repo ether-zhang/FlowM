@@ -57,3 +57,37 @@ export function parseStructure(input: unknown): ParsedStructure {
   })
   return { relations, errors }
 }
+
+/** Which node ids each B (intent) pass may move, keyed by realiser. Mirrors the layout
+ *  layer's StructureScope shape so the gate can hand it straight to `apply`. */
+export interface LayoutScope {
+  spacing: Set<string>
+  overlap: Set<string>
+}
+
+/**
+ * Turn parsed (mark-based) relations into a per-pass id scope, resolving marks to real
+ * shape ids. `flow` nodes get even spacing AND de-overlap (a flow shouldn't self-overlap);
+ * `nonOverlap` nodes get de-overlap only. The other kinds (align/grid/contain/freeze) have
+ * no realiser yet, so they contribute nothing — their nodes simply stay frozen for now.
+ * Unresolvable marks (no such node) are skipped.
+ */
+export function resolveScope(
+  relations: StructureRelation[],
+  markToId: (mark: number) => string | undefined,
+): LayoutScope {
+  const spacing = new Set<string>()
+  const overlap = new Set<string>()
+  const ids = (marks: number[]) => marks.map(markToId).filter((x): x is string => x != null)
+  for (const r of relations) {
+    if (r.kind === 'flow') {
+      for (const id of ids(r.nodes)) {
+        spacing.add(id)
+        overlap.add(id)
+      }
+    } else if (r.kind === 'nonOverlap') {
+      for (const id of ids(r.nodes)) overlap.add(id)
+    }
+  }
+  return { spacing, overlap }
+}

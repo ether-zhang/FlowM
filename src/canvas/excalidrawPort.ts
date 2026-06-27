@@ -11,7 +11,7 @@ import type {
   ExcalidrawTextElement,
 } from '@excalidraw/excalidraw/element/types'
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
-import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
+import type { CanvasPort, CanvasShape, CanvasOp, OpResult, LayoutScope } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
 import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, type PassContext } from './layoutPasses'
@@ -345,7 +345,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         })
     },
 
-    apply(ops: CanvasOp[]): OpResult[] {
+    apply(ops: CanvasOp[], scope: LayoutScope | null = null): OpResult[] {
       const byId = new Map<string, ExcalidrawElement>()
       for (const el of getNonDeletedElements(api.getSceneElements())) byId.set(el.id, el)
 
@@ -513,10 +513,12 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       // The passes and their order are library-agnostic; the port just supplies the
       // Excalidraw-aware PassContext below. New post-process steps (e.g. colouring) join
       // as another LayoutPass without touching this orchestration.
-      if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0) {
-        // Only shapes created/moved this batch may be repositioned; pre-existing shapes
-        // are pinned so we never shuffle untouched content.
+      if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0 || scope) {
+        // Shapes created/moved this batch may be repositioned; with a structure scope the
+        // declared nodes may move too (the model authorised laying them out), even if they
+        // were created on an earlier turn. Everything else stays pinned.
         const movable = new Set<string>([...createdIds, ...movedIds])
+        if (scope) for (const id of [...scope.spacing, ...scope.overlap]) movable.add(id)
         const displaced = new Set<string>(movedIds)
         // Spread arrows that share an endpoint pair (parallel/antiparallel) so they and
         // their labels don't overlap. Bindings don't move, so compute this once.
@@ -575,9 +577,9 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             }
             return out
           },
-          // No structure declarations yet (the gate that supplies them isn't wired);
-          // null keeps the B passes global, i.e. today's behaviour. See structure-schema.md.
-          structure: () => null,
+          // The gate's structure scope limits which nodes the B passes may move; null
+          // (no declarations) keeps them global, i.e. today's behaviour.
+          structure: () => scope,
           applyMoves: (moves) => {
             for (const [id, p] of moves) {
               const el = combined.get(id)

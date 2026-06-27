@@ -1,4 +1,5 @@
 import type { CanvasShape, CanvasOp, OpResult } from './schema'
+import type { LayoutScope } from './structure'
 
 /**
  * The narrow interface a concrete canvas must implement. The protocol and LLM
@@ -9,8 +10,12 @@ export interface CanvasPort {
   /** Read shapes. `scope: 'selection'` returns only selected shapes, falling back
    *  to all shapes when nothing is selected. `scope: 'all'` always returns all. */
   snapshot(scope: 'selection' | 'all'): CanvasShape[]
-  /** Apply a batch of ops in order, resolving create-refs so later ops can target them. */
-  apply(ops: CanvasOp[]): OpResult[]
+  /**
+   * Apply a batch of ops in order, resolving create-refs so later ops can target them.
+   * `scope` (from the gate's structure declarations) limits which nodes the intent
+   * passes may move; omit it (pre-gate / no declarations) to keep today's global B.
+   */
+  apply(ops: CanvasOp[], scope?: LayoutScope | null): OpResult[]
   /**
    * Render the given scope to a PNG data URL (or null if empty), so the model can
    * be sent a *visual* of the canvas alongside the serialized text — letting it
