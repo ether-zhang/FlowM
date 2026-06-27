@@ -1,12 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import { parseOp, type CanvasOp } from './schema'
+import { parseStructure, resolveScope } from './structure'
 import { formatCanvas } from './serialize'
 import { canvasTools, toolCallToOp } from './tools'
 
 describe('parseOp', () => {
-  it('parses create_geo and applies w/h defaults', () => {
+  it('parses create_geo and leaves omitted w/h undefined (the port supplies a default)', () => {
     const op = parseOp({ op: 'create_geo', shape: 'rectangle', x: 10, y: 20 })
-    expect(op).toMatchObject({ op: 'create_geo', shape: 'rectangle', x: 10, y: 20, w: 120, h: 80 })
+    expect(op).toMatchObject({ op: 'create_geo', shape: 'rectangle', x: 10, y: 20 })
+    expect((op as { w?: number }).w).toBeUndefined()
+    expect((op as { h?: number }).h).toBeUndefined()
+  })
+
+  it('keeps explicit create_geo w/h (model-given size is intent)', () => {
+    const op = parseOp({ op: 'create_geo', shape: 'rectangle', x: 0, y: 0, w: 189, h: 26 })
+    expect(op).toMatchObject({ w: 189, h: 26 })
   })
 
   it('parses connect_shapes with refs', () => {
@@ -65,5 +73,80 @@ describe('formatCanvas', () => {
       { id: 'a1', type: 'arrow', x: 0, y: 0, from: 's1', to: 's2', text: 'yes' },
     ])
     expect(out).toContain('#a1 arrow @(0,0) s1→s2 text="yes"')
+  })
+
+  it('prefixes only marked shapes; an unmarked arrow gets no [n]', () => {
+    const out = formatCanvas(
+      [
+        { id: 's1', type: 'rectangle', x: 0, y: 0, w: 120, h: 80, text: 'A' },
+        { id: 's2', type: 'ellipse', x: 0, y: 200, w: 120, h: 80, text: 'B' },
+        { id: 'a1', type: 'arrow', x: 0, y: 0, from: 's1', to: 's2' },
+      ],
+      new Map([['s1', 1], ['s2', 2]]), // arrows aren't marked
+    )
+    expect(out).toContain('- [1] #s1 rectangle')
+    expect(out).toContain('- [2] #s2 ellipse')
+    expect(out).toContain('- #a1 arrow') // no [n] prefix
+  })
+})
+
+describe('parseStructure', () => {
+  it('keeps valid relations and reports the malformed ones', () => {
+    const { relations, errors } = parseStructure({
+      relations: [
+        { kind: 'flow', nodes: ['a', 'b', 'c'], dir: 'down' },
+        { kind: 'contain', parent: 'p', children: ['x', 'y'] },
+        { kind: 'flow', nodes: ['a'] }, // too few nodes → dropped
+        { kind: 'wat', nodes: ['a', 'b'] }, // unknown kind → dropped
+      ],
+    })
+    expect(relations).toHaveLength(2)
+    expect(relations[0]).toEqual({ kind: 'flow', nodes: ['a', 'b', 'c'], dir: 'down' })
+    expect(relations[1]).toEqual({ kind: 'contain', parent: 'p', children: ['x', 'y'] })
+    expect(errors).toHaveLength(2)
+  })
+
+  it('tolerates a missing/empty relations payload', () => {
+    expect(parseStructure({}).relations).toEqual([])
+    expect(parseStructure(null).relations).toEqual([])
+    expect(parseStructure({ relations: [] }).relations).toEqual([])
+  })
+
+  it('validates each relation kind’s required fields', () => {
+    const ok = parseStructure({
+      relations: [
+        { kind: 'align', nodes: ['a', 'b'], axis: 'row' },
+        { kind: 'grid', nodes: ['a', 'b', 'c', 'd'], cols: 2 },
+        { kind: 'nonOverlap', nodes: ['g', 'h'] },
+        { kind: 'freeze', nodes: ['i'] },
+      ],
+    })
+    expect(ok.relations).toHaveLength(4)
+    expect(ok.errors).toHaveLength(0)
+    // bad field values are rejected
+    expect(parseStructure({ relations: [{ kind: 'align', nodes: ['a', 'b'], axis: 'diagonal' }] }).relations).toHaveLength(0)
+    expect(parseStructure({ relations: [{ kind: 'grid', nodes: ['a'], cols: 0 }] }).relations).toHaveLength(0)
+    expect(parseStructure({ relations: [{ kind: 'flow', nodes: [1, 2] }] }).relations).toHaveLength(0) // ids are strings
+  })
+})
+
+describe('resolveScope', () => {
+  it('flow nodes get spacing + overlap; nonOverlap nodes get overlap only', () => {
+    const scope = resolveScope([
+      { kind: 'flow', nodes: ['id1', 'id2', 'id3'] },
+      { kind: 'nonOverlap', nodes: ['id4', 'id5'] },
+    ])
+    expect([...scope.spacing].sort()).toEqual(['id1', 'id2', 'id3'])
+    expect([...scope.overlap].sort()).toEqual(['id1', 'id2', 'id3', 'id4', 'id5'])
+  })
+
+  it('relations with no realiser yet (align/grid/contain/freeze) contribute nothing', () => {
+    const scope = resolveScope([
+      { kind: 'align', nodes: ['a', 'b'], axis: 'row' },
+      { kind: 'grid', nodes: ['a', 'b', 'c', 'd'], cols: 2 },
+      { kind: 'freeze', nodes: ['e'] },
+    ])
+    expect(scope.spacing.size).toBe(0)
+    expect(scope.overlap.size).toBe(0)
   })
 })

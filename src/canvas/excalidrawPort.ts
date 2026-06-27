@@ -11,10 +11,10 @@ import type {
   ExcalidrawTextElement,
 } from '@excalidraw/excalidraw/element/types'
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
-import type { CanvasPort, CanvasShape, CanvasOp, OpResult } from '../protocol'
+import type { CanvasPort, CanvasShape, CanvasOp, OpResult, LayoutScope } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
-import { runPasses, type PassContext } from './layoutPasses'
+import { routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
+import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -36,6 +36,38 @@ function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
 }
 
 const isText = (el: ExcalidrawElement): el is ExcalidrawTextElement => el.type === 'text'
+
+/**
+ * Ids of every shape lying within the bounding box of the currently-selected shapes —
+ * the "selection region", not just the selected shapes themselves. The image/list are
+ * for spatial understanding, so showing the region's whole contents (a sub-flow's parent,
+ * a neighbour it must not collide with) lets the model place and judge things in context.
+ * Returns null when nothing is selected, so callers fall back to the whole canvas.
+ * Bound labels are excluded (they follow their container).
+ */
+function selectionRegion(
+  all: readonly ExcalidrawElement[],
+  selected: Record<string, boolean>,
+): Set<string> | null {
+  const sel = all.filter((el) => selected[el.id])
+  if (sel.length === 0) return null
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const el of sel) {
+    minX = Math.min(minX, el.x)
+    minY = Math.min(minY, el.y)
+    maxX = Math.max(maxX, el.x + el.width)
+    maxY = Math.max(maxY, el.y + el.height)
+  }
+  const ids = new Set<string>()
+  for (const el of all) {
+    if (isText(el) && el.containerId) continue
+    if (el.x <= maxX && el.x + el.width >= minX && el.y <= maxY && el.y + el.height >= minY) ids.add(el.id)
+  }
+  return ids
+}
 const center = (el: { x: number; y: number; width: number; height: number }) => ({
   x: el.x + el.width / 2,
   y: el.y + el.height / 2,
@@ -53,6 +85,37 @@ const decodeText = (s: string) => s.replace(/\\r\\n|\\r|\\n/g, '\n').replace(/\\
 
 /** Excalidraw element types an arrow can bind to. */
 const BINDABLE = new Set(['rectangle', 'ellipse', 'diamond'])
+
+/**
+ * Build ephemeral "set-of-mark" chip elements: a small high-contrast labelled square
+ * pinned to each marked shape's top-left corner, showing its mark number. Returned as
+ * ordinary Excalidraw elements in page space so the export pipeline positions them
+ * correctly; the caller appends them to the export only (never to the live scene).
+ * Arrows are skipped — marks ground NODES, which is what structure declarations key on.
+ */
+function buildMarkElements(elements: readonly ExcalidrawElement[], marks: Map<string, number>): ExcalidrawElement[] {
+  const skeleton: ExcalidrawElementSkeleton[] = []
+  for (const el of elements) {
+    const n = marks.get(el.id)
+    if (n == null || el.type === 'arrow') continue
+    skeleton.push({
+      type: 'rectangle',
+      x: el.x,
+      y: el.y,
+      width: 30,
+      height: 24,
+      backgroundColor: '#ffec99',
+      strokeColor: '#e8590c',
+      fillStyle: 'solid',
+      strokeWidth: 1,
+      roundness: null,
+      label: { text: String(n), fontSize: 16, strokeColor: '#c92a2a' },
+    } as ExcalidrawElementSkeleton)
+  }
+  return skeleton.length
+    ? (convertToExcalidrawElements(skeleton, { regenerateIds: true }) as ExcalidrawElement[])
+    : []
+}
 
 /**
  * Proactively load the canvas fonts Excalidraw measures text with (the hand-drawn
@@ -279,10 +342,16 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
   // (not a fallback) and never renders clipped until clicked. See ensureCanvasFonts.
   ensureCanvasFonts()
   return {
-    snapshot(scope) {
+    selectionScope() {
+      const all = getNonDeletedElements(api.getSceneElements())
+      return selectionRegion(all, api.getAppState().selectedElementIds)
+    },
+
+    snapshot(scope, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
-      const useSelection = scope === 'selection' && Object.keys(selected).length > 0
+      // Explicit ids win; else a selection means its whole region; else the whole canvas.
+      const keep = ids ?? (scope === 'selection' ? selectionRegion(all, selected) : null)
 
       // A labeled container stores its text as a separate child element
       // (containerId === container.id). Fold those into the container's `text`
@@ -294,7 +363,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
 
       return all
         .filter((el) => !(isText(el) && el.containerId)) // drop bound labels
-        .filter((el) => (useSelection ? selected[el.id] : true))
+        .filter((el) => (keep ? keep.has(el.id) : true))
         .map((el): CanvasShape => {
           const shape: CanvasShape = {
             id: el.id,
@@ -314,7 +383,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         })
     },
 
-    apply(ops: CanvasOp[]): OpResult[] {
+    async apply(ops: CanvasOp[], scope: LayoutScope | null = null): Promise<OpResult[]> {
       const byId = new Map<string, ExcalidrawElement>()
       for (const el of getNonDeletedElements(api.getSceneElements())) byId.set(el.id, el)
 
@@ -337,31 +406,26 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             // Excalidraw has no triangle; approximate with a diamond for now.
             // TODO: render true triangles via a closed 3-point line polygon.
             const geo = op.shape === 'triangle' ? 'diamond' : op.shape
-            // Grow the box to fit its label (model defaults are often too narrow, so
-            // text wraps); never shrink below what the model asked for.
             const text = op.text ? decodeText(op.text) : undefined
-            let width = op.w
-            let height = op.h
-            if (text) {
-              const fit = labelBoxSize(text, geo)
-              width = Math.max(op.w, fit.w)
-              height = Math.max(op.h, fit.h)
-            }
-            // Grow around the box's CENTRE, not its top-left — top-left growth drifts
-            // every centre by a different amount and breaks the alignment the model set.
-            const gx = op.x + (op.w - width) / 2
-            const gy = op.y + (op.h - height) / 2
+            // Box size is the model's INTENT: a dimension it gave is frozen; only an OMITTED
+            // dimension is filled with a label-fitted default. Then the TEXT is scaled to fit
+            // the box (fitFontSize) — we never grow the box past the model's size, so a
+            // deliberately tight layout (tiled cells, whitepaper headers) keeps its bounds
+            // instead of bursting across its neighbours. A label-sized box keeps full size.
+            const fit = text ? labelBoxSize(text, geo) : { w: 120, h: 80 }
+            const width = op.w ?? fit.w
+            const height = op.h ?? fit.h
             skeleton.push({
               type: geo,
               id,
-              x: gx,
-              y: gy,
+              x: op.x,
+              y: op.y,
               width,
               height,
-              ...(text ? { label: { text } } : {}),
+              ...(text ? { label: { text, fontSize: fitFontSize(text, geo, width, height) } } : {}),
             } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
-            pending.set(id, { x: gx, y: gy, width, height })
+            pending.set(id, { x: op.x, y: op.y, width, height })
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break
           }
@@ -376,7 +440,12 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             const from = resolve(op.from)
             const to = resolve(op.to)
             if (!from || !to) {
-              results[i] = { op: op.op, ok: false, error: `unresolved ${op.from} or ${op.to}` }
+              const bad = [!from ? op.from : null, !to ? op.to : null].filter(Boolean).join(', ')
+              results[i] = {
+                op: op.op,
+                ok: false,
+                error: `unresolved endpoint(s): ${bad}. A 'ref' only resolves within the response that created the shape — to connect shapes from an earlier turn, use the real id returned by create_geo (e.g. flowm-…), not the ref.`,
+              }
               break
             }
             // Defer arrow creation to the post-convert pass: the endpoints may be
@@ -445,6 +514,21 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         }
       })
 
+      // Text is measured INSIDE convertToExcalidrawElements (and the arrow-label converts
+      // below): if the glyphs aren't loaded, it measures against a fallback metric and the
+      // real (wider) font renders clipped until nudged. FontFaceSet.load(font, text) loads
+      // exactly the subset those characters need, so await it for this batch's text BEFORE
+      // converting — the very first measurement is then correct (no clip, no reflow flash).
+      // (Excalidraw measures the hand-drawn family as "Excalifont", CJK via the Xiaolai
+      // unicode-range faces; load is size-independent so 20px covers every rendered size.)
+      const batchText = ops.map((op) => ('text' in op && typeof op.text === 'string' ? decodeText(op.text) : '')).join('')
+      if (batchText && typeof document !== 'undefined' && document.fonts) {
+        await Promise.all([
+          document.fonts.load(`20px "Excalifont"`, batchText),
+          document.fonts.load(`20px "Xiaolai"`, batchText),
+        ]).catch(() => [])
+      }
+
       // Convert created shapes. regenerateIds:false is essential — it keeps the ids
       // we assigned (and returned in the op results) so later ops, in this or a
       // future turn, can reference the shapes. The default (true) would mint new
@@ -482,10 +566,12 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       // The passes and their order are library-agnostic; the port just supplies the
       // Excalidraw-aware PassContext below. New post-process steps (e.g. colouring) join
       // as another LayoutPass without touching this orchestration.
-      if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0) {
-        // Only shapes created/moved this batch may be repositioned; pre-existing shapes
-        // are pinned so we never shuffle untouched content.
+      if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0 || scope) {
+        // Shapes created/moved this batch may be repositioned; with a structure scope the
+        // declared nodes may move too (the model authorised laying them out), even if they
+        // were created on an earlier turn. Everything else stays pinned.
         const movable = new Set<string>([...createdIds, ...movedIds])
+        if (scope) for (const id of [...scope.spacing, ...scope.overlap]) movable.add(id)
         const displaced = new Set<string>(movedIds)
         // Spread arrows that share an endpoint pair (parallel/antiparallel) so they and
         // their labels don't overlap. Bindings don't move, so compute this once.
@@ -544,6 +630,9 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             }
             return out
           },
+          // The gate's structure scope limits which nodes the B passes may move; null
+          // (no declarations) keeps them global, i.e. today's behaviour.
+          structure: () => scope,
           applyMoves: (moves) => {
             for (const [id, p] of moves) {
               const el = combined.get(id)
@@ -585,7 +674,11 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             combined.set(id, routeArrowElement(straight, combined, arrowOffsets.get(id) ?? 0, focus))
           },
         }
-        runPasses(ctx)
+        // Intent passes (B) move nodes only where the model declared structure — never
+        // un-scoped, so the first image (build phase, scope=null) and any free-form region
+        // are left exactly as placed. Invariant passes (A) always run so arrows stay bound.
+        if (scope) runPasses(ctx, INTENT_PASSES)
+        runPasses(ctx, INVARIANT_PASSES)
       }
 
       api.updateScene({ elements: [...combined.values()] })
@@ -601,19 +694,27 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       api.updateScene({ elements: (data as ExcalidrawElement[]) ?? [] })
     },
 
-    async exportImage(scope) {
+    async exportImage(scope, marks, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds
-      const useSelection = scope === 'selection' && Object.keys(selected).length > 0
-      // Include bound text labels of selected containers so labels aren't dropped.
-      const elements = useSelection
-        ? all.filter((el) => selected[el.id] || (isText(el) && el.containerId && selected[el.containerId]))
+      // Explicit ids win; else a selection means its whole region; else the whole canvas.
+      const keep = ids ?? (scope === 'selection' ? selectionRegion(all, selected) : null)
+      // Include bound text labels (of kept containers) so labels aren't dropped.
+      const elements = keep
+        ? all.filter((el) => keep.has(el.id) || (isText(el) && el.containerId && keep.has(el.containerId)))
         : all
       if (elements.length === 0) return null
 
+      // Set-of-mark: overlay each shape's mark number as ephemeral chip elements so the
+      // model can ground image regions to specific ids (the same number prefixes the
+      // shape's text line). Rendered as real elements in page space, so Excalidraw's
+      // export handles the page→pixel transform — no manual maths, exact alignment.
+      // These never touch the live scene; they exist only for this export.
+      const overlay = marks ? buildMarkElements(elements, marks) : []
+
       try {
         const canvas = await exportToCanvas({
-          elements,
+          elements: [...elements, ...overlay],
           files: api.getFiles(),
           exportPadding: 16,
           maxWidthOrHeight: 1280, // cap so the data URL stays a reasonable token cost

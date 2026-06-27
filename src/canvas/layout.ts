@@ -35,6 +35,11 @@ export interface LayoutBox {
 const MARGIN = 16
 const CLEARANCE = 10
 const LABEL_PAD = 12
+/** How near an axis (as |sin θ| of the edge direction) a flow edge must be to snap
+ *  straight. normalizeSpacing now runs only on a model-DECLARED flow, where the intent
+ *  is an aligned column/row — so this is generous (~17°): a node the model nudged a bit
+ *  off the column (e.g. a wider diamond) still gets pulled into line. */
+const AXIS_SNAP = 0.3
 
 // --- overlap avoidance (58) ---
 
@@ -132,6 +137,23 @@ export function labelBoxSize(text: string, type: string, fontSize = 20): { w: nu
     h *= 1.35
   }
   return { w: Math.ceil(w), h: Math.ceil(h) }
+}
+
+/**
+ * Largest font size in [floor, base] at which `text` fits inside a (boxW × boxH) box,
+ * measured by labelBoxSize. This is the INVERSE of labelBoxSize: instead of growing the
+ * box to the text (which bursts a deliberately tight layout — tiled cells, whitepaper
+ * headers — past its bounds), the framework keeps the model's box and scales the text
+ * DOWN to fit it. A box already sized to its label stays at `base` (no shrink); a tight
+ * box yields a smaller font. Returns `floor` when even that overflows — accept a slight
+ * clip rather than override the model's geometry. Pure; unit-tested.
+ */
+export function fitFontSize(text: string, type: string, boxW: number, boxH: number, base = 20, floor = 9): number {
+  for (let f = base; f >= floor; f--) {
+    const { w, h } = labelBoxSize(text, type, f)
+    if (w <= boxW && h <= boxH) return f
+  }
+  return floor
 }
 
 export interface SpacingEdge {
@@ -251,10 +273,10 @@ export function normalizeSpacing(
       dx /= L
       dy /= L
       // Snap near-axis directions so chains stay straight and aligned.
-      if (Math.abs(dx) < 0.16) {
+      if (Math.abs(dx) < AXIS_SNAP) {
         dx = 0
         dy = dy >= 0 ? 1 : -1
-      } else if (Math.abs(dy) < 0.16) {
+      } else if (Math.abs(dy) < AXIS_SNAP) {
         dy = 0
         dx = dx >= 0 ? 1 : -1
       }

@@ -31,3 +31,5 @@ public/fonts
 *.sw?
 .env
 .env.local
+
+tmp/

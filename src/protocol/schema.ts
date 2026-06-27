@@ -40,8 +40,12 @@ export const CanvasOp = z.discriminatedUnion('op', [
     shape: GeoKind,
     x: z.number(),
     y: z.number(),
-    w: z.number().default(120),
-    h: z.number().default(80),
+    // Optional ON PURPOSE: an omitted dimension means "the model didn't size this", so the
+    // port supplies a label-fitted default; a given dimension is the model's intent and is
+    // frozen (text is scaled to fit it, never the box grown past it). Defaulting here would
+    // erase that distinction.
+    w: z.number().optional(),
+    h: z.number().optional(),
     text: z.string().optional(),
     ref: z.string().optional(),
   }),

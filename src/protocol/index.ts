@@ -1,4 +1,5 @@
 export * from './schema'
 export * from './port'
 export * from './serialize'
+export * from './structure'
 export * from './tools'
