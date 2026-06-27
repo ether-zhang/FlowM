@@ -157,9 +157,6 @@ export class Conversation {
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn
-    // Block until the canvas fonts are loaded, so any text we draw this turn is measured
-    // with the real font, not a fallback (which renders clipped until the shape is nudged).
-    await port.whenReady?.()
     // What the user selected at request time — folded into the review set so the model's
     // new work is shown stitched to the diagram it was asked to expand, not in isolation.
     const selection = port.selectionScope()
@@ -200,7 +197,7 @@ export class Conversation {
       const turn = await this.adapter.runTurn(params, { onText: cb.onText })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
-      const applied = await this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
+      const applied = this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
     return changed
@@ -232,18 +229,18 @@ export class Conversation {
     // build scope. Otherwise a move_shape correcting a flow node would be immediately
     // re-flowed (clobbered) by the build's still-active straighten. The build already
     // straightened; review is for manual fixes + any newly-spotted structure.
-    const applied = await this.processToolCalls(port, turn.toolCalls, { persistScope: false })
+    const applied = this.processToolCalls(port, turn.toolCalls, { persistScope: false })
     cb.onToolsApplied(`复核：执行 ${applied} 项调整`)
   }
 
   /** Process one turn's tool calls: parse any structure declarations into a B-pass scope,
    *  apply the canvas ops under that scope, and push a result for EVERY call (so the next
    *  request never has a dangling tool_call). Returns the success count. */
-  private async processToolCalls(
+  private processToolCalls(
     port: CanvasPort,
     toolCalls: LlmToolCall[],
     opts: { changed?: Set<string>; persistScope: boolean },
-  ): Promise<number> {
+  ): number {
     const { opCalls, declareCalls } = splitTools(toolCalls)
     const relations: StructureRelation[] = []
     for (const d of declareCalls) {
@@ -290,15 +287,15 @@ export class Conversation {
   /** Apply the op tool calls (with an optional B-pass scope) and push each result back.
    *  A scope with no ops still re-lays out the declared nodes. Collects created/moved ids
    *  into `changed` (for the review). Returns the success count. */
-  private async applyOpCalls(
+  private applyOpCalls(
     port: CanvasPort,
     opCalls: OpCall[],
     scope: LayoutScope | null,
     changed?: Set<string>,
-  ): Promise<number> {
+  ): number {
     const validOps: CanvasOp[] = opCalls.filter((c) => c.op).map((c) => c.op as CanvasOp)
     const resolved = this.resolveCrossBatchRefs(validOps)
-    const results = resolved.length || scope ? await port.apply(resolved, scope) : []
+    const results = resolved.length || scope ? port.apply(resolved, scope) : []
     // Remember this batch's create-refs so a later batch's connect can target them by ref.
     for (const r of results) if (r.ok && r.id && r.ref) this.refMap.set(r.ref, r.id)
     let vi = 0
