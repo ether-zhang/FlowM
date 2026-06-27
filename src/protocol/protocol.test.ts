@@ -5,9 +5,16 @@ import { formatCanvas } from './serialize'
 import { canvasTools, toolCallToOp } from './tools'
 
 describe('parseOp', () => {
-  it('parses create_geo and applies w/h defaults', () => {
+  it('parses create_geo and leaves omitted w/h undefined (the port supplies a default)', () => {
     const op = parseOp({ op: 'create_geo', shape: 'rectangle', x: 10, y: 20 })
-    expect(op).toMatchObject({ op: 'create_geo', shape: 'rectangle', x: 10, y: 20, w: 120, h: 80 })
+    expect(op).toMatchObject({ op: 'create_geo', shape: 'rectangle', x: 10, y: 20 })
+    expect((op as { w?: number }).w).toBeUndefined()
+    expect((op as { h?: number }).h).toBeUndefined()
+  })
+
+  it('keeps explicit create_geo w/h (model-given size is intent)', () => {
+    const op = parseOp({ op: 'create_geo', shape: 'rectangle', x: 0, y: 0, w: 189, h: 26 })
+    expect(op).toMatchObject({ w: 189, h: 26 })
   })
 
   it('parses connect_shapes with refs', () => {

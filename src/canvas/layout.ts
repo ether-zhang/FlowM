@@ -139,6 +139,23 @@ export function labelBoxSize(text: string, type: string, fontSize = 20): { w: nu
   return { w: Math.ceil(w), h: Math.ceil(h) }
 }
 
+/**
+ * Largest font size in [floor, base] at which `text` fits inside a (boxW × boxH) box,
+ * measured by labelBoxSize. This is the INVERSE of labelBoxSize: instead of growing the
+ * box to the text (which bursts a deliberately tight layout — tiled cells, whitepaper
+ * headers — past its bounds), the framework keeps the model's box and scales the text
+ * DOWN to fit it. A box already sized to its label stays at `base` (no shrink); a tight
+ * box yields a smaller font. Returns `floor` when even that overflows — accept a slight
+ * clip rather than override the model's geometry. Pure; unit-tested.
+ */
+export function fitFontSize(text: string, type: string, boxW: number, boxH: number, base = 20, floor = 9): number {
+  for (let f = base; f >= floor; f--) {
+    const { w, h } = labelBoxSize(text, type, f)
+    if (w <= boxW && h <= boxH) return f
+  }
+  return floor
+}
+
 export interface SpacingEdge {
   from: string
   to: string

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOverlaps, routeBoundArrow, labelBoxSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox } from './layout'
+import { resolveOverlaps, routeBoundArrow, labelBoxSize, fitFontSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox } from './layout'
 import { solveEndpoint, type Shape, type Pt } from './bindingGeometry'
 
 const box = (id: string, x: number, y: number, w: number, h: number, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
@@ -209,6 +209,26 @@ describe('labelBoxSize (67 — content-driven size)', () => {
     const d = labelBoxSize('结束?', 'diamond')
     expect(d.w).toBeGreaterThan(r.w)
     expect(d.h).toBeGreaterThan(r.h)
+  })
+})
+
+describe('fitFontSize (text scales to the box, not the box to the text)', () => {
+  it('keeps the base size when the box already fits the label', () => {
+    const { w, h } = labelBoxSize('Warp Scheduler', 'rectangle') // sized at base font
+    expect(fitFontSize('Warp Scheduler', 'rectangle', w, h)).toBe(20)
+  })
+
+  it('shrinks the font for a deliberately tight box (whitepaper header)', () => {
+    // The CUDA-SM case: a long label the model packed into a narrow, short cell.
+    const f = fitFontSize('Warp Scheduler (32 thread/clk)', 'rectangle', 189, 26)
+    expect(f).toBeLessThan(20)
+    const { w, h } = labelBoxSize('Warp Scheduler (32 thread/clk)', 'rectangle', f)
+    expect(w).toBeLessThanOrEqual(189)
+    expect(h).toBeLessThanOrEqual(26)
+  })
+
+  it('never goes below the floor, even if the text still overflows', () => {
+    expect(fitFontSize('a very long label that cannot possibly fit', 'rectangle', 20, 10, 20, 9)).toBe(9)
   })
 })
 

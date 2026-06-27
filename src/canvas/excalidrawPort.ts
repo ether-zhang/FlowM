@@ -13,7 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import type { CanvasPort, CanvasShape, CanvasOp, OpResult, LayoutScope } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { routeBoundArrow, labelBoxSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
+import { routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
@@ -406,31 +406,26 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             // Excalidraw has no triangle; approximate with a diamond for now.
             // TODO: render true triangles via a closed 3-point line polygon.
             const geo = op.shape === 'triangle' ? 'diamond' : op.shape
-            // Grow the box to fit its label (model defaults are often too narrow, so
-            // text wraps); never shrink below what the model asked for.
             const text = op.text ? decodeText(op.text) : undefined
-            let width = op.w
-            let height = op.h
-            if (text) {
-              const fit = labelBoxSize(text, geo)
-              width = Math.max(op.w, fit.w)
-              height = Math.max(op.h, fit.h)
-            }
-            // Grow around the box's CENTRE, not its top-left — top-left growth drifts
-            // every centre by a different amount and breaks the alignment the model set.
-            const gx = op.x + (op.w - width) / 2
-            const gy = op.y + (op.h - height) / 2
+            // Box size is the model's INTENT: a dimension it gave is frozen; only an OMITTED
+            // dimension is filled with a label-fitted default. Then the TEXT is scaled to fit
+            // the box (fitFontSize) — we never grow the box past the model's size, so a
+            // deliberately tight layout (tiled cells, whitepaper headers) keeps its bounds
+            // instead of bursting across its neighbours. A label-sized box keeps full size.
+            const fit = text ? labelBoxSize(text, geo) : { w: 120, h: 80 }
+            const width = op.w ?? fit.w
+            const height = op.h ?? fit.h
             skeleton.push({
               type: geo,
               id,
-              x: gx,
-              y: gy,
+              x: op.x,
+              y: op.y,
               width,
               height,
-              ...(text ? { label: { text } } : {}),
+              ...(text ? { label: { text, fontSize: fitFontSize(text, geo, width, height) } } : {}),
             } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
-            pending.set(id, { x: gx, y: gy, width, height })
+            pending.set(id, { x: op.x, y: op.y, width, height })
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break
           }
