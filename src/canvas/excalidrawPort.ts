@@ -342,6 +342,11 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
   // (not a fallback) and never renders clipped until clicked. See ensureCanvasFonts.
   ensureCanvasFonts()
   return {
+    selectionScope() {
+      const all = getNonDeletedElements(api.getSceneElements())
+      return selectionRegion(all, api.getAppState().selectedElementIds)
+    },
+
     snapshot(scope, ids) {
       const all = getNonDeletedElements(api.getSceneElements())
       const selected = api.getAppState().selectedElementIds

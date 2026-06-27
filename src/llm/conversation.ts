@@ -157,6 +157,9 @@ export class Conversation {
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn
+    // What the user selected at request time — folded into the review set so the model's
+    // new work is shown stitched to the diagram it was asked to expand, not in isolation.
+    const selection = port.selectionScope()
     const shapes = port.snapshot('selection')
     const marks = nodeMarks(shapes)
     const context = formatCanvas(shapes, marks)
@@ -173,10 +176,15 @@ export class Conversation {
     })
 
     const changed = await this.runBuildLoop(port, cb)
-    // One visual-review round over what the model created/changed this turn (plus the
-    // shapes its new arrows attach to) — not the whole canvas (which would drown a complex
-    // board) nor the user's selection (which wouldn't include the model's new shapes).
-    if (changed.size > 0) await this.reviewGate(port, cb, withConnectedContext(port, changed))
+    // One visual-review round over what the model created/changed this turn (plus the shapes
+    // its new arrows attach to) UNION the user's original selection region — so the review
+    // image shows the new work stitched to what was selected, while still not dumping the
+    // whole canvas (which would drown a complex board) when nothing was selected.
+    if (changed.size > 0) {
+      const reviewIds = withConnectedContext(port, changed)
+      if (selection) for (const id of selection) reviewIds.add(id)
+      await this.reviewGate(port, cb, reviewIds)
+    }
   }
 
   /** Build phase: let the model create/connect/move/declare until it stops calling tools.

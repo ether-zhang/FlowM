@@ -12,6 +12,11 @@ export interface CanvasPort {
    *  When `ids` is given it overrides scope: exactly the shapes with those ids
    *  (used by the review gate to look at only what the model just created/changed). */
   snapshot(scope: 'selection' | 'all', ids?: ReadonlySet<string>): CanvasShape[]
+  /** Ids of the current selection REGION (every shape within the selected shapes'
+   *  bounding box), or null when nothing is selected. The LLM layer captures this at
+   *  request time so the review image can show the model's new work in the context of
+   *  what the user actually selected (not just the new shapes in isolation). */
+  selectionScope(): ReadonlySet<string> | null
   /**
    * Apply a batch of ops in order, resolving create-refs so later ops can target them.
    * `scope` (from the gate's structure declarations) limits which nodes the intent
