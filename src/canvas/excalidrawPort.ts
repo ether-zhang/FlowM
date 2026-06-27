@@ -383,7 +383,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         })
     },
 
-    apply(ops: CanvasOp[], scope: LayoutScope | null = null): OpResult[] {
+    async apply(ops: CanvasOp[], scope: LayoutScope | null = null): Promise<OpResult[]> {
       const byId = new Map<string, ExcalidrawElement>()
       for (const el of getNonDeletedElements(api.getSceneElements())) byId.set(el.id, el)
 
@@ -513,6 +513,21 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
           }
         }
       })
+
+      // Text is measured INSIDE convertToExcalidrawElements (and the arrow-label converts
+      // below): if the glyphs aren't loaded, it measures against a fallback metric and the
+      // real (wider) font renders clipped until nudged. FontFaceSet.load(font, text) loads
+      // exactly the subset those characters need, so await it for this batch's text BEFORE
+      // converting — the very first measurement is then correct (no clip, no reflow flash).
+      // (Excalidraw measures the hand-drawn family as "Excalifont", CJK via the Xiaolai
+      // unicode-range faces; load is size-independent so 20px covers every rendered size.)
+      const batchText = ops.map((op) => ('text' in op && typeof op.text === 'string' ? decodeText(op.text) : '')).join('')
+      if (batchText && typeof document !== 'undefined' && document.fonts) {
+        await Promise.all([
+          document.fonts.load(`20px "Excalifont"`, batchText),
+          document.fonts.load(`20px "Xiaolai"`, batchText),
+        ]).catch(() => [])
+      }
 
       // Convert created shapes. regenerateIds:false is essential — it keeps the ids
       // we assigned (and returned in the op results) so later ops, in this or a

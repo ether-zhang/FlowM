@@ -22,7 +22,7 @@ export interface CanvasPort {
    * `scope` (from the gate's structure declarations) limits which nodes the intent
    * passes may move; omit it (pre-gate / no declarations) to keep today's global B.
    */
-  apply(ops: CanvasOp[], scope?: LayoutScope | null): OpResult[]
+  apply(ops: CanvasOp[], scope?: LayoutScope | null): Promise<OpResult[]>
   /**
    * Render the given scope to a PNG data URL (or null if empty), so the model can
    * be sent a *visual* of the canvas alongside the serialized text — letting it
