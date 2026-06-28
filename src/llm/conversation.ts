@@ -186,6 +186,11 @@ export class Conversation {
     if (changed.size > 0) {
       const reviewIds = withConnectedContext(port, changed)
       if (selection) for (const id of selection) reviewIds.add(id)
+      // The user's hand-drawn sketch is the reference the model is completing/annotating —
+      // always stitch it into the review so the new work is judged against it, not in
+      // isolation. (selectionScope can be null when nothing was explicitly selected and the
+      // context came from the whole-canvas fallback, which dropped the sketch from review.)
+      for (const s of port.snapshot('all')) if (s.type === 'draw') reviewIds.add(s.id)
       await this.reviewGate(port, cb, reviewIds)
     }
   }

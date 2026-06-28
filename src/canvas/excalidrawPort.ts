@@ -95,15 +95,19 @@ const BINDABLE = new Set(['rectangle', 'ellipse', 'diamond'])
  */
 function buildMarkElements(elements: readonly ExcalidrawElement[], marks: Map<string, number>): ExcalidrawElement[] {
   const skeleton: ExcalidrawElementSkeleton[] = []
+  const CHIP_W = 30
+  const CHIP_H = 24
   for (const el of elements) {
     const n = marks.get(el.id)
     if (n == null || el.type === 'arrow') continue
     skeleton.push({
       type: 'rectangle',
+      // Sit the chip JUST ABOVE the shape's top-left corner, not on it — placed on the
+      // corner it occludes the content (small labels disappear under it entirely).
       x: el.x,
-      y: el.y,
-      width: 30,
-      height: 24,
+      y: el.y - CHIP_H - 2,
+      width: CHIP_W,
+      height: CHIP_H,
       backgroundColor: '#ffec99',
       strokeColor: '#e8590c',
       fillStyle: 'solid',
