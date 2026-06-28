@@ -7,7 +7,7 @@ import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { CanvasEngine, ClaudeEngine, handleMcpRequest, type ChatEngine } from '../engine'
+import { CanvasEngine, ClaudeEngine, ClaudeAdapter, handleMcpRequest, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
@@ -60,15 +60,21 @@ export function App() {
   // live conv/port/cwd through getters, so they stay valid as those change.
   const cwdRef = useRef('D:\\Project\\vllm')
   const [cwd, setCwd] = useState(cwdRef.current)
+  // The canvas pipeline backed by Claude instead of Poe: SAME Conversation/serialize/operations/
+  // review, Claude just replaces the model (and can read project code on the way). Built once,
+  // reads cwd live. This is the adapter.ts-intended way to bring Claude onto the canvas.
+  const claudeConvRef = useRef<Conversation | null>(null)
   const enginesRef = useRef<ChatEngine[] | null>(null)
   if (!enginesRef.current) {
     const canvas = new CanvasEngine(() => convRef.current, () => portRef.current)
-    // Two Claude engines share one transport, differing only by direction: 'build' (画布→工程)
-    // and 'draw' (工程→画布). Expressing the mode as separate engine entries keeps the engine
-    // self-contained (mode is a ctor arg, not React state) and reuses the existing selector.
+    if (IS_TAURI) claudeConvRef.current = new Conversation(new ClaudeAdapter(() => cwdRef.current))
     enginesRef.current = IS_TAURI
       ? [
           canvas,
+          // Same canvas engine, Claude-backed conversation — the corrected, on-rails path.
+          new CanvasEngine(() => claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手 · Claude' }),
+          // The earlier bespoke Claude directions (kept for now): build = 画布→工程; draw =
+          // 工程→画布一次性结构图; mcp = Claude 直接经 MCP 改画布.
           new ClaudeEngine(() => cwdRef.current, () => portRef.current),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, 'draw'),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, 'mcp'),
@@ -227,7 +233,7 @@ export function App() {
     convRef.current?.reset(project.api)
   }, [])
 
-  const isClaude = engineId.startsWith('claude') // 'claude' (build) and 'claude-draw' both need a cwd
+  const isClaude = engineId.includes('claude') // every Claude-backed engine (incl. 'canvas-claude') needs a cwd
   const canSend = isClaude ? !!cwd.trim() : apiKeySet
   const placeholder = canSend
     ? '描述需求…（Enter 发送）'

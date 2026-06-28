@@ -7,3 +7,4 @@ export { claudeRun, writeDesign, mcpStart, type ClaudeEvent } from './claudeCode
 export { DiagramSpec, parseDiagram, DIAGRAM_JSON_SCHEMA, type DiagramNode, type DiagramEdge } from './diagram'
 export { layoutDiagram } from './diagramLayout'
 export { handleMcpRequest } from './mcpCanvas'
+export { ClaudeAdapter, buildTurnPrompt, parseClaudeTurn, turnSchema } from './claudeAdapter'
