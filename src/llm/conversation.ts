@@ -19,6 +19,7 @@ const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user 
 
 - Before each user message you are given the current canvas (selection, or whole canvas) two ways: (1) a list of shapes with their ids, types, page coordinates (top-left), sizes and text, AND (2) an IMAGE of that same selection/canvas. Use the image to see the actual layout, hand-drawn strokes, colors and visual intent that the shape list can't fully convey.
 - Each NODE (box / ellipse / diamond / standalone text — NOT arrows) is tagged with a number in an orange box at its top-left corner in the IMAGE, and the same number prefixes its line as \`[n]\` in the shape list. These are just arbitrary handles for pointing at a shape — e.g. "the box marked [3] overlaps [5]" or "[2] contains [4]". They are NOT an order, priority, or flow direction (the flow is shown by the arrows), and have nothing to do with any numbering inside the shapes' own text. They are an overlay for your reference only — not real shapes, and the numbering may differ from turn to turn.
+- Hand-drawn (freehand) strokes are the USER's sketch, not your shapes. Nearby strokes are grouped into a "hand-drawn region" tagged with a BLUE chip \`[Bn]\` and shown as ONE line in the list (its bounding box + stroke count); read what it depicts from the IMAGE, not from the strokes. Use \`[Bn]\` to refer to a whole sketch (e.g. "matrix [B1] is M×N"). You normally don't redraw the user's sketch — you add your own shapes around/from it.
 - Use connecting arrows + flow order ONLY for an actual process/sequence (steps, decisions, start→end). For a static structure (a block/architecture diagram, a grid, nested groups) or loose notes/sketch, place shapes spatially WITHOUT forcing flow arrows. One canvas can mix both — decide per region, not as a whole-canvas mode.
 - You can both answer in words AND modify the canvas by calling the provided tools. When the user asks you to draw, arrange, or edit, USE THE TOOLS.
 - Coordinates are page space: x grows right, y grows down. Default shapes are ~120 wide × 80 tall.
@@ -79,11 +80,17 @@ function mergeScope(into: LayoutScope | null, add: LayoutScope): LayoutScope {
   return into
 }
 
-/** One set-of-mark number per NODE (arrows aren't marked), in snapshot order. */
+/** Shape types that are NODES the model points at / declares structure over — the
+ *  system prompt's "box / ellipse / diamond / standalone text". Arrows, freedraw strokes
+ *  and other primitives are NOT marked: chips over a hand-drawn sketch occlude the strokes
+ *  and atomise a figure into N "nodes", hurting the model's read of it. */
+const MARKABLE_TYPES = new Set(['rectangle', 'ellipse', 'diamond', 'triangle', 'text'])
+
+/** One set-of-mark number per markable NODE, in snapshot order. */
 function nodeMarks(shapes: CanvasShape[]): Map<string, number> {
   let n = 0
   const m = new Map<string, number>()
-  for (const s of shapes) if (s.type !== 'arrow') m.set(s.id, ++n)
+  for (const s of shapes) if (MARKABLE_TYPES.has(s.type)) m.set(s.id, ++n)
   return m
 }
 
@@ -180,6 +187,11 @@ export class Conversation {
     if (changed.size > 0) {
       const reviewIds = withConnectedContext(port, changed)
       if (selection) for (const id of selection) reviewIds.add(id)
+      // The user's hand-drawn sketch is the reference the model is completing/annotating —
+      // always stitch it into the review so the new work is judged against it, not in
+      // isolation. (selectionScope can be null when nothing was explicitly selected and the
+      // context came from the whole-canvas fallback, which dropped the sketch from review.)
+      for (const s of port.snapshot('all')) if (s.type === 'draw') reviewIds.add(s.id)
       await this.reviewGate(port, cb, reviewIds)
     }
   }
