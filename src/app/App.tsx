@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { CanvasEngine, ClaudeEngine, type ChatEngine } from '../engine'
+import { CanvasEngine, ClaudeEngine, handleMcpRequest, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
@@ -69,6 +71,7 @@ export function App() {
           canvas,
           new ClaudeEngine(() => cwdRef.current, () => portRef.current),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, 'draw'),
+          new ClaudeEngine(() => cwdRef.current, () => portRef.current, 'mcp'),
         ]
       : [canvas]
   }
@@ -93,6 +96,22 @@ export function App() {
       if (has && !convRef.current) ensureConversation()
     })
   }, [ensureConversation])
+
+  // Canvas MCP bridge: the Rust server (mcp.rs) emits one event per Claude tool call; run it
+  // against the live port and send the result back, so the spawned `claude` (mcp engine) can
+  // read/edit the canvas. Registered once at mount — claude is spawned later, so the listener
+  // is always ready; portRef is read live.
+  useEffect(() => {
+    if (!IS_TAURI) return
+    const un = listen<{ rid: number; method: string; params: unknown }>('flowm://mcp-request', async (e) => {
+      const { rid, method, params } = e.payload
+      const result = await handleMcpRequest(method, params, portRef.current)
+      await invoke('mcp_respond', { rid, result })
+    })
+    return () => {
+      un.then((f) => f())
+    }
+  }, [])
 
   const onReady = useCallback(
     (api: ExcalidrawImperativeAPI) => {

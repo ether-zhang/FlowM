@@ -29,3 +29,21 @@ export function buildDrawPrompt(userText: string): string {
 - 只画主干结构（约 10~20 个节点），不要逐行罗列；让连线表达真实关系。
 - 不要修改任何文件；读完直接产出结构（位置由 FlowM 排布，你只给节点与连线）。`
 }
+
+/**
+ * Compose the prompt for canvas-edit (MCP) mode: Claude edits the LIVE canvas directly via
+ * the `mcp__flowm__*` tools (a real feedback loop — it can re-read the canvas as it works),
+ * so the steering is about HOW to use those tools, not a one-shot schema. Pairs with the
+ * tools exposed in [[mcpCanvas]].
+ */
+export function buildCanvasPrompt(userText: string): string {
+  return `${userText}
+
+────────
+你可以直接读写 FlowM 画布——通过 mcp__flowm__* 这组工具（画布就在它们后面）：
+- 先调用 get_canvas 看当前画布（默认返回用户选中的区域），弄清用户选中 / 指的是哪一部分。
+- 用 create_geo / create_text / connect_shapes / move_shape / update_text / delete_shape 增量编辑；每次 create_geo 会返回新形状的 id，用这个 id 去 connect_shapes / move_shape（不要用 ref，它跨调用不通用）。
+- 需要框架帮你对齐 / 匀缝时，用 declare_structure 按 id 声明结构（flow / grid / contain …）。
+- 需要读代码理解结构时，照常用你的文件工具（Read / Grep）。
+直接在画布上落地用户的请求；边做边用 get_canvas 确认效果。`
+}

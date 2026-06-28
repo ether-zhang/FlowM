@@ -14,6 +14,8 @@ use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
+mod mcp;
+
 const POE_URL: &str = "https://api.poe.com/v1/chat/completions";
 
 /// Path of the file holding the Poe API key (created on demand).
@@ -95,6 +97,7 @@ async fn claude_run(
     prompt: String,
     cwd: String,
     json_schema: Option<String>,
+    mcp_config: Option<String>,
     on_event: Channel<ClaudeEvent>,
 ) -> Result<(), String> {
     let bin = bin.unwrap_or_else(|| "claude".to_string());
@@ -110,6 +113,10 @@ async fn claude_run(
     // so the embedded quotes survive (unlike a shell).
     if let Some(schema) = &json_schema {
         cmd.arg("--json-schema").arg(schema);
+    }
+    // MCP (canvas-edit) mode: attach FlowM's local canvas MCP server so Claude can draw.
+    if let Some(config) = &mcp_config {
+        cmd.arg("--mcp-config").arg(config);
     }
     let mut child = cmd
         .current_dir(&cwd)
@@ -172,13 +179,16 @@ fn write_design(cwd: String, data_url: String) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(mcp::McpState::default())
         .invoke_handler(tauri::generate_handler![
             set_api_key,
             has_api_key,
             clear_api_key,
             poe_chat,
             claude_run,
-            write_design
+            write_design,
+            mcp::mcp_start,
+            mcp::mcp_respond
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

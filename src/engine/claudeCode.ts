@@ -26,6 +26,7 @@ export async function claudeRun(
   onEvent: (e: ClaudeEvent) => void,
   bin?: string,
   jsonSchema?: unknown,
+  mcpConfig?: string,
 ): Promise<void> {
   const channel = new Channel<ClaudeEvent>()
   channel.onmessage = onEvent
@@ -35,8 +36,15 @@ export async function claudeRun(
     bin: bin ?? null,
     // The CLI takes the schema as a JSON string arg; serialize here (Rust forwards it verbatim).
     jsonSchema: jsonSchema != null ? JSON.stringify(jsonSchema) : null,
+    // Canvas-edit mode: an --mcp-config JSON string pointing at FlowM's local canvas MCP server.
+    mcpConfig: mcpConfig ?? null,
     onEvent: channel,
   })
+}
+
+/** Ensure FlowM's local canvas MCP server is running and return its URL (for --mcp-config). */
+export async function mcpStart(): Promise<string> {
+  return invoke<string>('mcp_start')
 }
 
 /** Write the canvas PNG (data URL) to `<cwd>/.flowm/design.png` so the spawned `claude`

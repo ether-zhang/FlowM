@@ -23,3 +23,5 @@ reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["process", "io-util", "rt", "sync"] }
 # Decode the canvas PNG data URL before writing design.png (write_design command).
 base64 = "0.22"
+# Tiny blocking HTTP server hosting the canvas MCP tools for the spawned `claude` (mcp.rs).
+tiny_http = "0.12"
