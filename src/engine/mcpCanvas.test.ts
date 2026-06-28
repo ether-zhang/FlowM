@@ -42,7 +42,7 @@ describe('handleMcpRequest', () => {
   })
 
   it('declare_structure applies a scope with no ops', async () => {
-    const apply = vi.fn(async () => [])
+    const apply = vi.fn(async (_ops: CanvasOp[], _scope?: unknown): Promise<OpResult[]> => [])
     await handleMcpRequest('tools/call', { name: 'declare_structure', arguments: { relations: [{ kind: 'flow', nodes: ['a', 'b'] }] } }, fakePort({ apply }))
     expect(apply.mock.calls[0][0]).toEqual([]) // empty ops batch
     expect(apply.mock.calls[0][1]).toBeTruthy() // a resolved scope

@@ -33,17 +33,23 @@ export function buildDrawPrompt(userText: string): string {
 /**
  * Compose the prompt for canvas-edit (MCP) mode: Claude edits the LIVE canvas directly via
  * the `mcp__flowm__*` tools (a real feedback loop — it can re-read the canvas as it works),
- * so the steering is about HOW to use those tools, not a one-shot schema. Pairs with the
- * tools exposed in [[mcpCanvas]].
+ * so the steering is about HOW to use those tools, not a one-shot schema. The user's current
+ * SELECTION (the anchor — what they're pointing at) is PUSHED in when present: pulling it via
+ * get_canvas alone is invisible to the user and races the selection state, so we hand it over
+ * up front (with ids, so the model can connect into it) and keep get_canvas for live re-reads.
+ * Pairs with the tools exposed in [[mcpCanvas]].
  */
-export function buildCanvasPrompt(userText: string): string {
+export function buildCanvasPrompt(userText: string, selectionSpec?: string): string {
+  const anchor = selectionSpec
+    ? `\n\n用户当前在画布上选中了以下形状（这是要操作 / 扩展的部分；用这些 id 连线，可随时 get_canvas 读最新状态）：\n${selectionSpec}`
+    : ''
   return `${userText}
 
 ────────
 你可以直接读写 FlowM 画布——通过 mcp__flowm__* 这组工具（画布就在它们后面）：
-- 先调用 get_canvas 看当前画布（默认返回用户选中的区域），弄清用户选中 / 指的是哪一部分。
+- 用 get_canvas 看画布（默认返回用户选中的区域）；下面已给出当前选区，编辑后可再 get_canvas 确认最新状态。
 - 用 create_geo / create_text / connect_shapes / move_shape / update_text / delete_shape 增量编辑；每次 create_geo 会返回新形状的 id，用这个 id 去 connect_shapes / move_shape（不要用 ref，它跨调用不通用）。
 - 需要框架帮你对齐 / 匀缝时，用 declare_structure 按 id 声明结构（flow / grid / contain …）。
 - 需要读代码理解结构时，照常用你的文件工具（Read / Grep）。
-直接在画布上落地用户的请求；边做边用 get_canvas 确认效果。`
+直接在画布上落地用户的请求；边做边用 get_canvas 确认效果。${anchor}`
 }

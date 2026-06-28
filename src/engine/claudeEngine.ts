@@ -66,14 +66,28 @@ export class ClaudeEngine implements ChatEngine {
   }
 
   /** Canvas-edit (MCP) mode: ensure FlowM's local canvas MCP server is up, spawn Claude with
-   *  it attached, and let Claude read/edit the live canvas via the mcp__flowm__* tools. */
+   *  it attached, and let Claude read/edit the live canvas via the mcp__flowm__* tools. The
+   *  user's selection (the anchor) is captured NOW and pushed into the prompt — reliable and
+   *  visible — while get_canvas stays for live re-reads. */
   private async canvasEdit(text: string, cwd: string, cb: ChatCallbacks): Promise<void> {
     const url = await mcpStart()
-    const prompt = buildCanvasPrompt(text)
+    const sel = this.selectionSpec()
+    const prompt = buildCanvasPrompt(text, sel?.spec)
     const mcpConfig = JSON.stringify({ mcpServers: { flowm: { type: 'http', url } } })
     cb.onSystem('▶ 连接画布 MCP，开始编辑…')
+    if (sel) cb.onSystem(`📎 已附上选区（${sel.count} 个形状）`)
     cb.onDebug?.(`▷ 发往 Claude Code 的提示:\n${prompt}\n\n--mcp-config: ${mcpConfig}`)
     await claudeRun(prompt, cwd, this.streamToChat(cb), undefined, undefined, mcpConfig)
+  }
+
+  /** The user's current selection as a spec (with ids) for pushing into a prompt; undefined
+   *  when nothing is explicitly selected (selectionScope is null → the model can get_canvas). */
+  private selectionSpec(): { spec: string; count: number } | undefined {
+    const port = this.getPort()
+    if (!port || !port.selectionScope()) return undefined
+    const shapes = port.snapshot('selection')
+    if (shapes.length === 0) return undefined
+    return { spec: formatCanvas(shapes), count: shapes.length }
   }
 
   /** Draw mode: stream Claude's exploration as usual, capture its structured result, then

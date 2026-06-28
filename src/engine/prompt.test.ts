@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildBuildPrompt, buildDrawPrompt } from './prompt'
+import { buildBuildPrompt, buildDrawPrompt, buildCanvasPrompt } from './prompt'
 
 describe('buildBuildPrompt', () => {
   it('keeps the user instruction first, then attaches the design path and spec', () => {
@@ -19,5 +19,20 @@ describe('buildDrawPrompt', () => {
     expect(out).toContain('StructuredOutput')
     expect(out).toContain('nodes')
     expect(out).toContain('edges')
+  })
+})
+
+describe('buildCanvasPrompt', () => {
+  it('explains the mcp__flowm__ tools and omits the anchor when there is no selection', () => {
+    const out = buildCanvasPrompt('扩展这部分')
+    expect(out.startsWith('扩展这部分')).toBe(true)
+    expect(out).toContain('mcp__flowm__')
+    expect(out).not.toContain('用户当前在画布上选中')
+  })
+
+  it('pushes the selection spec (the anchor) into the prompt when present', () => {
+    const out = buildCanvasPrompt('扩展这部分', '- #s1 rectangle @(0,0) 120x80 text="alloc"')
+    expect(out).toContain('用户当前在画布上选中')
+    expect(out).toContain('#s1 rectangle')
   })
 })
