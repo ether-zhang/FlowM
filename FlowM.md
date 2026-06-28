@@ -48,6 +48,7 @@ Windows、macOS、iPad。
 - 人机交互相关
     - 自由笔触模式的识别
         - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**已确认生效**（模型据图纠错、声明结构、判流程图/自由排布）
+          - [ ] 实时更新渲染图片可行吗，会大幅影响token消耗吗？
         - [x] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——已能"看到"并据图操作；自由排布（CUDA SM 这类复杂拼块）已能大体组装。下面三条杠杆均落地（见 [docs/structured-refine.md](docs/structured-refine.md)）
             - [x] 杠杆1·视觉锚点（Set-of-Mark）：导出 PNG 前给每个 **NODE** 叠橙色编号徽标（`buildMarkElements`，临时元素只进导出不入实景），序列化文本同步 `[n]` 前缀（`serialize.ts` + `nodeMarks`）。模型据此把图像区域 ground 到真实 shape id（"`[3]` 压住 `[5]`"）。仅标 NODE、连续编号；徽标非真实形状、每轮可变
         - [x] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
@@ -61,6 +62,7 @@ Windows、macOS、iPad。
         - [x] **支撑修复**：① 声明 scope **按整回合累积**（边晚于声明到达也能拉直），但**只在建图阶段**生效——复核的 `move_shape` 不被重排冲掉；② **durable refs**：create-ref 跨批次（限本回合）存活，模型跨回合用 ref 连线不再 `unresolved`；③ `declare_structure` 全程一等公民、每个 tool call 都回 result（杜绝悬空 tool_call → "出错:undefined"）
         - [x] **尺寸=intent、字号=refine 旋钮**：框尺寸是模型意图——`w/h` 改为**可选**（省略才按 label 估默认框），不再撑框覆盖；文字改用 `fitFontSize`**缩字号塞进框**（`labelBoxSize` 逆运算，下限 9px）。治了 SM 那种紧密拼块被撑破列界的重叠
         - [ ] **仍待**：`align`/`grid`/`contain` 实现器（当前解析即冻结）；长回边标签与宽节点的避让；cluster 级避障；箭头几何（focus/offset/路由）仍按整画布重算（O(N²)、跨区可互扰，远距未显形）
+        - [ ] **流程图主干偶发斜（声明随机性）**：框架只拉直**已声明**的 flow，而模型 `declare_structure(flow)` 是随机的——漏声明那次主干漂移就露成斜箭头（**间歇性、非每次复现**）。这是「框架绝不推断结构、全靠模型声明」原则的**既定代价**。去掉「flowchart 模式」二分后更易漏声明。试过在主干 bullet 加显式 `ALWAYS declare ... flow` cue（commit `8629b59`），**感觉用力过猛、已回滚**。**待选**：① 更克制的提示措辞（不要 ALWAYS 那么硬）；② 复核轮检测"连通链未声明 flow"时自动补声明；③（重，需架构决策、勿顺手做）放开原则、让框架自动把"一条连通节点链"当 flow 拉直——与"不从几何推断结构"冲突，会重新引入"框架猜的结构 vs 模型声明"打架的风险
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
         - [x] 多输入/输出端点端口分配 + 轻度弯曲：shape 挂多条进/出箭头时全瞄中心 → 挤在同一边界点；改为按对方方位把各边分到周边**不同端口**（focus≠0 求解器 `solveEndpoint`/`determineFocusPoint` 已支持，**写入侧已接** `assignPortFocus`），重合/返回边轻弯错开（`assignParallelOffsets`），label 随各自边走。介于"中心瞄准+单弓"与正交寻路之间；**不做 B 版**（elbow/全局寻路太深）。本质是"否，继续生成"那类标签贴节点问题的根治
