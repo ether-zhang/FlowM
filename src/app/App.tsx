@@ -5,7 +5,7 @@ import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { ClaudePanel } from '../engine/ClaudePanel'
+import { CanvasEngine, ClaudeEngine, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
@@ -52,6 +52,19 @@ export function App() {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
   const [debug, setDebug] = useState(false)
+
+  // Selectable chat engines (decoupled behind ChatEngine). The canvas assistant always
+  // exists; the local Claude Code engine only on desktop (it spawns a CLI). Engines read
+  // live conv/port/cwd through getters, so they stay valid as those change.
+  const cwdRef = useRef('D:\\Project\\vllm')
+  const [cwd, setCwd] = useState(cwdRef.current)
+  const enginesRef = useRef<ChatEngine[] | null>(null)
+  if (!enginesRef.current) {
+    const canvas = new CanvasEngine(() => convRef.current, () => portRef.current)
+    enginesRef.current = IS_TAURI ? [canvas, new ClaudeEngine(() => cwdRef.current)] : [canvas]
+  }
+  const engines = enginesRef.current
+  const [engineId, setEngineId] = useState('canvas')
 
   // Tauri's adapter needs no client-side key; the browser's PoeAdapter does.
   const ensureConversation = useCallback((key?: string) => {
@@ -129,27 +142,33 @@ export function App() {
 
   const onSend = useCallback(
     async (text: string) => {
-      const port = portRef.current
-      if (!port) return
-
-      let conv = convRef.current
-      if (!conv) {
-        if (IS_TAURI) {
-          conv = ensureConversation()
-        } else {
+      const engine = engines.find((e) => e.id === engineId)
+      if (!engine) return
+      // The canvas engine needs a live Conversation; create it on first use.
+      if (engineId === 'canvas' && !convRef.current) {
+        if (IS_TAURI) ensureConversation()
+        else {
           const key = localStorage.getItem(KEY_STORAGE)
           if (!key) return
-          conv = ensureConversation(key)
+          ensureConversation(key)
         }
       }
 
       addMessage('user', text)
-      const assistantId = addMessage('assistant', '')
       setBusy(true)
+      // Lazily open an assistant bubble on the first text; a system note closes it so the
+      // next text starts a fresh bubble below — keeps Claude's "tools then prose" ordering.
+      let assistantId: string | null = null
       try {
-        await conv.send(text, port, {
-          onText: (delta) => appendToMessage(assistantId, delta),
-          onToolsApplied: (summary) => addMessage('system', summary),
+        await engine.send(text, {
+          onText: (delta) => {
+            if (!assistantId) assistantId = addMessage('assistant', '')
+            appendToMessage(assistantId, delta)
+          },
+          onSystem: (note) => {
+            addMessage('system', note)
+            assistantId = null
+          },
           onRequest: debug
             ? (params, i) => addMessage('debug', formatRequest(params, i), requestImage(params))
             : undefined,
@@ -160,7 +179,7 @@ export function App() {
         setBusy(false)
       }
     },
-    [ensureConversation, debug],
+    [engines, engineId, ensureConversation, debug],
   )
 
   const onSave = useCallback(() => {
@@ -179,6 +198,25 @@ export function App() {
     convRef.current?.reset(project.api)
   }, [])
 
+  const isClaude = engineId === 'claude'
+  const canSend = isClaude ? !!cwd.trim() : apiKeySet
+  const placeholder = canSend
+    ? '描述需求…（Enter 发送）'
+    : isClaude
+      ? '请先填写工程目录'
+      : '请先设置 Poe API Key'
+  const engineConfig = isClaude ? (
+    <input
+      value={cwd}
+      onChange={(e) => {
+        cwdRef.current = e.target.value
+        setCwd(e.target.value)
+      }}
+      placeholder="工程目录 (cwd)，如 D:\Project\vllm"
+      style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
+    />
+  ) : undefined
+
   return (
     <div className="layout">
       <main className="canvas-pane">
@@ -188,8 +226,14 @@ export function App() {
         <Chat
           messages={messages}
           busy={busy}
+          canSend={canSend}
           apiKeySet={apiKeySet}
           debug={debug}
+          engines={engines.map((e) => ({ id: e.id, label: e.label }))}
+          engineId={engineId}
+          onSelectEngine={setEngineId}
+          engineConfig={engineConfig}
+          placeholder={placeholder}
           onSend={onSend}
           onConfigureKey={onConfigureKey}
           onToggleDebug={() => setDebug((d) => !d)}
@@ -197,7 +241,6 @@ export function App() {
           onLoad={onLoad}
         />
       </aside>
-      {IS_TAURI && <ClaudePanel />}
     </div>
   )
 }

@@ -1,0 +1,5 @@
+export type { ChatEngine, ChatCallbacks } from './chatEngine'
+export { CanvasEngine } from './canvasEngine'
+export { ClaudeEngine } from './claudeEngine'
+export { interpretClaudeLine, type StreamItem } from './claudeStream'
+export { claudeRun, type ClaudeEvent } from './claudeCode'
