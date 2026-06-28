@@ -75,6 +75,19 @@ describe('formatCanvas', () => {
     expect(out).toContain('#a1 arrow @(0,0) s1→s2 text="yes"')
   })
 
+  it('folds freedraw strokes into one hand-drawn region (union bbox + count)', () => {
+    const out = formatCanvas([
+      { id: 'd1', type: 'draw', x: 10, y: 10, w: 40, h: 20 },
+      { id: 'd2', type: 'draw', x: 30, y: 40, w: 50, h: 30 },
+      { id: 'r1', type: 'rectangle', x: 200, y: 0, w: 120, h: 80, text: 'C' },
+    ])
+    // The rectangle stays itemised; the two strokes collapse to one region line.
+    expect(out).toContain('#r1 rectangle')
+    expect(out).not.toContain('#d1')
+    expect(out).not.toContain('#d2')
+    expect(out).toContain('hand-drawn region @(10,10) 70x60 — 2 freehand strokes')
+  })
+
   it('prefixes only marked shapes; an unmarked arrow gets no [n]', () => {
     const out = formatCanvas(
       [

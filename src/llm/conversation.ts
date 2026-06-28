@@ -79,11 +79,17 @@ function mergeScope(into: LayoutScope | null, add: LayoutScope): LayoutScope {
   return into
 }
 
-/** One set-of-mark number per NODE (arrows aren't marked), in snapshot order. */
+/** Shape types that are NODES the model points at / declares structure over — the
+ *  system prompt's "box / ellipse / diamond / standalone text". Arrows, freedraw strokes
+ *  and other primitives are NOT marked: chips over a hand-drawn sketch occlude the strokes
+ *  and atomise a figure into N "nodes", hurting the model's read of it. */
+const MARKABLE_TYPES = new Set(['rectangle', 'ellipse', 'diamond', 'triangle', 'text'])
+
+/** One set-of-mark number per markable NODE, in snapshot order. */
 function nodeMarks(shapes: CanvasShape[]): Map<string, number> {
   let n = 0
   const m = new Map<string, number>()
-  for (const s of shapes) if (s.type !== 'arrow') m.set(s.id, ++n)
+  for (const s of shapes) if (MARKABLE_TYPES.has(s.type)) m.set(s.id, ++n)
   return m
 }
 
