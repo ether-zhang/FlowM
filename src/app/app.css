@@ -38,6 +38,7 @@
 .chat-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap; /* narrow pane: let the bar wrap to a 2nd row instead of squashing buttons */
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid #e5e4e7;
@@ -50,6 +51,8 @@
   border-radius: 6px;
   background: #fafafa;
   cursor: pointer;
+  white-space: nowrap; /* keep "保存"/"加载" on one line, never break per-character */
+  flex-shrink: 0;
 }
 .chat-bar button:hover { background: #f0f0f0; }
 
