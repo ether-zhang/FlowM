@@ -1,4 +1,5 @@
 import type { CanvasShape } from './schema'
+import { clusterDrawRegions } from './regions'
 
 /** Round to keep the serialized context compact. */
 const r = (n: number) => Math.round(n)
@@ -28,24 +29,14 @@ export function formatCanvas(shapes: CanvasShape[], marks?: Map<string, number>)
     if (s.text) parts.push(`text=${JSON.stringify(s.text)}`)
     return '- ' + head + parts.join(' ')
   })
-  if (draws.length > 0) lines.push(foldDrawRegion(draws))
-  return lines.join('\n')
-}
-
-/** Collapse all freedraw strokes into one region summary: union bounding box + count, with
- *  a hint to read the actual figure from the image rather than the (semantically empty)
- *  per-stroke boxes. Single region for now; split disjoint sketches by proximity later. */
-function foldDrawRegion(draws: CanvasShape[]): string {
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const s of draws) {
-    minX = Math.min(minX, s.x)
-    minY = Math.min(minY, s.y)
-    maxX = Math.max(maxX, s.x + (s.w ?? 0))
-    maxY = Math.max(maxY, s.y + (s.h ?? 0))
+  // Each cluster of nearby strokes folds to one "hand-drawn region [Bn]" line (the blue
+  // chips on the image carry the same Bn). The user drew it; the model reads the figure
+  // from the IMAGE and points at the whole region by its Bn handle.
+  for (const reg of clusterDrawRegions(draws)) {
+    const n = reg.members.length
+    lines.push(
+      `- [${reg.label}] hand-drawn region @(${r(reg.x)},${r(reg.y)}) ${r(reg.w)}x${r(reg.h)} — ${n} freehand stroke${n > 1 ? 's' : ''}; READ IT FROM THE IMAGE (the user's sketch — one figure, not separate shapes)`,
+    )
   }
-  const n = draws.length
-  return `- hand-drawn region @(${r(minX)},${r(minY)}) ${r(maxX - minX)}x${r(maxY - minY)} — ${n} freehand stroke${n > 1 ? 's' : ''} forming a sketch; READ IT FROM THE IMAGE (it's the user's drawing — interpret it as one figure, don't treat strokes as separate shapes)`
+  return lines.join('\n')
 }

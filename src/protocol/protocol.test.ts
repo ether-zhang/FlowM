@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { parseOp, type CanvasOp } from './schema'
 import { parseStructure, resolveScope } from './structure'
 import { formatCanvas } from './serialize'
+import { clusterDrawRegions } from './regions'
 import { canvasTools, toolCallToOp } from './tools'
 
 describe('parseOp', () => {
@@ -75,17 +76,17 @@ describe('formatCanvas', () => {
     expect(out).toContain('#a1 arrow @(0,0) s1→s2 text="yes"')
   })
 
-  it('folds freedraw strokes into one hand-drawn region (union bbox + count)', () => {
+  it('folds nearby freedraw strokes into one [Bn] hand-drawn region (union bbox + count)', () => {
     const out = formatCanvas([
       { id: 'd1', type: 'draw', x: 10, y: 10, w: 40, h: 20 },
       { id: 'd2', type: 'draw', x: 30, y: 40, w: 50, h: 30 },
-      { id: 'r1', type: 'rectangle', x: 200, y: 0, w: 120, h: 80, text: 'C' },
+      { id: 'r1', type: 'rectangle', x: 400, y: 0, w: 120, h: 80, text: 'C' },
     ])
-    // The rectangle stays itemised; the two strokes collapse to one region line.
+    // The rectangle stays itemised; the two nearby strokes collapse to one region line.
     expect(out).toContain('#r1 rectangle')
     expect(out).not.toContain('#d1')
     expect(out).not.toContain('#d2')
-    expect(out).toContain('hand-drawn region @(10,10) 70x60 — 2 freehand strokes')
+    expect(out).toContain('[B1] hand-drawn region @(10,10) 70x60 — 2 freehand strokes')
   })
 
   it('prefixes only marked shapes; an unmarked arrow gets no [n]', () => {
@@ -100,6 +101,33 @@ describe('formatCanvas', () => {
     expect(out).toContain('- [1] #s1 rectangle')
     expect(out).toContain('- [2] #s2 ellipse')
     expect(out).toContain('- #a1 arrow') // no [n] prefix
+  })
+})
+
+describe('clusterDrawRegions', () => {
+  it('separates two far-apart sketches into B1/B2 in reading order', () => {
+    const regions = clusterDrawRegions([
+      // sketch on the right (drawn-order first, but to the right)
+      { id: 'b1', type: 'draw', x: 500, y: 20, w: 30, h: 30 },
+      { id: 'b2', type: 'draw', x: 520, y: 40, w: 30, h: 30 },
+      // sketch on the left
+      { id: 'a1', type: 'draw', x: 10, y: 10, w: 40, h: 40 },
+      { id: 'a2', type: 'draw', x: 30, y: 30, w: 40, h: 40 },
+    ])
+    expect(regions).toHaveLength(2)
+    // Reading order (top-left first): the left sketch is B1.
+    expect(regions[0].label).toBe('B1')
+    expect(regions[0].members.sort()).toEqual(['a1', 'a2'])
+    expect(regions[1].members.sort()).toEqual(['b1', 'b2'])
+  })
+
+  it('keeps strokes within the gap in one region', () => {
+    const regions = clusterDrawRegions([
+      { id: 's1', type: 'draw', x: 0, y: 0, w: 20, h: 20 },
+      { id: 's2', type: 'draw', x: 40, y: 0, w: 20, h: 20 }, // 20px gap < 48
+    ])
+    expect(regions).toHaveLength(1)
+    expect(regions[0].members).toHaveLength(2)
   })
 })
 

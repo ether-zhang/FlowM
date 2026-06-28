@@ -11,7 +11,7 @@ import type {
   ExcalidrawTextElement,
 } from '@excalidraw/excalidraw/element/types'
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
-import type { CanvasPort, CanvasShape, CanvasOp, OpResult, LayoutScope } from '../protocol'
+import { clusterDrawRegions, type CanvasPort, type CanvasShape, type CanvasOp, type OpResult, type LayoutScope } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
 import { routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
@@ -114,6 +114,26 @@ function buildMarkElements(elements: readonly ExcalidrawElement[], marks: Map<st
       strokeWidth: 1,
       roundness: null,
       label: { text: String(n), fontSize: 16, strokeColor: '#c92a2a' },
+    } as ExcalidrawElementSkeleton)
+  }
+  // Blue [Bn] chips: one per hand-drawn region (a proximity cluster of freedraw strokes),
+  // so the model can point at a whole sketch as a unit — distinct from the orange node chips.
+  const draws: CanvasShape[] = elements
+    .filter((e) => e.type === 'freedraw')
+    .map((e) => ({ id: e.id, type: 'draw' as const, x: e.x, y: e.y, w: e.width, h: e.height }))
+  for (const reg of clusterDrawRegions(draws)) {
+    skeleton.push({
+      type: 'rectangle',
+      x: reg.x,
+      y: reg.y - CHIP_H - 2,
+      width: CHIP_W,
+      height: CHIP_H,
+      backgroundColor: '#a5d8ff',
+      strokeColor: '#1971c2',
+      fillStyle: 'solid',
+      strokeWidth: 1,
+      roundness: null,
+      label: { text: reg.label, fontSize: 14, strokeColor: '#1971c2' },
     } as ExcalidrawElementSkeleton)
   }
   return skeleton.length
