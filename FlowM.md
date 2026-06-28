@@ -51,6 +51,8 @@ Windows、macOS、iPad。
           - [ ] 实时更新渲染图片可行吗，会大幅影响token消耗吗？
         - [x] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——已能"看到"并据图操作；自由排布（CUDA SM 这类复杂拼块）已能大体组装。下面三条杠杆均落地（见 [docs/structured-refine.md](docs/structured-refine.md)）
             - [x] 杠杆1·视觉锚点（Set-of-Mark）：导出 PNG 前给每个 **NODE** 叠橙色编号徽标（`buildMarkElements`，临时元素只进导出不入实景），序列化文本同步 `[n]` 前缀（`serialize.ts` + `nodeMarks`）。模型据此把图像区域 ground 到真实 shape id（"`[3]` 压住 `[5]`"）。仅标 NODE、连续编号；徽标非真实形状、每轮可变
+            - [x] **手绘(freedraw)理解**（见 [docs/freedraw-and-extensions.md](docs/freedraw-and-extensions.md)）：手绘是用户输入、语义不透明（每条 `draw` 是抬笔切的笔画、bbox 无语义），几十条笔画**淹列表 + 原子化**格式塔、徽标还**压字**。改：① **折叠 + 不标笔画**——`nodeMarks` 只标结构化 NODE，`serialize` 把笔画收成区域行；② **邻近聚类成 region + 蓝标 `[Bn]`**（纯函数 `clusterDrawRegions`，文图同套确定性聚类，模型可整片引用"matrix [B1] is M×N"）；③ 复核图保留手绘、徽标移到形状上方不遮字。效果：M×N/N×M **读对了**，放置随之变好。坐标/id 框架内部仍留（不进 prompt）
+                - [ ] **暂缓（按需再建，判据见 doc §3 pass vs op）**：region 整片移动（**op**：`move_shape` 收 `[Bn]`）、新形状锚定到 region（**pass**：align/place 实现器，但读图变准后模型自放置大概率已够、冗余）、自动配色（**pass**）。均无当下需求，YAGNI
         - [x] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
             - [x] 自反馈视觉做成**显式 refine 门控**（结构化精修）：建图 → 渲首图喂回模型**复核一次** → 模型用 `move_shape` 纠位 / 补 `declare_structure`。详见下「结构化精修门控」与 [docs/structured-refine.md](docs/structured-refine.md)
         - [ ] 让模型在真正布置前划定操作区？操作区在完成前的不可操作？
