@@ -35,34 +35,73 @@ function visualLen(s: string): number {
 function nodeSize(node: DiagramNode): { w: number; h: number } {
   const lines = node.label.split('\n')
   const cols = Math.max(1, ...lines.map(visualLen))
-  let w = clamp(cols * 9 + 28, 110, 260)
-  let h = clamp(lines.length * 22 + 30, 56, 200)
+  let w = clamp(cols * 10 + 32, 120, 280)
+  let h = clamp(lines.length * 24 + 28, 60, 200)
+  // Non-rectangular shapes inscribe text in a SMALLER area, so a label-sized rectangle would
+  // clip them — enlarge to match the port's labelBoxSize (diamond ~1.8, ellipse ~1.35) so
+  // fitFontSize keeps the text at full size instead of shrinking it to a 9px floor.
   if (node.kind === 'decision') {
-    w = Math.max(w * 1.25, 130) // diamonds waste corners — give them girth
-    h = Math.max(h * 1.3, 80)
+    w *= 1.7
+    h *= 1.6
+  } else if (node.kind === 'terminal') {
+    w *= 1.3
+    h *= 1.25
   }
   return { w: Math.round(w), h: Math.round(h) }
 }
 
 /**
- * Layer (depth) per node = longest path from a root, by relaxation over edges. Roots are
- * nodes with no incoming edge; if a graph is all cycles (no root), the first node seeds
- * layer 0. Iteration is capped at node count so back-edges in a cycle can't loop forever.
+ * Layer (depth) per node = longest path from a root over FORWARD edges only. Real
+ * structures have cycles (eviction → free-queue, touch → ref_cnt); relaxing over every
+ * edge would inflate depths unboundedly (the cap stops the loop but leaves NON-contiguous
+ * layers → array holes → NaN downstream). So first flag back-edges by DFS and exclude them,
+ * leaving a DAG whose longest-path layers are contiguous 0..max. Roots / isolated nodes → 0.
  */
-function assignLayers(ids: string[], edges: { from: string; to: string }[]): Map<string, number> {
-  const layer = new Map<string, number>(ids.map((id) => [id, 0]))
+function layerize(ids: string[], edges: { from: string; to: string }[]): Map<string, number> {
+  const adj = new Map<string, string[]>(ids.map((id) => [id, []]))
+  for (const e of edges) if (e.from !== e.to) adj.get(e.from)!.push(e.to)
+
+  // Iterative DFS: an edge into a node currently on the stack (gray) closes a cycle → back-edge.
+  const color = new Map<string, 0 | 1 | 2>(ids.map((id) => [id, 0])) // white | gray | black
+  const back = new Set<string>()
+  for (const root of ids) {
+    if (color.get(root) !== 0) continue
+    const stack: Array<{ u: string; i: number }> = [{ u: root, i: 0 }]
+    color.set(root, 1)
+    while (stack.length) {
+      const top = stack[stack.length - 1]
+      const kids = adj.get(top.u)!
+      if (top.i < kids.length) {
+        const v = kids[top.i++]
+        const c = color.get(v)
+        if (c === 1) back.add(`${top.u}->${v}`)
+        else if (c === 0) {
+          color.set(v, 1)
+          stack.push({ u: v, i: 0 })
+        }
+      } else {
+        color.set(top.u, 2)
+        stack.pop()
+      }
+    }
+  }
+
+  // Longest path over forward (non-back) edges — a DAG, so relaxation converges and the
+  // resulting layers are contiguous (every depth-d node has a forward parent at d-1).
+  const depth = new Map<string, number>(ids.map((id) => [id, 0]))
   for (let pass = 0; pass < ids.length; pass++) {
     let changed = false
     for (const e of edges) {
-      const next = (layer.get(e.from) ?? 0) + 1
-      if (next > (layer.get(e.to) ?? 0)) {
-        layer.set(e.to, next)
+      if (e.from === e.to || back.has(`${e.from}->${e.to}`)) continue
+      const nd = (depth.get(e.from) ?? 0) + 1
+      if (nd > (depth.get(e.to) ?? 0)) {
+        depth.set(e.to, nd)
         changed = true
       }
     }
     if (!changed) break
   }
-  return layer
+  return depth
 }
 
 export function layoutDiagram(spec: DiagramSpec, origin: { x: number; y: number }): CanvasOp[] {
@@ -71,15 +110,14 @@ export function layoutDiagram(spec: DiagramSpec, origin: { x: number; y: number 
   const edges = spec.edges.filter((e) => ids.has(e.from) && ids.has(e.to))
   const down = (spec.dir ?? 'down') === 'down'
 
-  const layer = assignLayers([...ids], edges)
+  const depth = layerize([...ids], edges)
   const size = new Map(spec.nodes.map((n) => [n.id, nodeSize(n)] as const))
 
-  // Group nodes by layer, preserving spec order within a layer.
-  const layers: DiagramNode[][] = []
-  for (const n of spec.nodes) {
-    const l = layer.get(n.id) ?? 0
-    ;(layers[l] ??= []).push(n)
-  }
+  // DENSE layer buckets (Array.from fills every index → no holes → the centering maths
+  // below can't spread an `undefined` into Math.max and produce NaN), spec order kept.
+  const maxDepth = Math.max(0, ...depth.values())
+  const layers: DiagramNode[][] = Array.from({ length: maxDepth + 1 }, () => [])
+  for (const n of spec.nodes) layers[depth.get(n.id) ?? 0].push(n)
 
   // Cross-axis extent of each layer and the widest one, so narrow layers center under wide.
   const cross = (n: DiagramNode) => (down ? size.get(n.id)!.w : size.get(n.id)!.h)

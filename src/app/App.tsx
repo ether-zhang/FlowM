@@ -181,6 +181,7 @@ export function App() {
           onRequest: debug
             ? (params, i) => addMessage('debug', formatRequest(params, i), requestImage(params))
             : undefined,
+          onDebug: debug ? (text) => addMessage('debug', text) : undefined,
         })
       } catch (e) {
         addMessage('system', `出错：${(e as Error).message}`)

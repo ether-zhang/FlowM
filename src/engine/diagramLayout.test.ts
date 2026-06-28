@@ -45,4 +45,27 @@ describe('layoutDiagram', () => {
     expect(x.a).toBeLessThan(x.b)
     expect(x.b).toBeLessThan(x.c)
   })
+
+  it('survives cycles without collapsing to NaN positions (eviction-loop style graph)', () => {
+    const cyclic: DiagramSpec = {
+      nodes: [
+        { id: 'a', label: 'A' },
+        { id: 'b', label: 'B' },
+        { id: 'c', label: 'C' },
+      ],
+      edges: [
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'c' },
+        { from: 'c', to: 'a' }, // back-edge closes the cycle
+      ],
+    }
+    const g = geos(layoutDiagram(cyclic, { x: 0, y: 0 }) as any[])
+    expect(g).toHaveLength(3)
+    for (const o of g) {
+      expect(Number.isFinite(o.x)).toBe(true)
+      expect(Number.isFinite(o.y)).toBe(true)
+    }
+    // a/b/c land on three successive (contiguous) layers, not piled on one spot.
+    expect(new Set(g.map((o) => o.y)).size).toBe(3)
+  })
 })

@@ -61,8 +61,10 @@ export class ClaudeEngine implements ChatEngine {
 
     cb.onSystem('▶ 读代码并生成结构…')
     // Held on an object, not a `let`: TS can't see the streamed callback runs, so a plain
-    // variable would be narrowed to null after the await.
-    const captured: { spec: DiagramSpec | null } = { spec: null }
+    // variable would be narrowed to null after the await. Keep the RAW structured output too,
+    // so debug mode shows exactly what Claude returned (vs how FlowM laid it out) — the key
+    // signal for telling a messy graph apart from a layout bug.
+    const captured: { spec: DiagramSpec | null; raw: unknown } = { spec: null, raw: null }
     await claudeRun(
       buildDrawPrompt(text),
       cwd,
@@ -73,7 +75,10 @@ export class ClaudeEngine implements ChatEngine {
             else cb.onSystem(item.text)
           }
           const structured = extractStructured(e.line)
-          if (structured) captured.spec = parseDiagram(structured)
+          if (structured) {
+            captured.raw = structured
+            captured.spec = parseDiagram(structured)
+          }
         } else if (e.kind === 'stderr') {
           cb.onSystem('⚠ ' + e.line)
         } else if (e.code !== 0) {
@@ -84,6 +89,7 @@ export class ClaudeEngine implements ChatEngine {
       DIAGRAM_JSON_SCHEMA,
     )
 
+    cb.onDebug?.(`Claude 结构化输出:\n${captured.raw != null ? JSON.stringify(captured.raw, null, 2) : '(无)'}`)
     const spec = captured.spec
     if (!spec || spec.nodes.length === 0) {
       cb.onSystem('⚠ 未得到可绘制的结构')

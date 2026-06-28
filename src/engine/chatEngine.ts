@@ -8,6 +8,9 @@ export interface ChatCallbacks {
   onSystem(text: string): void
   /** Debug hook: the exact request sent to the model. Canvas engine only; others ignore it. */
   onRequest?(params: RunTurnParams, iteration: number): void
+  /** Debug hook: an engine-specific diagnostic blob (e.g. Claude's raw structured output),
+   *  shown only in debug mode. Set when debug is on; engines that have nothing skip it. */
+  onDebug?(text: string): void
 }
 
 /**
