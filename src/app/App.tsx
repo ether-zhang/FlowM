@@ -5,6 +5,7 @@ import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
+import { ClaudePanel } from '../engine/ClaudePanel'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
@@ -196,6 +197,7 @@ export function App() {
           onLoad={onLoad}
         />
       </aside>
+      {IS_TAURI && <ClaudePanel />}
     </div>
   )
 }

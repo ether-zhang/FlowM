@@ -6,8 +6,12 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Stdio;
 
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command as TokioCommand;
 
 const POE_URL: &str = "https://api.poe.com/v1/chat/completions";
 
@@ -70,6 +74,79 @@ async fn poe_chat(app: AppHandle, body: serde_json::Value) -> Result<serde_json:
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
+/// One line of streamed output (or the exit) from a spawned `claude` process.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum ClaudeEvent {
+    Stdout { line: String },
+    Stderr { line: String },
+    Exit { code: Option<i32> },
+}
+
+/// Spawn the user's local `claude` CLI in headless stream-json mode and stream
+/// every stdout/stderr line back to the renderer over `on_event`. Auth is whatever
+/// `claude auth login` set (subscription or console) — FlowM passes NO key and reads
+/// no credentials; it just runs the user's own Claude Code. `bin` overrides the
+/// executable (Windows npm installs may be `claude.cmd`; pass a full path then).
+#[tauri::command]
+async fn claude_run(
+    bin: Option<String>,
+    prompt: String,
+    cwd: String,
+    on_event: Channel<ClaudeEvent>,
+) -> Result<(), String> {
+    let bin = bin.unwrap_or_else(|| "claude".to_string());
+    let mut child = TokioCommand::new(&bin)
+        .arg("-p")
+        .arg(&prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg("bypassPermissions")
+        .current_dir(&cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            format!("spawn `{bin}` failed: {e} — is Claude Code installed and on PATH? On Windows pass the full path to claude.exe")
+        })?;
+
+    let stdout = child.stdout.take().ok_or("no stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("no stderr pipe")?;
+
+    // Drain both pipes concurrently into one mpsc, forward to the channel; avoids a
+    // pipe-buffer deadlock and doesn't assume Channel: Clone.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ClaudeEvent>();
+    let tx_err = tx.clone();
+    let h_out = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx.send(ClaudeEvent::Stdout { line }).is_err() {
+                break;
+            }
+        }
+    });
+    let h_err = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx_err.send(ClaudeEvent::Stderr { line }).is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(ev) = rx.recv().await {
+        let _ = on_event.send(ev);
+    }
+    let _ = h_out.await;
+    let _ = h_err.await;
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let _ = on_event.send(ClaudeEvent::Exit { code: status.code() });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -77,7 +154,8 @@ pub fn run() {
             set_api_key,
             has_api_key,
             clear_api_key,
-            poe_chat
+            poe_chat,
+            claude_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
