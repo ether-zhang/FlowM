@@ -60,13 +60,18 @@ export class ClaudeEngine implements ChatEngine {
     if (!port) throw new Error('画布不可用')
 
     cb.onSystem('▶ 读代码并生成结构…')
+    // Debug parity with the canvas engine (which dumps its model request): show what we SEND.
+    // There's no single "request" beyond this — the CLI runs its own agentic loop, whose steps
+    // surface live as the 🔧 tool stream; the response side is the structured JSON dumped below.
+    const prompt = buildDrawPrompt(text)
+    cb.onDebug?.(`▷ 发往 Claude Code 的提示（输出 schema 固定为 nodes/edges）:\n${prompt}`)
     // Held on an object, not a `let`: TS can't see the streamed callback runs, so a plain
     // variable would be narrowed to null after the await. Keep the RAW structured output too,
     // so debug mode shows exactly what Claude returned (vs how FlowM laid it out) — the key
     // signal for telling a messy graph apart from a layout bug.
     const captured: { spec: DiagramSpec | null; raw: unknown } = { spec: null, raw: null }
     await claudeRun(
-      buildDrawPrompt(text),
+      prompt,
       cwd,
       (e) => {
         if (e.kind === 'stdout') {
@@ -89,7 +94,7 @@ export class ClaudeEngine implements ChatEngine {
       DIAGRAM_JSON_SCHEMA,
     )
 
-    cb.onDebug?.(`Claude 结构化输出:\n${captured.raw != null ? JSON.stringify(captured.raw, null, 2) : '(无)'}`)
+    cb.onDebug?.(`◁ Claude 返回的结构化输出:\n${captured.raw != null ? JSON.stringify(captured.raw, null, 2) : '(无)'}`)
     const spec = captured.spec
     if (!spec || spec.nodes.length === 0) {
       cb.onSystem('⚠ 未得到可绘制的结构')
