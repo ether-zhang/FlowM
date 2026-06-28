@@ -1,26 +1,36 @@
-import { claudeRun } from './claudeCode'
+import { claudeRun, writeDesign } from './claudeCode'
 import { interpretClaudeLine } from './claudeStream'
+import { buildBuildPrompt } from './prompt'
+import { formatCanvas, type CanvasPort } from '../protocol'
 import type { ChatEngine, ChatCallbacks } from './chatEngine'
 
 /**
  * The local Claude Code engine: spawn the user's `claude` CLI in a project directory and
- * stream its work into the chat. Composes the Tauri transport (claudeCode) with the pure
- * stream interpreter (claudeStream); knows nothing about React. Desktop (Tauri) only.
- * Reads the working directory through a getter so it tracks the current one.
+ * stream its work into the chat. When the canvas holds a design, it's attached to the
+ * prompt — the shape list as text plus a design.png written into the project dir for
+ * Claude to Read — so the drawing drives the build. Continuity across messages comes from
+ * the persistent project directory (Claude reads the files it built), so no session state
+ * is kept here. Composes the Tauri transport (claudeCode) with the pure stream interpreter
+ * (claudeStream) and prompt builder; knows nothing about React. Desktop (Tauri) only.
  */
 export class ClaudeEngine implements ChatEngine {
   readonly id = 'claude'
   readonly label = 'Claude Code'
   private getCwd: () => string
+  private getPort: () => CanvasPort | null
 
-  constructor(getCwd: () => string) {
+  constructor(getCwd: () => string, getPort: () => CanvasPort | null) {
     this.getCwd = getCwd
+    this.getPort = getPort
   }
 
   async send(text: string, cb: ChatCallbacks): Promise<void> {
     const cwd = this.getCwd().trim()
     if (!cwd) throw new Error('请先填写工程目录')
-    await claudeRun(text, cwd, (e) => {
+
+    const prompt = await this.composePrompt(text, cwd, cb)
+
+    await claudeRun(prompt, cwd, (e) => {
       if (e.kind === 'stdout') {
         for (const item of interpretClaudeLine(e.line)) {
           if (item.kind === 'text') cb.onText(item.text)
@@ -32,5 +42,20 @@ export class ClaudeEngine implements ChatEngine {
         cb.onSystem(`— 进程退出 ${e.code} —`)
       }
     })
+  }
+
+  /** Attach the current canvas design (spec + design.png) when there is one; otherwise the
+   *  message is sent as-is, so Claude Code also works as a plain coding agent on the dir. */
+  private async composePrompt(text: string, cwd: string, cb: ChatCallbacks): Promise<string> {
+    const port = this.getPort()
+    if (!port) return text
+    const shapes = port.snapshot('selection')
+    if (shapes.length === 0) return text
+
+    cb.onSystem('📎 附上画布设计…')
+    const spec = formatCanvas(shapes)
+    const image = await port.exportImage('selection')
+    const designPath = image ? await writeDesign(cwd, image) : '(画布图导出失败)'
+    return buildBuildPrompt(text, spec, designPath)
   }
 }

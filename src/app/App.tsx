@@ -61,7 +61,9 @@ export function App() {
   const enginesRef = useRef<ChatEngine[] | null>(null)
   if (!enginesRef.current) {
     const canvas = new CanvasEngine(() => convRef.current, () => portRef.current)
-    enginesRef.current = IS_TAURI ? [canvas, new ClaudeEngine(() => cwdRef.current)] : [canvas]
+    enginesRef.current = IS_TAURI
+      ? [canvas, new ClaudeEngine(() => cwdRef.current, () => portRef.current)]
+      : [canvas]
   }
   const engines = enginesRef.current
   const [engineId, setEngineId] = useState('canvas')

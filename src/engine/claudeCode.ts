@@ -28,3 +28,9 @@ export async function claudeRun(
   channel.onmessage = onEvent
   await invoke('claude_run', { prompt, cwd, bin: bin ?? null, onEvent: channel })
 }
+
+/** Write the canvas PNG (data URL) to `<cwd>/.flowm/design.png` so the spawned `claude`
+ *  can Read it. Returns the relative path to reference in the prompt. */
+export async function writeDesign(cwd: string, dataUrl: string): Promise<string> {
+  return invoke<string>('write_design', { cwd, dataUrl })
+}

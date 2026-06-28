@@ -21,3 +21,5 @@ serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 # Spawn the local `claude` CLI and stream its stdout/stderr (claude_run command).
 tokio = { version = "1", features = ["process", "io-util", "rt", "sync"] }
+# Decode the canvas PNG data URL before writing design.png (write_design command).
+base64 = "0.22"

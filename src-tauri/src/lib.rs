@@ -8,6 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use base64::Engine as _;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -147,6 +148,20 @@ async fn claude_run(
     Ok(())
 }
 
+/// Write the canvas PNG (a `data:image/png;base64,…` URL) to `<cwd>/.flowm/design.png`
+/// so the spawned `claude` can Read it as the visual design. Returns the relative path.
+#[tauri::command]
+fn write_design(cwd: String, data_url: String) -> Result<String, String> {
+    let b64 = data_url.rsplit(',').next().unwrap_or(&data_url).trim();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| e.to_string())?;
+    let dir = PathBuf::from(&cwd).join(".flowm");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("design.png"), bytes).map_err(|e| e.to_string())?;
+    Ok(".flowm/design.png".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -155,7 +170,8 @@ pub fn run() {
             has_api_key,
             clear_api_key,
             poe_chat,
-            claude_run
+            claude_run,
+            write_design
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
