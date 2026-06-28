@@ -24,7 +24,10 @@ export function interpretClaudeLine(line: string): StreamItem[] {
       const out: StreamItem[] = []
       for (const c of ev.message?.content ?? []) {
         if (c.type === 'text' && c.text) out.push({ kind: 'text', text: c.text })
-        else if (c.type === 'tool_use') out.push(sys(`🔧 ${c.name}${toolHint(c.name, c.input)}`))
+        // StructuredOutput is FlowM's own --json-schema plumbing (draw mode), not a real
+        // action — surfacing "🔧 StructuredOutput" would just be noise; the drawn result is
+        // the feedback. Other tool_use (Read/Grep/…) shows so the user sees Claude work.
+        else if (c.type === 'tool_use' && c.name !== 'StructuredOutput') out.push(sys(`🔧 ${c.name}${toolHint(c.name, c.input)}`))
         // 'thinking' blocks are dropped
       }
       return out
@@ -46,6 +49,21 @@ export function interpretClaudeLine(line: string): StreamItem[] {
 }
 
 const sys = (text: string): StreamItem => ({ kind: 'system', text })
+
+/**
+ * Pull the validated `--json-schema` payload out of a stream line: the final `result` event
+ * carries it parsed in `structured_output` (draw mode reads it to draw the diagram). Returns
+ * null for every other line (and when no schema was used, so it's harmless to call always).
+ */
+export function extractStructured(line: string): unknown | null {
+  try {
+    const ev = JSON.parse(line)
+    if (ev && ev.type === 'result' && ev.structured_output != null) return ev.structured_output
+  } catch {
+    // non-JSON noise
+  }
+  return null
+}
 
 /** A short, safe hint for a tool call (the command / file), never the full payload. */
 function toolHint(name: string, input: any): string {

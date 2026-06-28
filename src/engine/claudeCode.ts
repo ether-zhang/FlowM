@@ -16,17 +16,27 @@ export type ClaudeEvent =
 /**
  * Run `claude -p <prompt>` (headless stream-json) in `cwd`, calling `onEvent` for each
  * streamed line and the final exit. `bin` overrides the executable (e.g. a full path to
- * claude.exe on Windows npm installs). Resolves when the process exits.
+ * claude.exe on Windows npm installs). When `jsonSchema` is given, it's passed to
+ * `--json-schema` so Claude's final answer is a validated object (draw mode reads it from
+ * the `result` event's `structured_output`). Resolves when the process exits.
  */
 export async function claudeRun(
   prompt: string,
   cwd: string,
   onEvent: (e: ClaudeEvent) => void,
   bin?: string,
+  jsonSchema?: unknown,
 ): Promise<void> {
   const channel = new Channel<ClaudeEvent>()
   channel.onmessage = onEvent
-  await invoke('claude_run', { prompt, cwd, bin: bin ?? null, onEvent: channel })
+  await invoke('claude_run', {
+    prompt,
+    cwd,
+    bin: bin ?? null,
+    // The CLI takes the schema as a JSON string arg; serialize here (Rust forwards it verbatim).
+    jsonSchema: jsonSchema != null ? JSON.stringify(jsonSchema) : null,
+    onEvent: channel,
+  })
 }
 
 /** Write the canvas PNG (data URL) to `<cwd>/.flowm/design.png` so the spawned `claude`

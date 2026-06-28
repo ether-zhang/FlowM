@@ -94,17 +94,24 @@ async fn claude_run(
     bin: Option<String>,
     prompt: String,
     cwd: String,
+    json_schema: Option<String>,
     on_event: Channel<ClaudeEvent>,
 ) -> Result<(), String> {
     let bin = bin.unwrap_or_else(|| "claude".to_string());
-    let mut child = TokioCommand::new(&bin)
-        .arg("-p")
+    let mut cmd = TokioCommand::new(&bin);
+    cmd.arg("-p")
         .arg(&prompt)
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
         .arg("--permission-mode")
-        .arg("bypassPermissions")
+        .arg("bypassPermissions");
+    // Draw mode: force a validated structured result (the diagram). arg() escapes the JSON,
+    // so the embedded quotes survive (unlike a shell).
+    if let Some(schema) = &json_schema {
+        cmd.arg("--json-schema").arg(schema);
+    }
+    let mut child = cmd
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

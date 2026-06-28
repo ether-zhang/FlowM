@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { interpretClaudeLine } from './claudeStream'
+import { interpretClaudeLine, extractStructured } from './claudeStream'
 
 describe('interpretClaudeLine', () => {
   it('maps an init event to a system note with model + cwd', () => {
@@ -33,5 +33,23 @@ describe('interpretClaudeLine', () => {
   it('tolerates non-JSON / unknown events', () => {
     expect(interpretClaudeLine('not json')).toEqual([])
     expect(interpretClaudeLine(JSON.stringify({ type: 'rate_limit_event' }))).toEqual([])
+  })
+
+  it('suppresses the internal StructuredOutput tool from the chat (draw-mode plumbing)', () => {
+    expect(
+      interpretClaudeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: { nodes: [] } }] } })),
+    ).toEqual([])
+  })
+})
+
+describe('extractStructured', () => {
+  it('returns the structured_output object from a result event', () => {
+    expect(extractStructured(JSON.stringify({ type: 'result', structured_output: { nodes: [{ id: 'a' }] } }))).toEqual({ nodes: [{ id: 'a' }] })
+  })
+
+  it('returns null for non-result lines, results without it, and noise', () => {
+    expect(extractStructured(JSON.stringify({ type: 'assistant', message: {} }))).toBeNull()
+    expect(extractStructured(JSON.stringify({ type: 'result', num_turns: 1 }))).toBeNull()
+    expect(extractStructured('not json')).toBeNull()
   })
 })

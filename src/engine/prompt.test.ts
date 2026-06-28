@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildBuildPrompt } from './prompt'
+import { buildBuildPrompt, buildDrawPrompt } from './prompt'
 
 describe('buildBuildPrompt', () => {
   it('keeps the user instruction first, then attaches the design path and spec', () => {
@@ -9,5 +9,15 @@ describe('buildBuildPrompt', () => {
     expect(out).toContain('#s1 rectangle @(0,0) 120x80 text="入口"')
     // instruction comes before the spec
     expect(out.indexOf('实现这个推理引擎')).toBeLessThan(out.indexOf('#s1 rectangle'))
+  })
+})
+
+describe('buildDrawPrompt', () => {
+  it('keeps the user instruction first and asks for a structured nodes/edges result', () => {
+    const out = buildDrawPrompt('读一下 prefix cache 模块')
+    expect(out.startsWith('读一下 prefix cache 模块')).toBe(true)
+    expect(out).toContain('StructuredOutput')
+    expect(out).toContain('nodes')
+    expect(out).toContain('edges')
   })
 })

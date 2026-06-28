@@ -61,8 +61,15 @@ export function App() {
   const enginesRef = useRef<ChatEngine[] | null>(null)
   if (!enginesRef.current) {
     const canvas = new CanvasEngine(() => convRef.current, () => portRef.current)
+    // Two Claude engines share one transport, differing only by direction: 'build' (画布→工程)
+    // and 'draw' (工程→画布). Expressing the mode as separate engine entries keeps the engine
+    // self-contained (mode is a ctor arg, not React state) and reuses the existing selector.
     enginesRef.current = IS_TAURI
-      ? [canvas, new ClaudeEngine(() => cwdRef.current, () => portRef.current)]
+      ? [
+          canvas,
+          new ClaudeEngine(() => cwdRef.current, () => portRef.current),
+          new ClaudeEngine(() => cwdRef.current, () => portRef.current, 'draw'),
+        ]
       : [canvas]
   }
   const engines = enginesRef.current
@@ -200,7 +207,7 @@ export function App() {
     convRef.current?.reset(project.api)
   }, [])
 
-  const isClaude = engineId === 'claude'
+  const isClaude = engineId.startsWith('claude') // 'claude' (build) and 'claude-draw' both need a cwd
   const canSend = isClaude ? !!cwd.trim() : apiKeySet
   const placeholder = canSend
     ? '描述需求…（Enter 发送）'
