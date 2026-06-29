@@ -33,3 +33,4 @@ public/fonts
 .env.local
 
 tmp/
+docs/modules/
