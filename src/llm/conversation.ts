@@ -119,8 +119,12 @@ export interface SendCallbacks {
    * Debug hook: fired right before each model call with the exact request
    * (system + message history + tools) for that loop iteration. `iteration` is
    * 0-based. Used by the UI's debug mode to show what was sent to the model.
+   * Accurate for stateless adapters (Poe); a transforming adapter (Claude Code) reports its
+   * REAL send via `onDebug` below instead, and the engine suppresses this logical view.
    */
   onRequest?(params: RunTurnParams, iteration: number): void
+  /** Debug: a transforming adapter's REAL outgoing request (forwarded to runTurn's onDebug). */
+  onDebug?(text: string): void
 }
 
 /** Holds the provider-neutral message history and runs the tool-use loop for one user turn. */
@@ -203,7 +207,7 @@ export class Conversation {
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
       cb.onRequest?.(params, i)
-      const turn = await this.adapter.runTurn(params, { onText: cb.onText })
+      const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
       const applied = await this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
@@ -230,7 +234,7 @@ export class Conversation {
 
     const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
     cb.onRequest?.(params, MAX_ITERATIONS)
-    const turn = await this.adapter.runTurn(params, { onText: cb.onText })
+    const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
     this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
     if (turn.toolCalls.length === 0) return // model judged it already good
 
