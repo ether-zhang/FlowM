@@ -5,6 +5,13 @@ import type { LlmMessage, LlmTurn } from './types'
 export interface TurnCallbacks {
   /** Assistant text for this turn (full text on non-streaming adapters). */
   onText(text: string): void
+  /** Optional system-note channel (tool / progress activity → the chat's yellow hints, not the
+   *  assistant bubble). The Poe adapter has none; the Claude Code adapter uses it to surface its
+   *  Read/Grep progress while it works. */
+  onSystem?(text: string): void
+  /** Optional debug channel: the adapter reports its REAL outgoing request here, for adapters
+   *  (e.g. Claude Code) that transform the request away from Conversation's logical view. */
+  onDebug?(text: string): void
 }
 
 export interface RunTurnParams {
