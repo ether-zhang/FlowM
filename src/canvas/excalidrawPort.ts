@@ -73,7 +73,10 @@ const center = (el: { x: number; y: number; width: number; height: number }) => 
   x: el.x + el.width / 2,
   y: el.y + el.height / 2,
 })
-const newId = () => `flowm-${crypto.randomUUID()}`
+// Short id: the model has to copy these back verbatim when it edits an existing shape (in
+// connect_shapes / edits), so keep them brief. 8 hex chars (~4.3e9) is plenty unique per scene;
+// the `flowm-` prefix marks FlowM-created shapes apart from user-drawn (Excalidraw nanoid) ones.
+const newId = () => `flowm-${crypto.randomUUID().slice(0, 8)}`
 
 /**
  * Interpret literal escape sequences the model sometimes emits in text values.
