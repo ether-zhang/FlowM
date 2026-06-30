@@ -5,7 +5,7 @@ import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { CanvasEngine, ClaudeEngine, type ChatEngine } from '../engine'
+import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
@@ -52,16 +52,26 @@ export function App() {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
   const [debug, setDebug] = useState(false)
+  // Key entry uses an in-app dialog, NOT window.prompt: WKWebView (macOS Tauri) and WebKitGTK
+  // (Linux) don't implement window.prompt — it returns null, so the key could never be set on
+  // the desktop app. A React <input> works on every platform.
+  const [keyDialogOpen, setKeyDialogOpen] = useState(false)
+  const [keyInput, setKeyInput] = useState('')
 
   // The working directory the local Claude Code engines run in (canvas·Claude + build).
-  const cwdRef = useRef('D:\\Project\\vllm')
+  const cwdRef = useRef('')
   const [cwd, setCwd] = useState(cwdRef.current)
+  // Path to the user's `claude` executable; prefilled from the backend's platform default (see the
+  // effect below). A GUI Mac app doesn't inherit the shell PATH, so an absolute path is what lets
+  // `claude` spawn; empty means "resolve `claude` via PATH".
+  const binRef = useRef('')
+  const [bin, setBin] = useState('')
 
   // A second Conversation driven by Claude Code (same pipeline, different LlmAdapter). Needs no
   // API key — Claude auth is the user's own `claude auth login`. Desktop only.
   const claudeConvRef = useRef<Conversation | null>(null)
   if (IS_TAURI && !claudeConvRef.current) {
-    claudeConvRef.current = new Conversation(new ClaudeAdapter(() => cwdRef.current))
+    claudeConvRef.current = new Conversation(new ClaudeAdapter(() => cwdRef.current, () => binRef.current))
   }
 
   // Selectable chat engines (decoupled behind ChatEngine). They read live conv/port/cwd via
@@ -77,7 +87,7 @@ export function App() {
       ? [
           poe,
           new CanvasEngine(() => claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手 · Claude', debugViaAdapter: true }),
-          new ClaudeEngine(() => cwdRef.current, () => portRef.current), // 画布 → 工程 (build)
+          new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
         ]
       : [poe]
   }
@@ -103,6 +113,17 @@ export function App() {
     })
   }, [ensureConversation])
 
+  // Prefill the `claude` executable path with the backend's platform default (the user can edit it).
+  useEffect(() => {
+    if (!IS_TAURI) return
+    defaultClaudeBin().then((p) => {
+      if (!binRef.current) {
+        binRef.current = p
+        setBin(p)
+      }
+    })
+  }, [])
+
   const onReady = useCallback(
     (api: ExcalidrawImperativeAPI) => {
       portRef.current = createExcalidrawPort(api)
@@ -127,36 +148,33 @@ export function App() {
   const appendToMessage = (id: string, delta: string) =>
     setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, text: msg.text + delta } : msg)))
 
-  const onConfigureKey = useCallback(async () => {
-    if (IS_TAURI) {
-      // Don't prefill — the key stays in the backend, never exposed to the renderer.
-      const next = window.prompt('输入 Poe API Key（存于桌面后端，不进入渲染层）：', '')
-      if (next == null) return
-      const key = next.trim()
-      if (!key) {
-        await tauriKey.clear()
-        setApiKeySet(false)
-        return
-      }
-      await tauriKey.set(key)
-      ensureConversation()
-      setApiKeySet(true)
-      return
-    }
+  // The Key button just opens the dialog; the input starts empty (the stored key is never
+  // prefilled — in Tauri it lives in the backend and is never exposed to the renderer).
+  const onConfigureKey = useCallback(() => {
+    setKeyInput('')
+    setKeyDialogOpen(true)
+  }, [])
 
-    const current = localStorage.getItem(KEY_STORAGE) ?? ''
-    const next = window.prompt('输入 Poe API Key（仅存于本地 localStorage）：', current)
-    if (next == null) return
-    const key = next.trim()
+  // Save the dialog's key. Empty input clears the stored key. Storage branches by platform
+  // (Tauri backend file vs localStorage); the rest is identical.
+  const submitKey = useCallback(async () => {
+    const key = keyInput.trim()
+    setKeyDialogOpen(false)
     if (!key) {
-      localStorage.removeItem(KEY_STORAGE)
+      if (IS_TAURI) await tauriKey.clear()
+      else localStorage.removeItem(KEY_STORAGE)
       setApiKeySet(false)
       return
     }
-    localStorage.setItem(KEY_STORAGE, key)
-    ensureConversation(key)
+    if (IS_TAURI) {
+      await tauriKey.set(key)
+      ensureConversation()
+    } else {
+      localStorage.setItem(KEY_STORAGE, key)
+      ensureConversation(key)
+    }
     setApiKeySet(true)
-  }, [ensureConversation])
+  }, [keyInput, ensureConversation])
 
   const onSend = useCallback(
     async (text: string) => {
@@ -228,18 +246,30 @@ export function App() {
       ? '请先填写工程目录'
       : '请先设置 Poe API Key'
   const engineConfig = isClaude ? (
-    <input
-      value={cwd}
-      onChange={(e) => {
-        cwdRef.current = e.target.value
-        setCwd(e.target.value)
-      }}
-      placeholder="工程目录 (cwd)，如 D:\Project\vllm"
-      style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
-    />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <input
+        value={cwd}
+        onChange={(e) => {
+          cwdRef.current = e.target.value
+          setCwd(e.target.value)
+        }}
+        placeholder="工程目录绝对路径 (cwd)"
+        style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
+      />
+      <input
+        value={bin}
+        onChange={(e) => {
+          binRef.current = e.target.value
+          setBin(e.target.value)
+        }}
+        placeholder="claude 可执行文件路径（留空则用 PATH 中的 claude）"
+        style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
+      />
+    </div>
   ) : undefined
 
   return (
+    <>
     <div className="layout">
       <main className="canvas-pane">
         <Canvas onReady={onReady} />
@@ -264,5 +294,35 @@ export function App() {
         />
       </aside>
     </div>
+
+    {keyDialogOpen && (
+      <div className="modal-backdrop" onClick={() => setKeyDialogOpen(false)}>
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <h3 className="modal-title">设置 Poe API Key</h3>
+          <p className="modal-hint">
+            {IS_TAURI
+              ? '存于桌面后端文件，不进入渲染层。留空并确定可清除。'
+              : '仅存于本地 localStorage。留空并确定可清除。'}
+          </p>
+          <input
+            className="modal-input"
+            type="password"
+            autoFocus
+            value={keyInput}
+            placeholder="在 poe.com/api/keys 获取"
+            onChange={(e) => setKeyInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitKey()
+              else if (e.key === 'Escape') setKeyDialogOpen(false)
+            }}
+          />
+          <div className="modal-actions">
+            <button onClick={() => setKeyDialogOpen(false)}>取消</button>
+            <button className="primary" onClick={submitKey}>确定</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }

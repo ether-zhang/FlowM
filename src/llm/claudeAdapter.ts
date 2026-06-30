@@ -78,9 +78,12 @@ export class ClaudeAdapter implements LlmAdapter {
   private turn = 0
   /** The cwd whose CLAUDE.local.md we've already written, so we re-write if the dir changes. */
   private guideCwd: string | null = null
+  /** Path to the `claude` executable (empty → let the backend resolve `claude` via PATH). */
+  private getBin: () => string
 
-  constructor(getCwd: () => string) {
+  constructor(getCwd: () => string, getBin: () => string) {
     this.getCwd = getCwd
+    this.getBin = getBin
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
@@ -136,7 +139,7 @@ export class ClaudeAdapter implements LlmAdapter {
         const s = extractStructured(e.line)
         if (s != null) structured = s
       },
-      undefined,
+      this.getBin().trim() || undefined,
       schema,
       this.session ?? undefined,
       // No subagents on the canvas engine: direct Read/Grep reads code fine for a diagram, while a

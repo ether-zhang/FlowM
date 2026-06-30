@@ -19,17 +19,20 @@ export class ClaudeEngine implements ChatEngine {
   readonly label = 'Claude Code'
   private getCwd: () => string
   private getPort: () => CanvasPort | null
+  /** Path to the `claude` executable (empty → let the backend resolve `claude` via PATH). */
+  private getBin: () => string
 
-  constructor(getCwd: () => string, getPort: () => CanvasPort | null) {
+  constructor(getCwd: () => string, getPort: () => CanvasPort | null, getBin: () => string) {
     this.getCwd = getCwd
     this.getPort = getPort
+    this.getBin = getBin
   }
 
   async send(text: string, cb: ChatCallbacks): Promise<void> {
     const cwd = this.getCwd().trim()
     if (!cwd) throw new Error('请先填写工程目录')
     const prompt = await this.composePrompt(text, cwd, cb)
-    await claudeRun(prompt, cwd, this.streamToChat(cb))
+    await claudeRun(prompt, cwd, this.streamToChat(cb), this.getBin().trim() || undefined)
   }
 
   /** Stream Claude's stdout (prose + tool activity) into the chat; report stderr / non-zero exit. */

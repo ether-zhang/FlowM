@@ -49,6 +49,13 @@ export async function claudeRun(
 }
 
 
+/** The platform's conventional `claude` path (the Rust backend probes common install locations),
+ *  used to prefill the editable binary-path field. A packaged Mac app launched from Finder doesn't
+ *  inherit the shell PATH, so an absolute path here is what lets `claude` spawn. */
+export async function defaultClaudeBin(): Promise<string> {
+  return invoke<string>('default_claude_bin')
+}
+
 /** Write the canvas PNG (data URL) to `<cwd>/.flowm/design.png` so the spawned `claude`
  *  can Read it. Returns the relative path to reference in the prompt. */
 export async function writeDesign(cwd: string, dataUrl: string): Promise<string> {

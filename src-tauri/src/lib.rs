@@ -184,6 +184,44 @@ async fn claude_run(
     Ok(())
 }
 
+/// The conventional `claude` path to prefill the editable binary-path field with. A GUI app
+/// launched from Finder/Dock inherits only a minimal PATH (not the shell's), so a stored absolute
+/// path is what makes spawning `claude` work there. Returns the first common install location that
+/// exists, else the canonical native-installer path (`~/.local/bin/claude[.exe]`) for the OS.
+fn resolve_claude_bin(app: &AppHandle) -> String {
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let home = app.path().home_dir().ok();
+
+    // Canonical native-installer location (claude.ai/install) — also the fallback prefill.
+    let canonical = home.as_ref().map(|h| h.join(".local").join("bin").join(exe));
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(c) = &canonical {
+        candidates.push(c.clone());
+    }
+    if !cfg!(windows) {
+        // Homebrew (Apple Silicon / Intel) and npm-global default prefixes on macOS & Linux.
+        candidates.push(PathBuf::from("/opt/homebrew/bin").join(exe));
+        candidates.push(PathBuf::from("/usr/local/bin").join(exe));
+        if let Some(h) = &home {
+            candidates.push(h.join(".npm-global").join("bin").join(exe));
+        }
+    }
+
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| canonical.map(|c| c.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| exe.to_string())
+}
+
+/// Expose the prefill path to the renderer (the binary-path field's default; the user can edit it).
+#[tauri::command]
+fn default_claude_bin(app: AppHandle) -> String {
+    resolve_claude_bin(&app)
+}
+
 /// Write FlowM's drawing guide to `<cwd>/CLAUDE.local.md` — the project "switch" Claude Code
 /// auto-loads on every invocation (and prompt-caches across --resume). FlowM owns this file;
 /// CLAUDE.local.md is conventionally gitignored, so it doesn't pollute the user's tracked repo.
@@ -216,6 +254,7 @@ pub fn run() {
             clear_api_key,
             poe_chat,
             claude_run,
+            default_claude_bin,
             write_guide,
             write_design
         ])
