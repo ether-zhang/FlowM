@@ -38,8 +38,11 @@ export const CanvasOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('create_geo'),
     shape: GeoKind,
-    x: z.number(),
-    y: z.number(),
+    // x/y are OPTIONAL: when omitted the model is trusting the framework to lay this shape out
+    // from its connections (autoLayout, for flowchart/structured nodes); when given they're the
+    // model's deliberate placement (free-form, or editing relative to existing shapes).
+    x: z.number().optional(),
+    y: z.number().optional(),
     // Optional ON PURPOSE: an omitted dimension means "the model didn't size this", so the
     // port supplies a label-fitted default; a given dimension is the model's intent and is
     // frozen (text is scaled to fit it, never the box grown past it). Defaulting here would
@@ -51,8 +54,8 @@ export const CanvasOp = z.discriminatedUnion('op', [
   }),
   z.object({
     op: z.literal('create_text'),
-    x: z.number(),
-    y: z.number(),
+    x: z.number().optional(),
+    y: z.number().optional(),
     text: z.string(),
     ref: z.string().optional(),
   }),
