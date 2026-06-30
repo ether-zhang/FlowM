@@ -10,6 +10,10 @@ import { IS_TAURI } from '../runtime'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
+// Persisted across restarts so heavy iteration doesn't mean re-picking the engine + re-typing paths.
+const CWD_STORAGE = 'flowm.cwd'
+const BIN_STORAGE = 'flowm.bin'
+const ENGINE_STORAGE = 'flowm.engine'
 
 /** Render one outgoing model request as readable text for the debug panel. */
 function formatRequest(params: RunTurnParams, iteration: number): string {
@@ -59,13 +63,13 @@ export function App() {
   const [keyInput, setKeyInput] = useState('')
 
   // The working directory the local Claude Code engines run in (canvas·Claude + build).
-  const cwdRef = useRef('')
+  const cwdRef = useRef(localStorage.getItem(CWD_STORAGE) ?? '')
   const [cwd, setCwd] = useState(cwdRef.current)
   // Path to the user's `claude` executable; prefilled from the backend's platform default (see the
   // effect below). A GUI Mac app doesn't inherit the shell PATH, so an absolute path is what lets
   // `claude` spawn; empty means "resolve `claude` via PATH".
-  const binRef = useRef('')
-  const [bin, setBin] = useState('')
+  const binRef = useRef(localStorage.getItem(BIN_STORAGE) ?? '')
+  const [bin, setBin] = useState(binRef.current)
 
   // A second Conversation driven by Claude Code (same pipeline, different LlmAdapter). Needs no
   // API key — Claude auth is the user's own `claude auth login`. Desktop only.
@@ -92,7 +96,10 @@ export function App() {
       : [poe]
   }
   const engines = enginesRef.current
-  const [engineId, setEngineId] = useState('canvas')
+  const [engineId, setEngineId] = useState(() => {
+    const saved = localStorage.getItem(ENGINE_STORAGE)
+    return saved && engines.some((e) => e.id === saved) ? saved : 'canvas'
+  })
 
   // Tauri's adapter needs no client-side key; the browser's PoeAdapter does.
   const ensureConversation = useCallback((key?: string) => {
@@ -252,6 +259,7 @@ export function App() {
         onChange={(e) => {
           cwdRef.current = e.target.value
           setCwd(e.target.value)
+          localStorage.setItem(CWD_STORAGE, e.target.value)
         }}
         placeholder="工程目录绝对路径 (cwd)"
         style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
@@ -261,6 +269,7 @@ export function App() {
         onChange={(e) => {
           binRef.current = e.target.value
           setBin(e.target.value)
+          localStorage.setItem(BIN_STORAGE, e.target.value)
         }}
         placeholder="claude 可执行文件路径（留空则用 PATH 中的 claude）"
         style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
@@ -283,7 +292,10 @@ export function App() {
           debug={debug}
           engines={engines.map((e) => ({ id: e.id, label: e.label }))}
           engineId={engineId}
-          onSelectEngine={setEngineId}
+          onSelectEngine={(id) => {
+            setEngineId(id)
+            localStorage.setItem(ENGINE_STORAGE, id)
+          }}
           engineConfig={engineConfig}
           placeholder={placeholder}
           onSend={onSend}
