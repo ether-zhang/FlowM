@@ -15,6 +15,7 @@ import { clusterDrawRegions, type CanvasPort, type CanvasShape, type CanvasOp, t
 import { solveArrowEndpoints } from './bindingGeometry'
 import { routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
+import { autoLayout, type AutoEdge } from './autoLayout'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -72,7 +73,10 @@ const center = (el: { x: number; y: number; width: number; height: number }) => 
   x: el.x + el.width / 2,
   y: el.y + el.height / 2,
 })
-const newId = () => `flowm-${crypto.randomUUID()}`
+// Short id: the model has to copy these back verbatim when it edits an existing shape (in
+// connect_shapes / edits), so keep them brief. 8 hex chars (~4.3e9) is plenty unique per scene;
+// the `flowm-` prefix marks FlowM-created shapes apart from user-drawn (Excalidraw nanoid) ones.
+const newId = () => `flowm-${crypto.randomUUID().slice(0, 8)}`
 
 /**
  * Interpret literal escape sequences the model sometimes emits in text values.
@@ -353,6 +357,62 @@ function routeArrowElement(
 }
 
 /**
+ * Positions for create ops the model left WITHOUT coordinates — it's trusting the framework to
+ * lay them out from their connections (flowchart / structured nodes). Returns op-index → top-left;
+ * coordinate-ful ops are absent (kept exactly as the model placed them — free-form / edits). Sizes
+ * use the same label fit as create_geo below, so the layout's gaps match the rendered boxes; the
+ * pure layered math lives in autoLayout.ts. Origin is just right of existing box content (or a
+ * default on an empty canvas) so a fresh diagram starts near the top-left and edits don't overlap.
+ */
+function autoPlaceMissing(ops: CanvasOp[], existing: ExcalidrawElement[]): Map<number, { x: number; y: number }> {
+  const auto: { i: number; key: string; ref?: string; w: number; h: number }[] = []
+  ops.forEach((op, i) => {
+    if ((op.op === 'create_geo' || op.op === 'create_text') && op.x == null && op.y == null) {
+      const text = op.text ? decodeText(op.text) : undefined
+      const geo = op.op === 'create_geo' ? (op.shape === 'triangle' ? 'diamond' : op.shape) : 'rectangle'
+      const fit = text ? labelBoxSize(text, geo) : { w: 120, h: 80 }
+      const w = (op.op === 'create_geo' ? op.w : undefined) ?? fit.w
+      const h = (op.op === 'create_geo' ? op.h : undefined) ?? fit.h
+      auto.push({ i, key: `a${i}`, ref: op.ref, w, h })
+    }
+  })
+  if (auto.length === 0) return new Map()
+  const refToKey = new Map<string, string>()
+  for (const a of auto) if (a.ref) refToKey.set(a.ref, a.key)
+  const edges: AutoEdge[] = []
+  for (const op of ops) {
+    if (op.op === 'connect_shapes') {
+      const f = refToKey.get(op.from)
+      const t = refToKey.get(op.to)
+      if (f && t) edges.push({ from: f, to: t })
+    }
+  }
+  const boxes = existing.filter((e) => e.type !== 'arrow' && !(isText(e) && e.containerId))
+  let origin = { x: 120, y: 120 }
+  if (boxes.length) {
+    let maxX = -Infinity
+    let minY = Infinity
+    for (const e of boxes) {
+      maxX = Math.max(maxX, e.x + e.width)
+      minY = Math.min(minY, e.y)
+    }
+    origin = { x: maxX + 160, y: minY }
+  }
+  const pos = autoLayout(
+    auto.map((a) => ({ id: a.key, w: a.w, h: a.h })),
+    edges,
+    origin,
+    true,
+  )
+  const out = new Map<number, { x: number; y: number }>()
+  for (const a of auto) {
+    const p = pos.get(a.key)
+    if (p) out.set(a.i, p)
+  }
+  return out
+}
+
+/**
  * Bind the protocol's CanvasPort to a live Excalidraw editor. This is the only
  * place that knows about Excalidraw types — the protocol and LLM layers stay
  * agnostic, exactly as they did behind the previous tldraw port.
@@ -411,6 +471,10 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       const byId = new Map<string, ExcalidrawElement>()
       for (const el of getNonDeletedElements(api.getSceneElements())) byId.set(el.id, el)
 
+      // Place any create ops the model left coordinate-less (it's trusting the framework to lay
+      // them out from their connections); coordinate-ful ops keep the model's exact placement.
+      const autoPos = autoPlaceMissing(ops, [...byId.values()])
+
       const refs = new Map<string, string>() // create-ref → assigned id
       const pending = new Map<string, { x: number; y: number; width: number; height: number }>()
       const skeleton: ExcalidrawElementSkeleton[] = []
@@ -439,23 +503,28 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
             const fit = text ? labelBoxSize(text, geo) : { w: 120, h: 80 }
             const width = op.w ?? fit.w
             const height = op.h ?? fit.h
+            // Coordinate-less → the framework's auto-layout position; else the model's own.
+            const place = autoPos.get(i)
+            const x = op.x ?? place?.x ?? 0
+            const y = op.y ?? place?.y ?? 0
             skeleton.push({
               type: geo,
               id,
-              x: op.x,
-              y: op.y,
+              x,
+              y,
               width,
               height,
               ...(text ? { label: { text, fontSize: fitFontSize(text, geo, width, height) } } : {}),
             } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
-            pending.set(id, { x: op.x, y: op.y, width, height })
+            pending.set(id, { x, y, width, height })
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break
           }
           case 'create_text': {
             const id = newId()
-            skeleton.push({ type: 'text', id, x: op.x, y: op.y, text: decodeText(op.text) } as ExcalidrawElementSkeleton)
+            const place = autoPos.get(i)
+            skeleton.push({ type: 'text', id, x: op.x ?? place?.x ?? 0, y: op.y ?? place?.y ?? 0, text: decodeText(op.text) } as ExcalidrawElementSkeleton)
             if (op.ref) refs.set(op.ref, id)
             results[i] = { op: op.op, ok: true, id, ref: op.ref }
             break

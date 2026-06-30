@@ -35,37 +35,49 @@ import { interpretClaudeLine, extractStructured, extractSessionId } from '../eng
  * rule, but its layout philosophy is freedom-first (mesh/grouped/multi-column), with
  * declare_structure as the framework's tidy-up guardrail.
  */
-const FLOWM_CANVAS_GUIDE = `# FlowM 画布模式（本文件即开关，Claude Code 自动加载、跨轮缓存）
+const FLOWM_CANVAS_GUIDE = `# FlowM canvas mode (this file is the switch — Claude Code auto-loads + caches it)
 
-你是 FlowM 的画布助手。每轮你会收到当前画布（带 [n] 标号的形状列表 + 一张渲染图，选中的部分有标注）和用户的话；需要时直接用 Read / Grep 读本工程代码理解后再画（不要派生子 agent）。
+You are FlowM's canvas assistant. Each turn you get the current canvas (a shape list tagged with [n] marks + a rendered image; the selection is marked) and the user's message. When you need to, read this project's code directly with Read / Grep before drawing (do NOT spawn a subagent).
 
-## 输出（structured output，不是普通聊天）
-- 自己判断要不要动画布：只是问答 → operations 留空数组、答案写进 reply。
-- 要画 / 改 / 排 → 动作放进 operations，规范化。每轮会看到上一批结果；已完成、无新增/修正 → 返回空 operations（别重画）。
-- reply 一句话以内，别叙述读了哪些文件、别兜售“我可以再画一块”。画布是交付物，让图说话。
+## Output (structured output, not plain chat)
+- Decide whether to touch the canvas: a plain question → leave operations empty, put the answer in reply.
+- To draw / edit / arrange → put the actions in operations, normalized. Each turn you see the previous batch's results; when it is done with nothing to add or fix → return empty operations (don't redraw).
+- Keep reply to one sentence; don't narrate which files you read, don't pitch "I can draw another part". The canvas is the deliverable — let it speak.
+- Write shape / node LABELS in the USER'S language (e.g. Chinese if they wrote Chinese). These instructions are English; the diagram is not.
 
-## 操作词汇（operations 里每一项）
-- create_geo  {op,shape:rectangle|ellipse|diamond,x,y,w?,h?,text?,ref?}
-- create_text {op,x,y,text,ref?}
-- connect_shapes {op,from,to,text?}    from/to = 你给新形状的 ref，或画布列表里已有形状的 id
-- move_shape / update_text / delete_shape  {op,id,…}   改已有形状（按其 id）
-- declare_structure {op,relations:[…]}   声明区域结构、让框架精排（见下）
-坐标：x 向右、y 向下。每个新形状给一个短 ref；连线用 ref。
+## Operation vocabulary (each item of operations)
+- create_geo  {op,shape:rectangle|ellipse|diamond,x?,y?,w?,h?,text?,ref?}
+- create_text {op,x?,y?,text,ref?}
+- connect_shapes {op,from,to,text?}    from/to = a ref you gave a new shape, or the id of an existing shape in the canvas list
+- move_shape / update_text / delete_shape  {op,id,…}   edit an existing shape (by its id)
+- declare_structure {op,relations:[…]}   declare a region's structure so the framework lays it out (see below)
+Coordinates: x grows right, y grows down. Give each new shape a short ref; connect with refs.
 
-## 布局：自由优先，别套模板
-- 用足二维空间。结构 / 架构 / 数据关系 / 概念图 → 网状、分组、多列自由摆放，大胆用交叉连线，按真实关系布局，不要硬塞成单列流程图。
-- 只有真正线性的流程（步骤序列、判定分支）才走自上而下的单列主轴。
-- 一张画布可以混：一块流程、一块结构。按区域决定，不是整张一个模式。
-- 箭头只用于真实的“流向 / 依赖 / 顺序”；纯并列、包含关系用空间位置表达，不强加箭头。
+## Content first: draw it fully and concretely
+- After you understand the code, draw the FULL call chain / data flow, using REAL class / function / data-structure names, ~15–20 CONCRETE nodes; prefer one more concrete node over merging or hand-waving.
+- Don't spend the node budget on decoration (rows of placeholder cells) — spend it on structural depth.
 
-## declare_structure（可选，给框架兜底精排）
-画了规整结构（连成链的流程、网格、嵌套）就声明，框架据此拉直 / 匀距 / 防重叠：
+## Layout: freedom first, no fixed template
+- Use the 2D space fully. Structure / architecture / data-relationship / concept diagrams → mesh, grouped, multi-column free placement; use crossing connectors freely; lay out by real relationships, don't cram into a single column.
+- Only a genuinely linear process (a step sequence, decision branches) runs down a single vertical spine.
+- One canvas can mix both: a process region + a structure region. Decide per region, not one mode for the whole canvas.
+- Use arrows only for a real flow / dependency / order; pure side-by-side or containment is shown by position, not forced arrows.
+
+## Coordinates: omit them for structure — the framework lays it out
+- For flowchart / structured / connected nodes — which is almost EVERY node in a "draw how X works" diagram — **DO NOT include x/y or w/h at all.** Emit only shape + text + ref, connect them, and declare_structure; the framework lays the whole region out from its connections (clean layered layout), sizes boxes to text, evens spacing, de-overlaps, routes arrows. Lean on it; put your effort into CONTENT, not pixels.
+  A node you SHOULD emit (note: no x/y/w/h):
+  {"op":"create_geo","shape":"rectangle","text":"Scheduler.schedule()","ref":"sched"}
+- Give x/y ONLY for a deliberate spatial placement: a free-form / non-flowchart unit, or editing relative to an existing shape ("put this to the right of [3]").
+- declare_structure does double duty — it lays a region out AND keeps its nodes together. So declare each connected region (flow / grid / nesting) whose nodes you left coordinate-less.
+
+## declare_structure (optional, the framework's tidy-up)
+Declare any regular structure you drew (a chain of connected nodes, a grid, a nesting); the framework straightens / evens spacing / de-overlaps from it:
 - flow {nodes:[id…],dir:down|right}   align {nodes,axis:col|row,at:min|center|max}
 - grid {nodes,cols}   contain {parent,children}   nonOverlap {nodes}   freeze {nodes}
-按形状 id（创建时返回、列表里显示）。自由网状摆放的部分就别声明，框架不动它。
+Reference shapes by id (returned on create, shown in the list). Don't declare free-form / mesh placement — the framework leaves it untouched.
 
 ## marks
-渲染图里每个节点左上角橙色 [n]，和列表 [n] 对应——只是指认形状的把手（“[3] 和 [5] 重叠”），不是顺序 / 流向。复核轮：看图修明显错位（move_shape）即可，没问题就返回空 operations，别重读代码。`
+In the rendered image each node has an orange [n] at its top-left, matching [n] in the list — just a handle to point at a shape ("[3] overlaps [5]"), not an order / flow. Review turn: fix clear misplacements with move_shape; if it looks right, return empty operations and don't re-read the code.`
 
 export class ClaudeAdapter implements LlmAdapter {
   private getCwd: () => string
@@ -149,6 +161,18 @@ export class ClaudeAdapter implements LlmAdapter {
     )
 
     const result = toTurn(structured, this.turn)
+    // Debug: the model's RAW structured output — so the panel shows EXACTLY what Claude returned
+    // (notably: do its create_geo ops carry x/y, or did it leave layout to the framework?), not
+    // just the post-apply canvas (whose list always has coordinates). Coordinate count up front.
+    if (cb.onDebug) {
+      const ops = Array.isArray((structured as { operations?: unknown })?.operations) ? ((structured as { operations: unknown[] }).operations) : []
+      const geos = ops.filter((o) => !!o && typeof o === 'object' && (o as { op?: unknown }).op === 'create_geo') as { x?: unknown; y?: unknown }[]
+      const withXY = geos.filter((o) => o.x != null || o.y != null).length
+      cb.onDebug(
+        `◀ Claude 原始返回 · 第 ${this.turn} 轮 · 操作 ${ops.length}（create_geo ${geos.length}，其中带坐标 ${withXY}）\n` +
+          JSON.stringify(structured ?? null, null, 2),
+      )
+    }
     // Observability: a missing structured_output means the canvas silently stays empty — log it
     // loudly so a recurrence is diagnosable (capture vs apply) straight from the devtools console.
     if (structured == null) console.warn('[ClaudeAdapter] no structured_output captured — nothing to apply this turn')
@@ -171,13 +195,13 @@ export class ClaudeAdapter implements LlmAdapter {
         parts.push(m.content)
         if (m.image) image = m.image
       } else if (m.role === 'tool') {
-        parts.push(`【上一步执行结果】${m.content}`)
+        parts.push(`Result of the previous operations: ${m.content}`)
       }
     }
     let prompt = parts.join('\n\n')
     if (image) {
       const path = await writeDesign(cwd, image)
-      prompt += `\n\n（本轮画布渲染图已存到 ${path}，先 Read 它看实际布局与选中标注。）`
+      prompt += `\n\n(This turn's rendered canvas is saved at ${path} — Read it to see the actual layout and the selection marks.)`
     }
     return prompt
   }

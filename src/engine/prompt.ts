@@ -7,8 +7,8 @@ export function buildBuildPrompt(userText: string, spec: string, designPath: str
   return `${userText}
 
 ────────
-以下是用户在 FlowM 画布上画的设计（流程图 / 结构图）。请据此在当前工程目录里开发或修改代码：
-- 设计图（请先 Read 它，理解整体视觉结构与布局）：${designPath}
-- 形状清单（每个形状的坐标、尺寸、文字；箭头表示连接/流向）：
+Below is the design the user drew on the FlowM canvas (a flowchart / structure diagram). Use it to develop or modify code in the current project directory:
+- Design image (Read it first to understand the overall visual structure and layout): ${designPath}
+- Shape list (each shape's coordinates, size, and text; arrows are connections / flow):
 ${spec}`
 }
