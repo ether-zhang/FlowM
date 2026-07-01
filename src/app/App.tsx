@@ -4,7 +4,7 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
-import { FilePanel, FloatingEditor } from '../workspace'
+import { FilePanel, FloatingEditor, ConversationList, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
@@ -111,6 +111,29 @@ export function App() {
     claudeConvRef.current = new Conversation(new ClaudeAdapter(() => cwdRef.current, () => binRef.current))
   }
 
+  // A live mirror of `messages` so the workspace's async save/switch reads the latest bubbles
+  // (a state closure would be stale). Kept in sync by the effect below.
+  const messagesRef = useRef<DisplayMessage[]>([])
+
+  const setFolder = useCallback((folder: string) => {
+    cwdRef.current = folder
+    setCwd(folder)
+    localStorage.setItem(CWD_STORAGE, folder)
+  }, [])
+
+  // The project / multi-conversation layer (desktop). Sits ABOVE the engines: when a project is
+  // open, `ws.activeConv()` is the current conversation and the Claude canvas engine uses it; when
+  // it's null (no project yet) the engine falls back to the legacy single conversation — so opening
+  // a project is purely additive and the pre-project flow is untouched.
+  const ws = useWorkspace({
+    getPort: () => portRef.current,
+    getMessages: () => messagesRef.current,
+    setMessages,
+    getCwd: () => cwdRef.current,
+    getBin: () => binRef.current,
+    setFolder,
+  })
+
   // Selectable chat engines (decoupled behind ChatEngine). They read live conv/port/cwd via
   // getters, so they stay valid as those are recreated. On desktop: the Poe canvas assistant,
   // the SAME canvas assistant backed by Claude Code, and the build engine (画布 → 工程).
@@ -123,7 +146,7 @@ export function App() {
     enginesRef.current = IS_TAURI
       ? [
           poe,
-          new CanvasEngine(() => claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手 · Claude', debugViaAdapter: true }),
+          new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手 · Claude', debugViaAdapter: true }),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
         ]
       : [poe]
@@ -163,6 +186,16 @@ export function App() {
       }
     })
   }, [])
+
+  // Mirror `messages` for the workspace's async reads (declared FIRST so it updates before the
+  // persist effect below reads it), then persist the active conversation whenever a send settles
+  // or the active conversation changes.
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+  useEffect(() => {
+    if (!busy && ws.activeConvId) void ws.persistActive()
+  }, [busy, ws.activeConvId])
 
   const onReady = useCallback(
     (api: ExcalidrawImperativeAPI) => {
@@ -287,6 +320,16 @@ export function App() {
       : '请先设置 Poe API Key'
   const engineConfig = isClaude ? (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {engineId === 'canvas-claude' && (
+        <ConversationList
+          projectName={ws.projectName}
+          conversations={ws.conversations}
+          activeConvId={ws.activeConvId}
+          onOpenFolder={ws.openFolder}
+          onNew={ws.newConversation}
+          onSelect={ws.selectConversation}
+        />
+      )}
       <input
         value={cwd}
         onChange={(e) => {

@@ -94,9 +94,19 @@ export class ClaudeAdapter implements LlmAdapter {
   /** Path to the `claude` executable (empty → let the backend resolve `claude` via PATH). */
   private getBin: () => string
 
-  constructor(getCwd: () => string, getBin: () => string) {
+  /** `initialSession` seeds `--resume` when a persisted conversation is reopened (e.g. after a
+   *  restart): the adapter resumes Claude's stored session and sends only the new delta, so the
+   *  history need not be replayed. Omit for a brand-new conversation. */
+  constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
     this.getCwd = getCwd
     this.getBin = getBin
+    this.session = initialSession
+  }
+
+  /** The Claude Code session id captured for this conversation (the `--resume` handle), or null
+   *  before the first turn. The workspace persists it per conversation so a reopen can resume. */
+  get sessionId(): string | null {
+    return this.session
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {

@@ -7,6 +7,8 @@ export type {
 } from './types'
 export { FilePanel } from './FilePanel'
 export { FloatingEditor } from './FloatingEditor'
+export { ConversationList } from './ConversationList'
+export { useWorkspace, type WorkspaceApi } from './useWorkspace'
 export {
   type FsEntry,
   type ConversationData,

@@ -102,7 +102,11 @@ Windows、macOS、iPad。
         - [x] **配置持久化**：engine / cwd / bin 存 localStorage（Claude 引擎的两个地址框跨重启保留）
         - [x] **macOS 桌面壳**：可在 macOS 跑（`getBin` + key 对话框 + cwd 默认空）
     - [x] 输入法回车修复：中文 IME 组字态按回车确认候选**不再误发送**（`isComposing` 守卫）
-    - [ ] **UI 工程化重构（大件，规划中）**：现聊天栏 UI 是调试期形态，拟按 Claude Code / Codex 的 VSCode 插件模式重做——选文件夹 → 工程初始化到 `~/.flowm`、文本对话直接复用 Claude 的工程 session（本就一体）、可开新画布/新对话、右侧文件栏
+    - **UI 工程化重构（VSCode 插件式外壳，进行中）**——选文件夹 → 工程放 `~/.flowm`、每对话一条 Claude session、可开新画布/新对话、文件栏
+        - [x] **P1 地基**：`~/.flowm` 存储 + `list_dir`/`pick_folder`/`read_file`/`write_file` 后端 + `workspace/` 模块（types + store，纯库无关；唯一契约仍是 `CanvasPort.serialize/deserialize`，不与 `persistence` 互依）
+        - [x] **P2·A 外壳**：三栏 **文件左 · 画布中 · 对话右**；两侧栏可拖拽调宽 + 文件栏可隐藏（`Resizer` + 持久化）；点文件 → 可拖拽**悬浮编辑器**（read/write，Ctrl/Cmd-S 存，2MB 上限）。默认宽度留足中栏（>~730px）避免 Excalidraw 进移动端页脚
+        - [x] **P2·B 多会话核心**：`useWorkspace` hook——选文件夹（`pick_folder`）打开工程、`convId → {Conversation + 各自 ClaudeAdapter}` 运行时表（**每对话一条 Claude session**，`--resume` 种子 + `sessionId` 持久化）、切换时存/取画布+气泡（`~/.flowm`）；`ConversationList` 折叠条（工程头 + 新画布/新对话 + 行）。**非破坏**：无工程时 `activeConv()` 为空、画布引擎回落到旧的单会话，旧流程原样
+        - [ ] **仍待**：① **文本对话**目前也走画布引擎（有画布、kind 只作标签/图标）——真正「纯聊天、无画布、完整回答」需独立 text engine（复用 `claudeRun` 无 schema 流式）；② 工程/会话的**跨重启恢复**已埋 `sessionId` 种子，待实测 `--resume`；③ 面板 **VSCode 式随意摆动**：已把栏做成 data-driven（width/shown 状态），全拖拽停靠留作后续（promote 成 `panes:[{id,side,width,shown}]` 即可）；④ 打开工程失败无 UI 提示
     - [x] **流程图详略结合**（Problem 3）：c1e0f84 偏详细代码流、v0.7-dev 偏整体框架 → 现让模型综合两层（见上「双层 guide」）。**关键是定位到具体 prompt**——就是 guide 的 `Content first` 段；用户改措辞后**实测效果不错**
     - [ ] **纯问答被吞 + 回答过短（待查，先记）**：让模型「只答不画」（operations 空）时，reply 似乎没显示到界面——但模型侧确有回应（debug 原始返回里能看到），疑似框架在**空 operations 路径**上把文字吞了（查 `ClaudeAdapter.runTurn` 的 `cb.onText(result.text)` → `CanvasEngine`/`Conversation` 的空-toolCalls 分支）。且此时答案比正常**短很多**，疑似 guide 的「Keep reply to one sentence」把纯问答也压成一句——纯问答应放宽 reply 长度
 

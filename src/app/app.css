@@ -254,6 +254,80 @@
 }
 .chat-input button:disabled { background: #b6c6f0; cursor: default; }
 
+/* Project + conversation switcher (collapsible strip at the top of the chat pane). */
+.conv-list {
+  border: 1px solid #e5e4e7;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+}
+.conv-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+}
+.conv-collapse {
+  flex: none;
+  border: none;
+  background: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+.conv-project {
+  flex: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-open {
+  flex: none;
+  border: 1px solid #d4d4d8;
+  background: #fafafa;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.conv-open:hover { background: #f0f0f0; }
+.conv-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 6px;
+}
+.conv-actions button {
+  flex: 1;
+  border: 1px dashed #c4c4c8;
+  background: #fafafa;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.conv-actions button:hover { background: #f0f0f0; }
+.conv-rows {
+  max-height: 160px;
+  overflow: auto;
+  padding: 0 4px 4px;
+}
+.conv-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.conv-row:hover { background: #f1f1f3; }
+.conv-row.active { background: #e0e7ff; }
+.conv-kind { flex: none; font-size: 12px; }
+.conv-name { overflow: hidden; text-overflow: ellipsis; }
+
 /* Floating file editor (opened by clicking a file in the panel). Draggable by its title bar. */
 .float-editor {
   position: fixed;
