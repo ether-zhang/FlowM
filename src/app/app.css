@@ -1,41 +1,57 @@
-/* Shell layout. Browser (Poe): two panes — 对话左 · 画布中. Desktop (.with-files): three panes —
-   对话左 · 画布中 · 文件右 (Excalidraw keeps its own left toolbar inside the centre pane). */
+/* Shell layout: 文件左 · 画布中 · 对话右 (desktop). A flex row — the centre canvas takes the slack,
+   the two side panes carry their width via inline style (drag-resizable, the file pane hideable).
+   Browser (Poe) mode has no file pane, so it's just 画布中 · 对话右. */
 .layout {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  /* Lock the shell to the viewport. minmax(0,1fr) lets the single row hold its
-     height instead of growing with content, so a long chat never pushes the
-     page taller (which would scroll the whole page and fight Excalidraw's panning). */
-  grid-template-rows: minmax(0, 1fr);
+  display: flex;
   height: 100svh;
   width: 100vw;
   overflow: hidden;
 }
-.layout.with-files {
-  grid-template-columns: 360px 1fr 280px;
-}
 
 .canvas-pane {
   position: relative;
+  flex: 1;
   min-width: 0;
   min-height: 0;
 }
 
+/* A fixed-width side pane; width is set inline from state. */
+.side-pane {
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
 .chat-pane {
-  border-right: 1px solid var(--flowm-border, #e5e4e7);
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-}
-
-/* Right-hand file panel (desktop). */
-.file-pane-wrap {
   border-left: 1px solid var(--flowm-border, #e5e4e7);
-  min-width: 0;
-  min-height: 0;
-  display: flex;
+}
+.file-pane-wrap {
+  border-right: 1px solid var(--flowm-border, #e5e4e7);
   background: #fafafa;
 }
+
+/* Drag handle between panes (its visible line is the pane's border; the handle itself is a wide
+   hit-target that only tints on hover). */
+.resizer {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+}
+.resizer:hover { background: #d4d4d8; }
+
+/* Slim rail shown in place of the hidden file pane, to reopen it. */
+.file-rail {
+  flex: none;
+  width: 22px;
+  border: none;
+  border-right: 1px solid var(--flowm-border, #e5e4e7);
+  background: #fafafa;
+  color: #888;
+  cursor: pointer;
+}
+.file-rail:hover { background: #f0f0f0; color: #333; }
+
 .file-pane {
   display: flex;
   flex-direction: column;
@@ -46,13 +62,24 @@
   color: #1a1a1a;
 }
 .file-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid #e5e4e7;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
+.file-head-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-hide {
+  flex: none;
+  border: none;
+  background: none;
+  color: #888;
+  font-size: 14px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.file-hide:hover { color: #333; }
 .file-empty {
   padding: 12px;
   color: #999;
@@ -226,6 +253,56 @@
   cursor: pointer;
 }
 .chat-input button:disabled { background: #b6c6f0; cursor: default; }
+
+/* Floating file editor (opened by clicking a file in the panel). Draggable by its title bar. */
+.float-editor {
+  position: fixed;
+  width: 560px;
+  max-width: calc(100vw - 40px);
+  height: 60vh;
+  background: #fff;
+  color: #1a1a1a;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 1000;
+}
+.float-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #f4f4f5;
+  border-bottom: 1px solid #e5e4e7;
+  cursor: move;
+  user-select: none;
+}
+.float-editor-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.float-editor-spacer { flex: 1; }
+.float-editor-bar button {
+  flex: none;
+  border: 1px solid #d4d4d8;
+  background: #fafafa;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.float-editor-bar button:disabled { opacity: 0.5; cursor: default; }
+.float-editor-body {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+  overflow: auto;
+}
+.float-editor-note { padding: 12px; color: #999; font-size: 12px; }
 
 /* In-app key dialog (replaces window.prompt, which WKWebView/macOS ignores). */
 .modal-backdrop {

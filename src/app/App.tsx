@@ -4,7 +4,8 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
-import { FilePanel } from '../workspace'
+import { FilePanel, FloatingEditor } from '../workspace'
+import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
@@ -15,6 +16,15 @@ const KEY_STORAGE = 'flowm.apiKey'
 const CWD_STORAGE = 'flowm.cwd'
 const BIN_STORAGE = 'flowm.bin'
 const ENGINE_STORAGE = 'flowm.engine'
+// Shell pane geometry (files left / chat right), persisted so the layout survives restarts.
+const FILES_W_STORAGE = 'flowm.filesW'
+const CHAT_W_STORAGE = 'flowm.chatW'
+const FILES_SHOWN_STORAGE = 'flowm.filesShown'
+
+const numFromStorage = (k: string, fallback: number) => {
+  const n = Number(localStorage.getItem(k))
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
 
 /** Render one outgoing model request as readable text for the debug panel. */
 function formatRequest(params: RunTurnParams, iteration: number): string {
@@ -71,6 +81,28 @@ export function App() {
   // `claude` spawn; empty means "resolve `claude` via PATH".
   const binRef = useRef(localStorage.getItem(BIN_STORAGE) ?? '')
   const [bin, setBin] = useState(binRef.current)
+
+  // Shell pane geometry. Panels are data-driven (side + width + shown) so a future VSCode-style
+  // rearrange only changes this state, not the render — the seam is here. Defaults keep the centre
+  // canvas wide enough (>~730px on a normal window) that Excalidraw stays in desktop, not mobile, UI.
+  const [filesW, setFilesW] = useState(() => numFromStorage(FILES_W_STORAGE, 240))
+  const [chatW, setChatW] = useState(() => numFromStorage(CHAT_W_STORAGE, 340))
+  const [filesShown, setFilesShown] = useState(() => localStorage.getItem(FILES_SHOWN_STORAGE) !== '0')
+  // The file currently open in the floating editor (absolute path), or null.
+  const [openFile, setOpenFile] = useState<string | null>(null)
+
+  const persistFilesW = (w: number) => {
+    setFilesW(w)
+    localStorage.setItem(FILES_W_STORAGE, String(w))
+  }
+  const persistChatW = (w: number) => {
+    setChatW(w)
+    localStorage.setItem(CHAT_W_STORAGE, String(w))
+  }
+  const toggleFiles = (shown: boolean) => {
+    setFilesShown(shown)
+    localStorage.setItem(FILES_SHOWN_STORAGE, shown ? '1' : '0')
+  }
 
   // A second Conversation driven by Claude Code (same pipeline, different LlmAdapter). Needs no
   // API key — Claude auth is the user's own `claude auth login`. Desktop only.
@@ -280,10 +312,28 @@ export function App() {
 
   return (
     <>
-    {/* Three-pane shell (对话左 · 画布中 · 文件右). The file pane is desktop-only — it lists the
-        project folder; browser (Poe) mode keeps the two-pane 对话左 · 画布中 layout. */}
-    <div className={IS_TAURI ? 'layout with-files' : 'layout'}>
-      <aside className="chat-pane">
+    {/* Shell: 文件左 · 画布中 · 对话右. Panes are data-driven (width/shown state above), so widths
+        drag-resize and the file pane hides — and a future VSCode-style rearrange only touches that
+        state. The file pane is desktop-only; browser (Poe) mode is just 画布中 · 对话右. */}
+    <div className="layout">
+      {IS_TAURI && filesShown && (
+        <>
+          <aside className="side-pane file-pane-wrap" style={{ width: filesW }}>
+            <FilePanel folder={cwd} onOpenFile={setOpenFile} onHide={() => toggleFiles(false)} />
+          </aside>
+          <Resizer width={filesW} setWidth={persistFilesW} sign={1} />
+        </>
+      )}
+      {IS_TAURI && !filesShown && (
+        <button className="file-rail" onClick={() => toggleFiles(true)} title="显示文件栏">
+          »
+        </button>
+      )}
+      <main className="canvas-pane">
+        <Canvas onReady={onReady} />
+      </main>
+      <Resizer width={chatW} setWidth={persistChatW} sign={-1} />
+      <aside className="side-pane chat-pane" style={{ width: chatW }}>
         <Chat
           messages={messages}
           busy={busy}
@@ -305,15 +355,9 @@ export function App() {
           onLoad={onLoad}
         />
       </aside>
-      <main className="canvas-pane">
-        <Canvas onReady={onReady} />
-      </main>
-      {IS_TAURI && (
-        <aside className="file-pane-wrap">
-          <FilePanel folder={cwd} />
-        </aside>
-      )}
     </div>
+
+    {openFile && <FloatingEditor path={openFile} onClose={() => setOpenFile(null)} />}
 
     {keyDialogOpen && (
       <div className="modal-backdrop" onClick={() => setKeyDialogOpen(false)}>

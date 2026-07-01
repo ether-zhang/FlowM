@@ -6,9 +6,12 @@ export type {
   Workspace,
 } from './types'
 export { FilePanel } from './FilePanel'
+export { FloatingEditor } from './FloatingEditor'
 export {
   type FsEntry,
   type ConversationData,
+  readFile,
+  writeFile,
   listDir,
   pickFolder,
   loadWorkspace,

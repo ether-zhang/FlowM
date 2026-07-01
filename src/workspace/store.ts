@@ -24,6 +24,11 @@ export const listDir = (path: string) => invoke<FsEntry[]>('list_dir', { path })
 /** Native folder picker; resolves to the chosen absolute path, or null if cancelled. */
 export const pickFolder = () => invoke<string | null>('pick_folder')
 
+/** Read a file's text (for the floating editor); rejects on >2MB / binary / missing. */
+export const readFile = (path: string) => invoke<string>('read_file', { path })
+/** Write edited text back to a file (the floating editor's Save). */
+export const writeFile = (path: string, content: string) => invoke<void>('write_file', { path, content })
+
 /** What FlowM persists per conversation. The model history is NOT here — it's in Claude's session
  *  (reached via --resume); we keep only what Claude's session doesn't: the canvas + the UI bubbles. */
 export interface ConversationData {

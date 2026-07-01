@@ -294,6 +294,23 @@ fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(out)
 }
 
+/// Read a file's UTF-8 text for the floating editor. Guarded at 2 MB — big/binary files aren't
+/// meant for the pop-up editor (they'd be non-text anyway), so refuse rather than hang the UI.
+#[tauri::command]
+fn read_file(path: String) -> Result<String, String> {
+    let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > 2_000_000 {
+        return Err("文件过大（>2MB），暂不在悬浮编辑器中打开".to_string());
+    }
+    fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// Write edited text back to a file (the floating editor's Save). Overwrites in place.
+#[tauri::command]
+fn write_file(path: String, content: String) -> Result<(), String> {
+    fs::write(&path, content).map_err(|e| e.to_string())
+}
+
 /// Native folder picker for "选择文件夹" (choosing a project's code folder). The dialog plugin runs
 /// it on the OS main thread; we bridge its callback to a oneshot so the command can be `async`.
 /// Returns the chosen absolute path, or `None` if the user cancelled.
@@ -337,7 +354,9 @@ pub fn run() {
             flowm_read,
             flowm_write,
             list_dir,
-            pick_folder
+            pick_folder,
+            read_file,
+            write_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

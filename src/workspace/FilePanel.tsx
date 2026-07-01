@@ -7,24 +7,40 @@ import { listDir, type FsEntry } from './store'
  * state, so it composes into the shell without coupling. Each folder fetches its children on
  * expand (no deep recursion up front).
  */
-export function FilePanel({ folder }: { folder: string }) {
-  if (!folder.trim()) {
-    return <div className="file-pane"><div className="file-empty">未选择工程目录</div></div>
-  }
+export function FilePanel({
+  folder,
+  onOpenFile,
+  onHide,
+}: {
+  folder: string
+  /** Click a file → open it (the shell shows a floating editor). */
+  onOpenFile?: (path: string) => void
+  /** Collapse the panel (the shell shows a slim re-open rail). */
+  onHide?: () => void
+}) {
   return (
     <div className="file-pane">
       <div className="file-head" title={folder}>
-        {baseName(folder)}
+        <span className="file-head-name">{folder.trim() ? baseName(folder) : '未选择工程目录'}</span>
+        {onHide && (
+          <button className="file-hide" onClick={onHide} title="隐藏文件栏">
+            «
+          </button>
+        )}
       </div>
-      <div className="file-tree">
-        <DirChildren path={folder} depth={0} />
-      </div>
+      {folder.trim() ? (
+        <div className="file-tree">
+          <DirChildren path={folder} depth={0} onOpenFile={onOpenFile} />
+        </div>
+      ) : (
+        <div className="file-empty">在下方对话栏填写 / 选择工程目录后显示文件</div>
+      )}
     </div>
   )
 }
 
 /** The children of one directory, fetched lazily; re-fetched if `path` changes. */
-function DirChildren({ path, depth }: { path: string; depth: number }) {
+function DirChildren({ path, depth, onOpenFile }: { path: string; depth: number; onOpenFile?: (path: string) => void }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -45,17 +61,17 @@ function DirChildren({ path, depth }: { path: string; depth: number }) {
   return (
     <>
       {entries.map((e) => (
-        <Node key={e.path} entry={e} depth={depth} />
+        <Node key={e.path} entry={e} depth={depth} onOpenFile={onOpenFile} />
       ))}
     </>
   )
 }
 
-function Node({ entry, depth }: { entry: FsEntry; depth: number }) {
+function Node({ entry, depth, onOpenFile }: { entry: FsEntry; depth: number; onOpenFile?: (path: string) => void }) {
   const [open, setOpen] = useState(false)
   if (!entry.isDir) {
     return (
-      <div className="file-row" style={indent(depth)} title={entry.path}>
+      <div className="file-row" style={indent(depth)} title={entry.path} onClick={() => onOpenFile?.(entry.path)}>
         <span className="file-caret" />
         <span className="file-name">{entry.name}</span>
       </div>
@@ -67,7 +83,7 @@ function Node({ entry, depth }: { entry: FsEntry; depth: number }) {
         <span className="file-caret">{open ? '▾' : '▸'}</span>
         <span className="file-name">{entry.name}</span>
       </div>
-      {open && <DirChildren path={entry.path} depth={depth + 1} />}
+      {open && <DirChildren path={entry.path} depth={depth + 1} onOpenFile={onOpenFile} />}
     </>
   )
 }
