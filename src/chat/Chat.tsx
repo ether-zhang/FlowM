@@ -136,7 +136,9 @@ export function Chat({
           disabled={!canSend || busy}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            // `isComposing` guards IME input: while composing (e.g. a Chinese IME), Enter commits
+            // the candidate — it must NOT send. Only a non-composing Enter (plain typing) sends.
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               send()
             }
