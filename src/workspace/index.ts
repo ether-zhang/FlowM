@@ -5,6 +5,7 @@ export type {
   WorkspaceEntry,
   Workspace,
 } from './types'
+export { FilePanel } from './FilePanel'
 export {
   type FsEntry,
   type ConversationData,

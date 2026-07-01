@@ -1,8 +1,8 @@
-/* Two-pane shell: Excalidraw (with its own left toolbar: 方块/画笔/文字) fills the
-   main pane; the chat panel sits on the right. */
+/* Shell layout. Browser (Poe): two panes — 对话左 · 画布中. Desktop (.with-files): three panes —
+   对话左 · 画布中 · 文件右 (Excalidraw keeps its own left toolbar inside the centre pane). */
 .layout {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 360px 1fr;
   /* Lock the shell to the viewport. minmax(0,1fr) lets the single row hold its
      height instead of growing with content, so a long chat never pushes the
      page taller (which would scroll the whole page and fight Excalidraw's panning). */
@@ -10,6 +10,9 @@
   height: 100svh;
   width: 100vw;
   overflow: hidden;
+}
+.layout.with-files {
+  grid-template-columns: 360px 1fr 280px;
 }
 
 .canvas-pane {
@@ -19,10 +22,74 @@
 }
 
 .chat-pane {
+  border-right: 1px solid var(--flowm-border, #e5e4e7);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+/* Right-hand file panel (desktop). */
+.file-pane-wrap {
   border-left: 1px solid var(--flowm-border, #e5e4e7);
   min-width: 0;
   min-height: 0;
   display: flex;
+  background: #fafafa;
+}
+.file-pane {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  font-size: 13px;
+  color: #1a1a1a;
+}
+.file-head {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e4e7;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-empty {
+  padding: 12px;
+  color: #999;
+  font-size: 12px;
+}
+.file-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  user-select: none;
+}
+.file-row.is-dir { cursor: pointer; }
+.file-row:hover { background: #ececee; }
+.file-caret {
+  display: inline-block;
+  width: 12px;
+  flex: none;
+  color: #888;
+  font-size: 10px;
+}
+.file-name { overflow: hidden; text-overflow: ellipsis; }
+.file-row.is-dir .file-name { font-weight: 500; }
+.file-note {
+  padding: 2px 8px;
+  color: #999;
+  font-size: 12px;
 }
 
 .chat {

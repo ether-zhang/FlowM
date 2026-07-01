@@ -4,6 +4,7 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
+import { FilePanel } from '../workspace'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
@@ -279,10 +280,9 @@ export function App() {
 
   return (
     <>
-    <div className="layout">
-      <main className="canvas-pane">
-        <Canvas onReady={onReady} />
-      </main>
+    {/* Three-pane shell (对话左 · 画布中 · 文件右). The file pane is desktop-only — it lists the
+        project folder; browser (Poe) mode keeps the two-pane 对话左 · 画布中 layout. */}
+    <div className={IS_TAURI ? 'layout with-files' : 'layout'}>
       <aside className="chat-pane">
         <Chat
           messages={messages}
@@ -305,6 +305,14 @@ export function App() {
           onLoad={onLoad}
         />
       </aside>
+      <main className="canvas-pane">
+        <Canvas onReady={onReady} />
+      </main>
+      {IS_TAURI && (
+        <aside className="file-pane-wrap">
+          <FilePanel folder={cwd} />
+        </aside>
+      )}
     </div>
 
     {keyDialogOpen && (
