@@ -48,7 +48,7 @@ Windows、macOS、iPad。
 - 人机交互相关
     - 自由笔触模式的识别
         - [x] **多模态发送地基**：每次发送把选区「序列化文本 + 选区 PNG 图片」一起发给模型。`CanvasPort.exportImage`（Excalidraw `exportToCanvas`，maxWidthOrHeight=1280）→ `LlmMessage.image` → poe.ts 拼 OpenAI `image_url` content；Tauri 经 Rust `poe_chat` 透传 body，无需改 Rust。system 提示模型据 prompt+图片判断画**流程图**还是**自由排布**（无边记式）。只保留最新一轮图片以控 token；Debug 面板显示所发缩略图。**已确认生效**（模型据图纠错、声明结构、判流程图/自由排布）
-          - [ ] 实时更新渲染图片可行吗，会大幅影响token消耗吗？
+          - [x] 实时更新渲染图片可行吗，会大幅影响token消耗吗？保留最新图片，消耗尚可
         - [x] 模型对自由笔触（draw 手绘）语义的稳定识别/复刻——已能"看到"并据图操作；自由排布（CUDA SM 这类复杂拼块）已能大体组装。下面三条杠杆均落地（见 [docs/structured-refine.md](docs/structured-refine.md)）
             - [x] 杠杆1·视觉锚点（Set-of-Mark）：导出 PNG 前给每个 **NODE** 叠橙色编号徽标（`buildMarkElements`，临时元素只进导出不入实景），序列化文本同步 `[n]` 前缀（`serialize.ts` + `nodeMarks`）。模型据此把图像区域 ground 到真实 shape id（"`[3]` 压住 `[5]`"）。仅标 NODE、连续编号；徽标非真实形状、每轮可变
             - [x] **手绘(freedraw)理解**（见 [docs/freedraw-and-extensions.md](docs/freedraw-and-extensions.md)）：手绘是用户输入、语义不透明（每条 `draw` 是抬笔切的笔画、bbox 无语义），几十条笔画**淹列表 + 原子化**格式塔、徽标还**压字**。改：① **折叠 + 不标笔画**——`nodeMarks` 只标结构化 NODE，`serialize` 把笔画收成区域行；② **邻近聚类成 region + 蓝标 `[Bn]`**（纯函数 `clusterDrawRegions`，文图同套确定性聚类，模型可整片引用"matrix [B1] is M×N"）；③ 复核图保留手绘、徽标移到形状上方不遮字。效果：M×N/N×M **读对了**，放置随之变好。坐标/id 框架内部仍留（不进 prompt）
@@ -64,7 +64,7 @@ Windows、macOS、iPad。
         - [x] **支撑修复**：① 声明 scope **按整回合累积**（边晚于声明到达也能拉直），但**只在建图阶段**生效——复核的 `move_shape` 不被重排冲掉；② **durable refs**：create-ref 跨批次（限本回合）存活，模型跨回合用 ref 连线不再 `unresolved`；③ `declare_structure` 全程一等公民、每个 tool call 都回 result（杜绝悬空 tool_call → "出错:undefined"）
         - [x] **尺寸=intent、字号=refine 旋钮**：框尺寸是模型意图——`w/h` 改为**可选**（省略才按 label 估默认框），不再撑框覆盖；文字改用 `fitFontSize`**缩字号塞进框**（`labelBoxSize` 逆运算，下限 9px）。治了 SM 那种紧密拼块被撑破列界的重叠
         - [ ] **仍待**：`align`/`grid`/`contain` 实现器（当前解析即冻结）；长回边标签与宽节点的避让；cluster 级避障；箭头几何（focus/offset/路由）仍按整画布重算（O(N²)、跨区可互扰，远距未显形）
-        - [ ] **流程图主干偶发斜（声明随机性）**：框架只拉直**已声明**的 flow，而模型 `declare_structure(flow)` 是随机的——漏声明那次主干漂移就露成斜箭头（**间歇性、非每次复现**）。这是「框架绝不推断结构、全靠模型声明」原则的**既定代价**。去掉「flowchart 模式」二分后更易漏声明。试过在主干 bullet 加显式 `ALWAYS declare ... flow` cue（commit `8629b59`），**感觉用力过猛、已回滚**。**待选**：① 更克制的提示措辞（不要 ALWAYS 那么硬）；② 复核轮检测"连通链未声明 flow"时自动补声明；③（重，需架构决策、勿顺手做）放开原则、让框架自动把"一条连通节点链"当 flow 拉直——与"不从几何推断结构"冲突，会重新引入"框架猜的结构 vs 模型声明"打架的风险
+        - [x] **流程图主干偶发斜（声明随机性）**：框架只拉直**已声明**的 flow，而模型 `declare_structure(flow)` 是随机的——漏声明那次主干漂移就露成斜箭头（**间歇性、非每次复现**）。这是「框架绝不推断结构、全靠模型声明」原则的**既定代价**。去掉「flowchart 模式」二分后更易漏声明。试过在主干 bullet 加显式 `ALWAYS declare ... flow` cue（commit `8629b59`），**感觉用力过猛、已回滚**。**待选**：① 更克制的提示措辞（不要 ALWAYS 那么硬）；② 复核轮检测"连通链未声明 flow"时自动补声明；③（重，需架构决策、勿顺手做）放开原则、让框架自动把"一条连通节点链"当 flow 拉直——与"不从几何推断结构"冲突，会重新引入"框架猜的结构 vs 模型声明"打架的风险
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
         - [x] 多输入/输出端点端口分配 + 轻度弯曲：shape 挂多条进/出箭头时全瞄中心 → 挤在同一边界点；改为按对方方位把各边分到周边**不同端口**（focus≠0 求解器 `solveEndpoint`/`determineFocusPoint` 已支持，**写入侧已接** `assignPortFocus`），重合/返回边轻弯错开（`assignParallelOffsets`），label 随各自边走。介于"中心瞄准+单弓"与正交寻路之间；**不做 B 版**（elbow/全局寻路太深）。本质是"否，继续生成"那类标签贴节点问题的根治
@@ -89,11 +89,28 @@ Windows、macOS、iPad。
    - [ ] 项目功能 5：项目开发能力（流程图 → 工程开发，接已有 agent），step模式，图片与流程图双向并行？
    - [ ] 工程持久记忆能力？
 
+- Claude Code 引擎（画布侧，v0.7-dev；见记忆 `claude-code-is-an-llmadapter`）
+    - [x] **Claude Code 作为 `LlmAdapter`**：同一条 Conversation 管线（序列化+marks → operations → apply → 复核），只把 Poe 换成用户本地的 `claude`。`protocol/`、`conversation.ts`、`canvas/` 不变，`ClaudeAdapter` 是唯一接缝。桌面（Tauri）专属——它 spawn 本地 `claude`
+        - [x] **强制结构化输出**：canvas 工具编成 `--json-schema {reply, operations[]}`；Claude 用原生 Read/Grep 读代码后吐 operations，映射成 `LlmToolCall[]`，交现有 `parseOp`/`parseStructure` 校验（错误回灌自纠）
+        - [x] **CLAUDE.local.md = 工程开关**：FlowM 自己的 Claude guide（layout-freedom-first，**与 Poe SYSTEM 解耦**——Poe 的竖脊规则会把 Claude 逼成单列）每个 cwd 写一次到 `<cwd>/CLAUDE.local.md`（gitignored、不污染 repo）；Claude Code 每次自动加载 + prompt-cache 跨 `--resume`，永不在单轮 prompt 里重发
+        - [x] **只发增量**：每轮只发上次以来的新消息（+ `--resume`），历史在 Claude 自己的 session JSON 里。build-loop 的"确认轮"（纯 tool-result、无错）短路，不触发 Claude 调用省钱
+        - [x] **`--disallowedTools Task`**：禁子代理（子代理抬成本 + 扰动结果流致 ops 落不了地 + 引发复核轮小作文）
+        - [x] **坐标可选 + 框架自动分层**：`create_geo`/`create_text` 的 x/y/w/h 全可选；缺坐标节点 → 框架分层布局（纯库无关 `canvas/autoLayout.ts`：最长路分层 + 连通分量分区，含单测），有坐标 → 模型定位。模型自选：结构图省坐标交框架、自由/编辑给坐标。few-shot 无坐标样例是让模型真正省坐标的关键（纯指令 3 次失败）
+        - [x] **内容优先 + 双层 guide**：先理解代码，再**综合宏观架构层 + 调用链/数据流层**画；用真实类/函数/数据结构名，并说清每个节点在宏观结构里的角色；**节点数不是关键**——严格遵循用户指令、把结构讲清楚才是；有序关系自上而下读、必要时引侧支；**按需动态**决定画调用链还是宏观图，不确定就都画并建立对应
+        - [x] **可穿透的 debug**：`onDebug` 显示"真正发给 Claude 的增量"（system 不在请求里 = CLAUDE.local.md 已缓存）+ Claude **原始结构化返回**（create_geo 带坐标计数，验证是否真交给框架）；`onSystem` 黄色工具进度提示；`debugViaAdapter` 抑制 Conversation 那条误导性 onRequest
+        - [x] **短 id**：`flowm-${uuid.slice(0,8)}`（14 字 vs 42）
+        - [x] **配置持久化**：engine / cwd / bin 存 localStorage（Claude 引擎的两个地址框跨重启保留）
+        - [x] **macOS 桌面壳**：可在 macOS 跑（`getBin` + key 对话框 + cwd 默认空）
+    - [x] 输入法回车修复：中文 IME 组字态按回车确认候选**不再误发送**（`isComposing` 守卫）
+    - [ ] **UI 工程化重构（大件，规划中）**：现聊天栏 UI 是调试期形态，拟按 Claude Code / Codex 的 VSCode 插件模式重做——选文件夹 → 工程初始化到 `~/.flowm`、文本对话直接复用 Claude 的工程 session（本就一体）、可开新画布/新对话、右侧文件栏
+    - [x] **流程图详略结合**（Problem 3）：c1e0f84 偏详细代码流、v0.7-dev 偏整体框架 → 现让模型综合两层（见上「双层 guide」）。**关键是定位到具体 prompt**——就是 guide 的 `Content first` 段；用户改措辞后**实测效果不错**
+    - [ ] **纯问答被吞 + 回答过短（待查，先记）**：让模型「只答不画」（operations 空）时，reply 似乎没显示到界面——但模型侧确有回应（debug 原始返回里能看到），疑似框架在**空 operations 路径**上把文字吞了（查 `ClaudeAdapter.runTurn` 的 `cb.onText(result.text)` → `CanvasEngine`/`Conversation` 的空-toolCalls 分支）。且此时答案比正常**短很多**，疑似 guide 的「Keep reply to one sentence」把纯问答也压成一句——纯问答应放宽 reply 长度
+
 - 杂项
-   - [ ] 可变的大模型接入口（provider / 模型切换 UI；适配器已就绪）
+   - [x] 可变的大模型接入口：引擎选择器（画布助手·Poe / 画布助手·Claude），localStorage 记住选择；适配器层 provider 中立（Poe / Claude 同一 `LlmAdapter` 接口）
    - [ ] iPad / PWA 收尾（manifest + service worker）
    - [ ] 上下文优化
-     - [ ] 更短id
+     - [x] 更短id
    - [x] 画布库 tldraw → Excalidraw（MIT，去商用授权风险）；持久化推到 `CanvasPort.serialize/deserialize` 后面 —— 代码+构建+9 单测通过，**待 `npm run dev` 实测画布/箭头绑定**
      - [x] 箭头不生成 bug：`convertToExcalidrawElements` 默认 `regenerateIds:true` 会丢弃我们设的 id → 返回 id 与实际元素不符 → 后续 connect_shapes 全 unresolved。已改 `regenerateIds:false` 固定 id
      - [x] 箭头弯曲异常 / 全指向右 / undo-redo 后才正常：运行时报 `Linear element is not normalized`。根因链：①Excalidraw 运行时要求 `points[0]===[0,0]`，否则 LinearElementEditor 报错、无法编辑；②converter 的 `start/end` 绑定只产出**占位 points**（默认水平）；③即便我自己传 `points[0]=[0,0]`，converter 对**负向**箭头（朝上/朝左）会重置原点到 bbox 左上，又把 `points[0]` 弄歪（所以只有向上的回边那几条报错）。最终方案：**自己算边到边端点**（bbox 射线交点 + GAP）→ 经 converter 建基础元素 → **再用 `getNormalizedPoints` 逻辑强制 `points[0]=[0,0]`**（`normalizeArrow`，直接保证运行时校验的不变量）→ 手工挂 `startBinding/endBinding`（focus=0 对准中心、gap=2）。`edgePoint`/`normalizeArrow` 是纯逻辑；绑定弯曲行为靠运行时验证
