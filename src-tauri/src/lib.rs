@@ -231,6 +231,82 @@ fn write_guide(cwd: String, content: String) -> Result<(), String> {
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
+/// FlowM's own store dir: `~/.flowm` (created on demand). Holds the workspace index and each
+/// project's canvases + conversations — FlowM state, kept OUT of the user's code folders (the
+/// code folder only gets the gitignored CLAUDE.local.md the canvas engine writes).
+fn flowm_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let dir = home.join(".flowm");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Read a file under `~/.flowm` (e.g. `workspace.json`, `<proj>/project.json`). Missing file →
+/// `None` (a fresh workspace), not an error, so the caller can treat first-run as empty.
+#[tauri::command]
+fn flowm_read(app: AppHandle, rel: String) -> Result<Option<String>, String> {
+    let path = flowm_dir(&app)?.join(&rel);
+    match fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Write a file under `~/.flowm`, creating parent dirs (so `<proj>/conv-<id>.json` just works).
+#[tauri::command]
+fn flowm_write(app: AppHandle, rel: String, content: String) -> Result<(), String> {
+    let path = flowm_dir(&app)?.join(&rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+/// One entry in a directory listing for the right-hand file panel.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+/// List a directory's immediate children (dirs first, then case-insensitive by name) for the file
+/// panel. Lazy per-dir: the panel calls this again to expand a subfolder, so no deep recursion.
+#[tauri::command]
+fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    let mut out: Vec<DirEntry> = Vec::new();
+    for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        out.push(DirEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: entry.path().to_string_lossy().into_owned(),
+            is_dir,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
+/// Native folder picker for "选择文件夹" (choosing a project's code folder). The dialog plugin runs
+/// it on the OS main thread; we bridge its callback to a oneshot so the command can be `async`.
+/// Returns the chosen absolute path, or `None` if the user cancelled.
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |f| {
+        let _ = tx.send(f);
+    });
+    rx.await.ok().flatten().map(|p| p.to_string())
+}
+
 /// Write the canvas PNG (a `data:image/png;base64,…` URL) to `<cwd>/.flowm/design.png`
 /// so the spawned `claude` can Read it as the visual design. Returns the relative path.
 #[tauri::command]
@@ -248,6 +324,7 @@ fn write_design(cwd: String, data_url: String) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             set_api_key,
             has_api_key,
@@ -256,7 +333,11 @@ pub fn run() {
             claude_run,
             default_claude_bin,
             write_guide,
-            write_design
+            write_design,
+            flowm_read,
+            flowm_write,
+            list_dir,
+            pick_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
