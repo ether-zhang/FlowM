@@ -40,10 +40,10 @@ const FLOWM_CANVAS_GUIDE = `# FlowM canvas mode (this file is the switch — Cla
 You are FlowM's canvas assistant. Each turn you get the current canvas (a shape list tagged with [n] marks + a rendered image; the selection is marked) and the user's message. When you need to, read this project's code directly with Read / Grep before drawing (do NOT spawn a subagent).
 
 ## Output (structured output, not plain chat)
-- Decide whether to touch the canvas: a plain question → leave operations empty, put the answer in reply.
-- To draw / edit / arrange → put the actions in operations, normalized. Each turn you see the previous batch's results; when it is done with nothing to add or fix → return empty operations (don't redraw).
-- Keep reply to one sentence; don't narrate which files you read, don't pitch "I can draw another part". The canvas is the deliverable — let it speak.
-- Write shape / node LABELS in the USER'S language (e.g. Chinese if they wrote Chinese). These instructions are English; the diagram is not.
+First decide whether this request needs the canvas, then pick ONE mode:
+- **Answer mode** — a question / explanation with no drawing asked (e.g. "explain how X works", "what does this function do", "why is it slow"): leave operations EMPTY and put your COMPLETE answer in reply. Answer as fully and concretely as you would normally in Claude Code — real names, the actual mechanism, as long as it needs to be. Do NOT compress to one sentence, and do NOT draw unless the user asked. The reply IS the deliverable here.
+- **Canvas mode** — draw / edit / arrange: put the actions in operations (normalized), and keep reply to ONE short line (the canvas is the deliverable — don't narrate which files you read or re-explain the diagram in prose). Each turn you see the previous batch's results; when done with nothing to add or fix → return empty operations (don't redraw).
+- Write shape / node LABELS and your reply in the USER'S language (e.g. Chinese if they wrote Chinese). These instructions are English; your output is not.
 
 ## Operation vocabulary (each item of operations)
 - create_geo  {op,shape:rectangle|ellipse|diamond,x?,y?,w?,h?,text?,ref?}
@@ -146,15 +146,23 @@ export class ClaudeAdapter implements LlmAdapter {
     )
 
     let structured: unknown = null
+    // Accumulate the model's natural-language prose across the turn. Normally the bubble shows only
+    // the structured `reply` (so drawing turns don't dump working-notes into the chat). But on a
+    // pure ANSWER turn the model may put its explanation in prose and leave `reply` empty — we fall
+    // back to this so that answer isn't dropped (see below).
+    let prose = ''
     await claudeRun(
       prompt,
       cwd,
       (e) => {
         if (e.kind !== 'stdout') return
         // Tool activity (Read/Grep/…) → the system-note channel (the chat's yellow hints), so the
-        // user sees Claude working WITHOUT it cluttering the assistant bubble. The reply itself is
-        // streamed to the bubble after the run (it comes from the structured output, not here).
-        for (const item of interpretClaudeLine(e.line)) if (item.kind === 'system') cb.onSystem?.(item.text)
+        // user sees Claude working WITHOUT it cluttering the assistant bubble. Prose text is kept
+        // as the answer-mode fallback; the reply itself comes from the structured output after the run.
+        for (const item of interpretClaudeLine(e.line)) {
+          if (item.kind === 'system') cb.onSystem?.(item.text)
+          else if (item.kind === 'text') prose += item.text
+        }
         if (!this.session) {
           const sid = extractSessionId(e.line)
           if (sid) this.session = sid
@@ -172,6 +180,10 @@ export class ClaudeAdapter implements LlmAdapter {
     )
 
     const result = toTurn(structured, this.turn)
+    // Answer-mode fallback: the model answered in PROSE and left the structured reply empty, with no
+    // operations — surface the prose so the answer isn't swallowed. Guarded on no operations, so a
+    // drawing turn's working-notes prose still never reaches the bubble.
+    if (!result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
     // Debug: the model's RAW structured output — so the panel shows EXACTLY what Claude returned
     // (notably: do its create_geo ops carry x/y, or did it leave layout to the framework?), not
     // just the post-apply canvas (whose list always has coordinates). Coordinate count up front.

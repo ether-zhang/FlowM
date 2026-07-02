@@ -108,7 +108,7 @@ Windows、macOS、iPad。
         - [x] **P2·B 多会话核心**：`useWorkspace` hook——选文件夹（`pick_folder`）打开工程、`convId → {Conversation + 各自 ClaudeAdapter}` 运行时表（**每对话一条 Claude session**，`--resume` 种子 + `sessionId` 持久化）、切换时存/取画布+气泡（`~/.flowm`）；`ConversationList` 折叠条（工程头 + 新画布/新对话 + 行）。**非破坏**：无工程时 `activeConv()` 为空、画布引擎回落到旧的单会话，旧流程原样
         - [ ] **仍待**：① **文本对话**目前也走画布引擎（有画布、kind 只作标签/图标）——真正「纯聊天、无画布、完整回答」需独立 text engine（复用 `claudeRun` 无 schema 流式）；② 工程/会话的**跨重启恢复**已埋 `sessionId` 种子，待实测 `--resume`；③ 面板 **VSCode 式随意摆动**：已把栏做成 data-driven（width/shown 状态），全拖拽停靠留作后续（promote 成 `panes:[{id,side,width,shown}]` 即可）；④ 打开工程失败无 UI 提示
     - [x] **流程图详略结合**（Problem 3）：c1e0f84 偏详细代码流、v0.7-dev 偏整体框架 → 现让模型综合两层（见上「双层 guide」）。**关键是定位到具体 prompt**——就是 guide 的 `Content first` 段；用户改措辞后**实测效果不错**
-    - [ ] **纯问答被吞 + 回答过短（待查，先记）**：让模型「只答不画」（operations 空）时，reply 似乎没显示到界面——但模型侧确有回应（debug 原始返回里能看到），疑似框架在**空 operations 路径**上把文字吞了（查 `ClaudeAdapter.runTurn` 的 `cb.onText(result.text)` → `CanvasEngine`/`Conversation` 的空-toolCalls 分支）。且此时答案比正常**短很多**，疑似 guide 的「Keep reply to one sentence」把纯问答也压成一句——纯问答应放宽 reply 长度
+    - [x] **纯问答被吞 + 回答过短**（两个真因，非单纯 prompt）：① 适配器**丢了模型的自然语言 prose**——`claudeStream` 把 assistant `text` 标成 `kind:'text'`，但 `runTurn` 的流处理**只转发 `kind:'system'`**，于是模型的答案（在 prose 里）被扔掉，气泡只显示结构化 `reply`；② guide 把 `reply` **一律压成一句**（"Keep reply to one sentence, the canvas is the deliverable"），纯问答也被压。修复：guide 拆成 **answer mode**（不画图 → operations 空、`reply` 放**完整详细**答案、别压一句）vs **canvas mode**（画图 → 一句 `reply`、prose 不进气泡）；适配器加 **prose 兜底**——当 `reply` 空且无 operations 时，把累积的 prose 作为答案显示（画图轮有 operations，工作笔记 prose 仍不进气泡）
 
 - 杂项
    - [x] 可变的大模型接入口：引擎选择器（画布助手·Poe / 画布助手·Claude），localStorage 记住选择；适配器层 provider 中立（Poe / Claude 同一 `LlmAdapter` 接口）
