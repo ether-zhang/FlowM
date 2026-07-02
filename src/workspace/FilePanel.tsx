@@ -10,30 +10,41 @@ import { listDir, type FsEntry } from './store'
 export function FilePanel({
   folder,
   onOpenFile,
+  onOpenFolder,
   onHide,
 }: {
   folder: string
   /** Click a file → open it (the shell shows a floating editor). */
   onOpenFile?: (path: string) => void
+  /** Pick the project's code folder (opens/creates the ~/.flowm project). */
+  onOpenFolder?: () => void
   /** Collapse the panel (the shell shows a slim re-open rail). */
   onHide?: () => void
 }) {
   return (
     <div className="file-pane">
-      <div className="file-head" title={folder}>
-        <span className="file-head-name">{folder.trim() ? baseName(folder) : '未选择工程目录'}</span>
+      <div className="file-toolbar">
+        {onOpenFolder && (
+          <button className="file-open" onClick={onOpenFolder} title="选择工程的代码文件夹">
+            打开工程
+          </button>
+        )}
+        <span className="file-spacer" />
         {onHide && (
           <button className="file-hide" onClick={onHide} title="隐藏文件栏">
             «
           </button>
         )}
       </div>
+      <div className="file-head" title={folder}>
+        <span className="file-head-name">{folder.trim() ? baseName(folder) : '未打开工程'}</span>
+      </div>
       {folder.trim() ? (
         <div className="file-tree">
           <DirChildren path={folder} depth={0} onOpenFile={onOpenFile} />
         </div>
       ) : (
-        <div className="file-empty">在下方对话栏填写 / 选择工程目录后显示文件</div>
+        <div className="file-empty">点上方「打开工程」选择代码文件夹</div>
       )}
     </div>
   )

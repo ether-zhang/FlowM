@@ -1,23 +1,22 @@
 import { useState } from 'react'
-import type { ConversationKind, ConversationMeta } from './types'
+import type { SessionMeta } from './types'
 
 /**
- * The project + conversation switcher, shown as a collapsible strip at the top of the chat pane
- * (对话栏顶部折叠区). Presentational only — it calls back to the workspace hook; it owns no runtime.
+ * The session (chat-thread) switcher — a collapsible strip at the top of the chat pane. Sessions are
+ * decoupled from canvases (新画布 lives on the canvas; 打开工程 lives on the file panel), so this list
+ * is only about conversations. Presentational — it calls back to the workspace hook.
  */
 export function ConversationList({
   projectName,
-  conversations,
-  activeConvId,
-  onOpenFolder,
+  sessions,
+  activeSessionId,
   onNew,
   onSelect,
 }: {
   projectName: string | null
-  conversations: ConversationMeta[]
-  activeConvId: string | null
-  onOpenFolder: () => void
-  onNew: (kind: ConversationKind) => void
+  sessions: SessionMeta[]
+  activeSessionId: string | null
+  onNew: () => void
   onSelect: (id: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
@@ -28,32 +27,28 @@ export function ConversationList({
           {collapsed ? '▸' : '▾'}
         </button>
         <span className="conv-project" title={projectName ?? ''}>
-          {projectName ?? '未打开工程'}
+          {projectName ? `${projectName} · 对话` : '未打开工程（右侧文件栏「打开工程」）'}
         </span>
-        <button className="conv-open" onClick={onOpenFolder} title="打开工程文件夹">
-          打开工程
-        </button>
+        {projectName && (
+          <button className="conv-open" onClick={onNew} title="新建对话">
+            + 对话
+          </button>
+        )}
       </div>
       {!collapsed && projectName && (
-        <>
-          <div className="conv-actions">
-            <button onClick={() => onNew('canvas')} title="新建画布对话">+ 画布</button>
-            <button onClick={() => onNew('text')} title="新建文本对话">+ 对话</button>
-          </div>
-          <div className="conv-rows">
-            {conversations.map((c) => (
-              <div
-                key={c.id}
-                className={`conv-row${c.id === activeConvId ? ' active' : ''}`}
-                onClick={() => onSelect(c.id)}
-                title={c.name}
-              >
-                <span className="conv-kind">{c.kind === 'canvas' ? '▦' : '💬'}</span>
-                <span className="conv-name">{c.name}</span>
-              </div>
-            ))}
-          </div>
-        </>
+        <div className="conv-rows">
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className={`conv-row${s.id === activeSessionId ? ' active' : ''}`}
+              onClick={() => onSelect(s.id)}
+              title={s.name}
+            >
+              <span className="conv-kind">💬</span>
+              <span className="conv-name">{s.name}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )

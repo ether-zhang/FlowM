@@ -80,6 +80,55 @@
   cursor: pointer;
 }
 .file-hide:hover { color: #333; }
+
+/* File-panel toolbar (打开工程 / hide), above the folder name. */
+.file-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e5e4e7;
+}
+.file-open {
+  border: 1px solid #d4d4d8;
+  background: #fafafa;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.file-open:hover { background: #f0f0f0; }
+.file-spacer { flex: 1; }
+
+/* Canvas controls floating at the canvas top-right, below Excalidraw's own Library button. */
+.canvas-bar {
+  position: absolute;
+  top: 52px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.canvas-new {
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.canvas-new:hover { background: #f0f0f0; }
+.canvas-select {
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 6px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  max-width: 140px;
+}
 .file-empty {
   padding: 12px;
   color: #999;

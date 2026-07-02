@@ -20,6 +20,7 @@ export interface ChatProps {
   onSend: (text: string) => void
   onConfigureKey: () => void
   onToggleDebug: () => void
+  onOpenSettings: () => void
   onSave: () => void
   onLoad: () => void
 }
@@ -38,6 +39,7 @@ export function Chat({
   onSend,
   onConfigureKey,
   onToggleDebug,
+  onOpenSettings,
   onSave,
   onLoad,
 }: ChatProps) {
@@ -97,6 +99,9 @@ export function Chat({
           aria-pressed={debug}
         >
           {debug ? 'Debug ✓' : 'Debug'}
+        </button>
+        <button onClick={onOpenSettings} title="设置（Claude 可执行文件路径等）">
+          ⚙
         </button>
         <button onClick={onConfigureKey} title="设置 Poe API Key">
           {apiKeySet ? 'Key ✓' : 'Key'}

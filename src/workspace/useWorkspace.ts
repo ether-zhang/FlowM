@@ -3,16 +3,18 @@ import type { CanvasPort } from '../protocol'
 import { ClaudeAdapter, Conversation } from '../llm'
 import type { DisplayMessage } from '../chat/types'
 import {
-  loadConversation,
-  newConversation as newConvMeta,
+  folderName,
+  loadCanvasScene,
+  loadSessionDisplay,
   openProject,
   pickFolder,
-  saveConversation,
+  saveCanvasScene,
   saveProject,
+  saveSessionDisplay,
 } from './store'
-import type { ConversationKind, ConversationMeta, ProjectMeta } from './types'
+import type { CanvasMeta, ProjectMeta, SessionMeta } from './types'
 
-/** One conversation's live runtime: its Conversation (message history) + the ClaudeAdapter whose
+/** One session's live runtime: its Conversation (message history) + the ClaudeAdapter whose Claude
  *  session it owns. Kept alive across switches so the adapter's --resume/delta continuity holds. */
 interface Runtime {
   conv: Conversation
@@ -21,26 +23,36 @@ interface Runtime {
 
 export interface WorkspaceApi {
   projectName: string | null
-  conversations: ConversationMeta[]
-  activeConvId: string | null
+  // Sessions = chat threads (each its own Claude session).
+  sessions: SessionMeta[]
+  activeSessionId: string | null
+  newSession: () => Promise<void>
+  selectSession: (id: string) => Promise<void>
+  // Canvases = drawing surfaces, INDEPENDENT of sessions (画布 ⊥ session).
+  canvases: CanvasMeta[]
+  activeCanvasId: string | null
+  newCanvas: () => Promise<void>
+  selectCanvas: (id: string) => Promise<void>
+  // Shared.
   openFolder: () => Promise<void>
-  newConversation: (kind: ConversationKind) => Promise<void>
-  selectConversation: (id: string) => Promise<void>
-  /** Persist the active conversation (canvas + bubbles + session id) — call after each send. */
+  /** Persist the active session's bubbles + the active canvas's scene — call after each send. */
   persistActive: () => Promise<void>
-  /** The active conversation's Conversation, for the canvas engine's getConv (null = no project). */
+  /** The active session's Conversation, for the canvas engine's getConv (null = no project). */
   activeConv: () => Conversation | null
 }
 
 /**
- * The project/conversation layer for the shell. It sits ABOVE the existing engine machinery and is
- * only active once a folder is opened — until then `activeConv()` returns null and App falls back to
- * its legacy single conversation, so nothing about the current flow breaks. Each conversation is one
- * `Conversation(ClaudeAdapter)` with its OWN Claude session (每对话一条 session); FlowM persists the
- * canvas + bubbles to ~/.flowm while Claude's session holds the model history (reached via --resume).
+ * The project layer for the shell. Sits ABOVE the engines and is active only once a folder is opened;
+ * until then `activeConv()` is null and App falls back to its legacy single conversation, so nothing
+ * about the pre-project flow breaks.
  *
- * Decoupling: this hook knows only CanvasPort + the store + the LLM Conversation — never Excalidraw
- * or App's widgets. App feeds it accessors (get/set messages, get port/cwd/bin, set folder).
+ * Canvases and sessions are DECOUPLED: a session is a Claude chat thread (每对话一条 session), a canvas
+ * is a drawing surface, and they are separate lists. The active session drives whatever the active
+ * canvas currently is — creating one never creates the other. FlowM persists bubbles per session and
+ * the scene per canvas to ~/.flowm; Claude's own session holds the model history (via --resume).
+ *
+ * Decoupling: this hook knows only CanvasPort + the store + the LLM Conversation — never Excalidraw or
+ * App's widgets. App feeds it accessors (get/set messages, get port/cwd/bin, set folder).
  */
 export function useWorkspace(opts: {
   getPort: () => CanvasPort | null
@@ -51,117 +63,161 @@ export function useWorkspace(opts: {
   setFolder: (folder: string) => void
 }): WorkspaceApi {
   const [projectName, setProjectName] = useState<string | null>(null)
-  const [conversations, setConversations] = useState<ConversationMeta[]>([])
-  const [activeConvId, setActiveConvId] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<SessionMeta[]>([])
+  const [canvases, setCanvases] = useState<CanvasMeta[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [activeCanvasId, setActiveCanvasId] = useState<string | null>(null)
 
   const projIdRef = useRef<string | null>(null)
   const metaRef = useRef<ProjectMeta | null>(null)
   const runtimes = useRef(new Map<string, Runtime>())
-  const activeIdRef = useRef<string | null>(null)
+  const activeSessRef = useRef<string | null>(null)
+  const activeCanvasRef = useRef<string | null>(null)
 
   const ensureRuntime = useCallback(
-    (cm: ConversationMeta): Runtime => {
-      let rt = runtimes.current.get(cm.id)
+    (sm: SessionMeta): Runtime => {
+      let rt = runtimes.current.get(sm.id)
       if (!rt) {
-        const adapter = new ClaudeAdapter(opts.getCwd, opts.getBin, cm.sessionId ?? null)
+        const adapter = new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null)
         rt = { conv: new Conversation(adapter), adapter }
-        runtimes.current.set(cm.id, rt)
+        runtimes.current.set(sm.id, rt)
       }
       return rt
     },
     [opts],
   )
 
-  const syncConversations = useCallback(() => {
-    setConversations(metaRef.current ? [...metaRef.current.conversations] : [])
+  const syncLists = useCallback(() => {
+    setSessions(metaRef.current ? [...metaRef.current.sessions] : [])
+    setCanvases(metaRef.current ? [...metaRef.current.canvases] : [])
   }, [])
 
   /** Write project.json, first folding each live adapter's captured session id into its meta. */
   const persistMeta = useCallback(async () => {
     if (!projIdRef.current || !metaRef.current) return
-    for (const cm of metaRef.current.conversations) {
-      const sid = runtimes.current.get(cm.id)?.adapter.sessionId
-      if (sid) cm.sessionId = sid
+    for (const sm of metaRef.current.sessions) {
+      const sid = runtimes.current.get(sm.id)?.adapter.sessionId
+      if (sid) sm.sessionId = sid
     }
     await saveProject(projIdRef.current, metaRef.current)
   }, [])
 
-  /** Save the active conversation's canvas + bubbles to the store (and refresh meta). */
-  const persistActive = useCallback(async () => {
-    const id = activeIdRef.current
-    if (!id || !projIdRef.current || !metaRef.current) return
-    const port = opts.getPort()
-    await saveConversation(projIdRef.current, id, {
-      canvas: port ? port.serialize() : undefined,
-      display: opts.getMessages(),
-    })
-    await persistMeta()
-  }, [opts, persistMeta])
+  const persistActiveSession = useCallback(async () => {
+    const id = activeSessRef.current
+    if (id && projIdRef.current) await saveSessionDisplay(projIdRef.current, id, opts.getMessages())
+  }, [opts])
 
-  /** Make `cm` active: restore its canvas + bubbles (fresh = empty), ensure its runtime. */
-  const activate = useCallback(
-    async (cm: ConversationMeta) => {
-      ensureRuntime(cm)
-      const data = projIdRef.current ? await loadConversation(projIdRef.current, cm.id) : null
-      const port = opts.getPort()
-      if (port) port.deserialize(data?.canvas ?? [])
-      opts.setMessages(data?.display ?? [])
-      activeIdRef.current = cm.id
-      setActiveConvId(cm.id)
+  const persistActiveCanvas = useCallback(async () => {
+    const id = activeCanvasRef.current
+    const port = opts.getPort()
+    if (id && projIdRef.current && port) await saveCanvasScene(projIdRef.current, id, port.serialize())
+  }, [opts])
+
+  const persistActive = useCallback(async () => {
+    await persistActiveSession()
+    await persistActiveCanvas()
+    await persistMeta()
+  }, [persistActiveSession, persistActiveCanvas, persistMeta])
+
+  const activateSession = useCallback(
+    async (sm: SessionMeta) => {
+      ensureRuntime(sm)
+      const display = projIdRef.current ? await loadSessionDisplay(projIdRef.current, sm.id) : null
+      opts.setMessages(display ?? [])
+      activeSessRef.current = sm.id
+      setActiveSessionId(sm.id)
     },
     [ensureRuntime, opts],
   )
 
-  const selectConversation = useCallback(
-    async (id: string) => {
-      if (id === activeIdRef.current) return
-      await persistActive() // save the outgoing conversation before swapping
-      const cm = metaRef.current?.conversations.find((c) => c.id === id)
-      if (cm) await activate(cm)
+  const activateCanvas = useCallback(
+    async (cm: CanvasMeta) => {
+      const scene = projIdRef.current ? await loadCanvasScene(projIdRef.current, cm.id) : null
+      opts.getPort()?.deserialize(scene ?? [])
+      activeCanvasRef.current = cm.id
+      setActiveCanvasId(cm.id)
     },
-    [persistActive, activate],
+    [opts],
   )
 
-  const newConversation = useCallback(
-    async (kind: ConversationKind) => {
-      if (!metaRef.current) return
-      await persistActive()
-      const n = metaRef.current.conversations.filter((c) => c.kind === kind).length + 1
-      const cm = newConvMeta(kind, kind === 'canvas' ? `画布 ${n}` : `对话 ${n}`)
-      metaRef.current.conversations.push(cm)
-      syncConversations()
-      await activate(cm)
-      await persistMeta()
+  const selectSession = useCallback(
+    async (id: string) => {
+      if (id === activeSessRef.current) return
+      await persistActiveSession()
+      const sm = metaRef.current?.sessions.find((s) => s.id === id)
+      if (sm) await activateSession(sm)
     },
-    [persistActive, activate, syncConversations, persistMeta],
+    [persistActiveSession, activateSession],
   )
+
+  const selectCanvas = useCallback(
+    async (id: string) => {
+      if (id === activeCanvasRef.current) return
+      await persistActiveCanvas()
+      const cm = metaRef.current?.canvases.find((c) => c.id === id)
+      if (cm) await activateCanvas(cm)
+    },
+    [persistActiveCanvas, activateCanvas],
+  )
+
+  const newSession = useCallback(async () => {
+    if (!metaRef.current) return
+    await persistActiveSession()
+    const sm: SessionMeta = { id: crypto.randomUUID().slice(0, 8), name: `对话 ${metaRef.current.sessions.length + 1}` }
+    metaRef.current.sessions.push(sm)
+    syncLists()
+    await activateSession(sm)
+    await persistMeta()
+  }, [persistActiveSession, activateSession, syncLists, persistMeta])
+
+  const newCanvas = useCallback(async () => {
+    if (!metaRef.current) return
+    await persistActiveCanvas()
+    const cm: CanvasMeta = { id: crypto.randomUUID().slice(0, 8), name: `画布 ${metaRef.current.canvases.length + 1}` }
+    metaRef.current.canvases.push(cm)
+    syncLists()
+    await activateCanvas(cm)
+    await persistMeta()
+  }, [persistActiveCanvas, activateCanvas, syncLists, persistMeta])
 
   const openFolder = useCallback(async () => {
     const folder = await pickFolder()
     if (!folder) return
-    await persistActive() // flush the previous project's active conversation
+    await persistActive() // flush the previous project
     runtimes.current.clear()
     const { id, meta } = await openProject(folder)
     projIdRef.current = id
     metaRef.current = meta
-    activeIdRef.current = null
+    activeSessRef.current = null
+    activeCanvasRef.current = null
     opts.setFolder(folder)
-    setProjectName(baseName(folder))
-    syncConversations()
-    if (meta.conversations.length === 0) await newConversation('canvas')
-    else await activate(meta.conversations[0])
-  }, [persistActive, opts, syncConversations, newConversation, activate])
+    setProjectName(folderName(folder))
+    syncLists()
+    // Seed one of each on first open, then activate the first session + first canvas.
+    if (meta.sessions.length === 0) await newSession()
+    else await activateSession(meta.sessions[0])
+    if (meta.canvases.length === 0) await newCanvas()
+    else await activateCanvas(meta.canvases[0])
+  }, [persistActive, opts, syncLists, newSession, newCanvas, activateSession, activateCanvas])
 
   // Stable (reads refs), so the engine's getConv closure captured once stays live across switches.
   const activeConv = useCallback(() => {
-    const id = activeIdRef.current
+    const id = activeSessRef.current
     return id ? runtimes.current.get(id)?.conv ?? null : null
   }, [])
 
-  return { projectName, conversations, activeConvId, openFolder, newConversation, selectConversation, persistActive, activeConv }
-}
-
-function baseName(p: string): string {
-  const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/)
-  return parts[parts.length - 1] || p
+  return {
+    projectName,
+    sessions,
+    activeSessionId,
+    newSession,
+    selectSession,
+    canvases,
+    activeCanvasId,
+    newCanvas,
+    selectCanvas,
+    openFolder,
+    persistActive,
+    activeConv,
+  }
 }

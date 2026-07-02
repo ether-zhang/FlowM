@@ -1,13 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { DisplayMessage } from '../chat/types'
-import type { ConversationKind, ConversationMeta, ProjectMeta, Workspace } from './types'
+import type { ProjectMeta, Workspace } from './types'
 
 /**
  * The ~/.flowm store, backed by the Rust `flowm_read`/`flowm_write`/`list_dir`/`pick_folder`
  * commands (desktop only). Layout:
  *   workspace.json                     — the project index
- *   <projectId>/project.json           — a project's conversations + bound folder
- *   <projectId>/conv-<convId>.json     — a conversation's canvas scene + UI bubbles
+ *   <projectId>/project.json           — a project's sessions + canvases + bound folder
+ *   <projectId>/sess-<sessId>.json     — a session's UI bubbles (Claude's session holds the history)
+ *   <projectId>/canvas-<canvasId>.json — a canvas's scene (CanvasPort.serialize output)
  */
 
 const read = (rel: string) => invoke<string | null>('flowm_read', { rel })
@@ -29,17 +30,10 @@ export const readFile = (path: string) => invoke<string>('read_file', { path })
 /** Write edited text back to a file (the floating editor's Save). */
 export const writeFile = (path: string, content: string) => invoke<void>('write_file', { path, content })
 
-/** What FlowM persists per conversation. The model history is NOT here — it's in Claude's session
- *  (reached via --resume); we keep only what Claude's session doesn't: the canvas + the UI bubbles. */
-export interface ConversationData {
-  /** Excalidraw scene (CanvasPort.serialize output); only for canvas conversations. */
-  canvas?: unknown
-  display: DisplayMessage[]
-}
-
 const WORKSPACE = 'workspace.json'
 const projMetaPath = (id: string) => `${id}/project.json`
-const convDataPath = (projId: string, convId: string) => `${projId}/conv-${convId}.json`
+const sessPath = (projId: string, sessId: string) => `${projId}/sess-${sessId}.json`
+const canvasPath = (projId: string, canvasId: string) => `${projId}/canvas-${canvasId}.json`
 
 export async function loadWorkspace(): Promise<Workspace> {
   const raw = await read(WORKSPACE)
@@ -53,7 +47,8 @@ export async function saveWorkspace(ws: Workspace): Promise<void> {
 /**
  * Open (or first-time create) the project bound to `folder`: ensure a workspace-index row, bump its
  * lastOpened, and load (or seed) its project.json. Idempotent — reopening the same folder returns
- * the existing project, not a duplicate.
+ * the existing project. Migrates a pre-decoupling meta (which had `conversations`) to empty
+ * sessions/canvases so old projects don't crash the new model.
  */
 export async function openProject(folder: string): Promise<{ id: string; meta: ProjectMeta }> {
   const ws = await loadWorkspace()
@@ -66,28 +61,37 @@ export async function openProject(folder: string): Promise<{ id: string; meta: P
   await saveWorkspace(ws)
 
   const raw = await read(projMetaPath(entry.id))
-  const meta: ProjectMeta = raw ? (JSON.parse(raw) as ProjectMeta) : { version: 1, folder, conversations: [] }
+  const parsed = raw ? (JSON.parse(raw) as Partial<ProjectMeta>) : null
+  const meta: ProjectMeta = {
+    version: 1,
+    folder,
+    sessions: parsed?.sessions ?? [],
+    canvases: parsed?.canvases ?? [],
+  }
   return { id: entry.id, meta }
 }
 
 export const saveProject = (id: string, meta: ProjectMeta): Promise<void> =>
   write(projMetaPath(id), JSON.stringify(meta, null, 2))
 
-export async function loadConversation(projId: string, convId: string): Promise<ConversationData | null> {
-  const raw = await read(convDataPath(projId, convId))
-  return raw ? (JSON.parse(raw) as ConversationData) : null
+/** A session's UI bubbles (the model history lives in Claude's session, reached via --resume). */
+export async function loadSessionDisplay(projId: string, sessId: string): Promise<DisplayMessage[] | null> {
+  const raw = await read(sessPath(projId, sessId))
+  return raw ? (JSON.parse(raw) as { display: DisplayMessage[] }).display : null
 }
+export const saveSessionDisplay = (projId: string, sessId: string, display: DisplayMessage[]): Promise<void> =>
+  write(sessPath(projId, sessId), JSON.stringify({ display }))
 
-export const saveConversation = (projId: string, convId: string, data: ConversationData): Promise<void> =>
-  write(convDataPath(projId, convId), JSON.stringify(data))
-
-/** A fresh conversation record (canvas or text); sessionId is filled in after its first turn. */
-export function newConversation(kind: ConversationKind, name: string): ConversationMeta {
-  return { id: crypto.randomUUID().slice(0, 8), name, kind }
+/** A canvas's opaque scene (CanvasPort.serialize output). */
+export async function loadCanvasScene(projId: string, canvasId: string): Promise<unknown | null> {
+  const raw = await read(canvasPath(projId, canvasId))
+  return raw ? (JSON.parse(raw) as { scene: unknown }).scene : null
 }
+export const saveCanvasScene = (projId: string, canvasId: string, scene: unknown): Promise<void> =>
+  write(canvasPath(projId, canvasId), JSON.stringify({ scene }))
 
 /** The last path segment of a folder, used as the project's display name. */
-function folderName(p: string): string {
+export function folderName(p: string): string {
   const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/)
   return parts[parts.length - 1] || p
 }

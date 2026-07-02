@@ -4,7 +4,7 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
-import { FilePanel, FloatingEditor, ConversationList, useWorkspace } from '../workspace'
+import { FilePanel, FloatingEditor, ConversationList, CanvasBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
@@ -72,6 +72,8 @@ export function App() {
   // the desktop app. A React <input> works on every platform.
   const [keyDialogOpen, setKeyDialogOpen] = useState(false)
   const [keyInput, setKeyInput] = useState('')
+  // Settings dialog holds the claude executable path (moved out of the chat config row).
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   // The working directory the local Claude Code engines run in (canvas·Claude + build).
   const cwdRef = useRef(localStorage.getItem(CWD_STORAGE) ?? '')
@@ -194,8 +196,8 @@ export function App() {
     messagesRef.current = messages
   }, [messages])
   useEffect(() => {
-    if (!busy && ws.activeConvId) void ws.persistActive()
-  }, [busy, ws.activeConvId])
+    if (!busy && ws.activeSessionId) void ws.persistActive()
+  }, [busy, ws.activeSessionId])
 
   const onReady = useCallback(
     (api: ExcalidrawImperativeAPI) => {
@@ -316,42 +318,20 @@ export function App() {
   const placeholder = canSend
     ? '描述需求…（Enter 发送）'
     : isClaude
-      ? '请先填写工程目录'
+      ? '请先打开工程（右侧文件栏「打开工程」）'
       : '请先设置 Poe API Key'
-  const engineConfig = isClaude ? (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {engineId === 'canvas-claude' && (
-        <ConversationList
-          projectName={ws.projectName}
-          conversations={ws.conversations}
-          activeConvId={ws.activeConvId}
-          onOpenFolder={ws.openFolder}
-          onNew={ws.newConversation}
-          onSelect={ws.selectConversation}
-        />
-      )}
-      <input
-        value={cwd}
-        onChange={(e) => {
-          cwdRef.current = e.target.value
-          setCwd(e.target.value)
-          localStorage.setItem(CWD_STORAGE, e.target.value)
-        }}
-        placeholder="工程目录绝对路径 (cwd)"
-        style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
+  // The Claude canvas engine's config row is just the session switcher now; 打开工程 moved to the file
+  // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
+  const engineConfig =
+    engineId === 'canvas-claude' ? (
+      <ConversationList
+        projectName={ws.projectName}
+        sessions={ws.sessions}
+        activeSessionId={ws.activeSessionId}
+        onNew={ws.newSession}
+        onSelect={ws.selectSession}
       />
-      <input
-        value={bin}
-        onChange={(e) => {
-          binRef.current = e.target.value
-          setBin(e.target.value)
-          localStorage.setItem(BIN_STORAGE, e.target.value)
-        }}
-        placeholder="claude 可执行文件路径（留空则用 PATH 中的 claude）"
-        style={{ width: '100%', boxSizing: 'border-box', font: '12px monospace' }}
-      />
-    </div>
-  ) : undefined
+    ) : undefined
 
   return (
     <>
@@ -362,7 +342,7 @@ export function App() {
       {IS_TAURI && filesShown && (
         <>
           <aside className="side-pane file-pane-wrap" style={{ width: filesW }}>
-            <FilePanel folder={cwd} onOpenFile={setOpenFile} onHide={() => toggleFiles(false)} />
+            <FilePanel folder={cwd} onOpenFile={setOpenFile} onOpenFolder={ws.openFolder} onHide={() => toggleFiles(false)} />
           </aside>
           <Resizer width={filesW} setWidth={persistFilesW} sign={1} />
         </>
@@ -374,6 +354,16 @@ export function App() {
       )}
       <main className="canvas-pane">
         <Canvas onReady={onReady} />
+        {/* 新画布 + switcher float over the canvas top-right (below Excalidraw's Library button).
+            Only when a project is open — canvases are a project concept, decoupled from sessions. */}
+        {ws.activeCanvasId && (
+          <CanvasBar
+            canvases={ws.canvases}
+            activeCanvasId={ws.activeCanvasId}
+            onNew={ws.newCanvas}
+            onSelect={ws.selectCanvas}
+          />
+        )}
       </main>
       <Resizer width={chatW} setWidth={persistChatW} sign={-1} />
       <aside className="side-pane chat-pane" style={{ width: chatW }}>
@@ -394,6 +384,7 @@ export function App() {
           onSend={onSend}
           onConfigureKey={onConfigureKey}
           onToggleDebug={() => setDebug((d) => !d)}
+          onOpenSettings={() => setSettingsOpen(true)}
           onSave={onSave}
           onLoad={onLoad}
         />
@@ -401,6 +392,35 @@ export function App() {
     </div>
 
     {openFile && <FloatingEditor path={openFile} onClose={() => setOpenFile(null)} />}
+
+    {settingsOpen && (
+      <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <h3 className="modal-title">设置</h3>
+          <p className="modal-hint">
+            Claude 可执行文件路径。留空则用 PATH 中的 <code>claude</code>；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
+          </p>
+          <input
+            className="modal-input"
+            autoFocus
+            value={bin}
+            placeholder="如 /Users/you/.local/bin/claude 或 claude.exe 的完整路径"
+            onChange={(e) => {
+              binRef.current = e.target.value
+              setBin(e.target.value)
+              localStorage.setItem(BIN_STORAGE, e.target.value)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
+            }}
+            style={{ fontFamily: 'monospace' }}
+          />
+          <div className="modal-actions">
+            <button className="primary" onClick={() => setSettingsOpen(false)}>完成</button>
+          </div>
+        </div>
+      </div>
+    )}
 
     {keyDialogOpen && (
       <div className="modal-backdrop" onClick={() => setKeyDialogOpen(false)}>
