@@ -43,8 +43,21 @@ export function Chat({
 }: ChatProps) {
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
-  // True between compositionstart/end — an IME is mid-composition (candidate window open).
+  // IME (CJK) guards for Enter-to-send. No single signal is reliable across webviews, so onKeyDown
+  // combines them. `composingRef` is true between compositionstart and compositionend.
   const composingRef = useRef(false)
+  // The macOS WebKit / WKWebView (Tauri) case (bug 165004): it fires `compositionend` BEFORE the
+  // keydown of the Enter that commits a candidate, and at that keydown isComposing=false, keyCode≠229
+  // and composingRef is already cleared — indistinguishable from a real Enter by any signal. So we ARM
+  // on compositionend and DISARM on the committing key's keyup: the commit keydown falls inside that
+  // window (compositionend → keydown → keyup) and is suppressed, while a SEPARATE later Enter (a real
+  // send, which can only arrive after that keyup) is not. This survives the reversed event order AND a
+  // fast confirm-then-send double-tap — where a pure time cooldown would wrongly eat the send.
+  const imeCommitArmedRef = useRef(false)
+  // Backstop only: if the committing key's keyup never reaches us (mouse candidate pick, or WebKit
+  // swallowing it) the armed flag would linger and eat one later Enter. Expire it after a window far
+  // longer than the ~ms compositionend→keydown gap yet shorter than a hand moving mouse→keyboard.
+  const compositionEndAtRef = useRef(0)
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
@@ -137,23 +150,36 @@ export function Chat({
           placeholder={placeholder}
           disabled={!canSend || busy}
           onChange={(e) => setText(e.target.value)}
-          onCompositionStart={() => (composingRef.current = true)}
-          onCompositionEnd={() => (composingRef.current = false)}
+          onCompositionStart={() => {
+            composingRef.current = true
+            imeCommitArmedRef.current = false
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false
+            imeCommitArmedRef.current = true // WebKit's reversed order: the commit key's keydown is still to come
+            compositionEndAtRef.current = performance.now()
+          }}
+          onKeyUp={() => {
+            // The committing key was released — close the window so the NEXT Enter press (a genuine
+            // send, which can only start after this keyup) is not mistaken for the commit.
+            imeCommitArmedRef.current = false
+          }}
           onKeyDown={(e) => {
-            // Enter sends — but never while an IME is composing (Enter then commits the candidate).
-            // Three guards because no single one is reliable across webviews: `isComposing`
-            // (Chrome/Windows), our composition ref, and keyCode 229 — macOS WebKit (Tauri) reports
-            // the composition-ending Enter as 229 with isComposing already false. Shift+Enter = newline.
-            if (
-              e.key === 'Enter' &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing &&
-              !composingRef.current &&
-              e.keyCode !== 229
-            ) {
-              e.preventDefault()
-              send()
-            }
+            if (e.key !== 'Enter' || e.shiftKey) return // Shift+Enter = newline
+            // Enter sends — but never the Enter that commits an IME candidate. No single signal is
+            // reliable across webviews, so treat it as a commit if ANY holds:
+            //   • isComposing        — Chrome/Windows + spec-fixed Safari
+            //   • keyCode === 229    — IME-processed key (legacy Safari, where isComposing lies)
+            //   • composingRef       — engines whose keydown precedes compositionend
+            //   • armed window       — legacy macOS WebKit: compositionend fired and the commit key's
+            //     keyup hasn't (so this keydown is between them). A real send comes after a keyup, so
+            //     it isn't armed — unlike a time cooldown, this doesn't eat a fast confirm-then-send.
+            // Never preventDefault a commit Enter — that would cancel the IME confirmation.
+            const armed =
+              imeCommitArmedRef.current && performance.now() - compositionEndAtRef.current < 200
+            if (e.nativeEvent.isComposing || e.keyCode === 229 || composingRef.current || armed) return
+            e.preventDefault()
+            send()
           }}
         />
         <button onClick={send} disabled={!canSend || busy || !text.trim()}>
