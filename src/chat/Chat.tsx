@@ -43,6 +43,8 @@ export function Chat({
 }: ChatProps) {
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
+  // True between compositionstart/end — an IME is mid-composition (candidate window open).
+  const composingRef = useRef(false)
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
@@ -135,10 +137,20 @@ export function Chat({
           placeholder={placeholder}
           disabled={!canSend || busy}
           onChange={(e) => setText(e.target.value)}
+          onCompositionStart={() => (composingRef.current = true)}
+          onCompositionEnd={() => (composingRef.current = false)}
           onKeyDown={(e) => {
-            // `isComposing` guards IME input: while composing (e.g. a Chinese IME), Enter commits
-            // the candidate — it must NOT send. Only a non-composing Enter (plain typing) sends.
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            // Enter sends — but never while an IME is composing (Enter then commits the candidate).
+            // Three guards because no single one is reliable across webviews: `isComposing`
+            // (Chrome/Windows), our composition ref, and keyCode 229 — macOS WebKit (Tauri) reports
+            // the composition-ending Enter as 229 with isComposing already false. Shift+Enter = newline.
+            if (
+              e.key === 'Enter' &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing &&
+              !composingRef.current &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault()
               send()
             }
