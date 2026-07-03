@@ -52,16 +52,19 @@ export async function saveWorkspace(ws: Workspace): Promise<void> {
  * sessions/canvases so old projects don't crash the new model.
  */
 export async function openProject(folder: string): Promise<{ id: string; meta: ProjectMeta }> {
+  const id = projectDirName(folder) // deterministic, Claude-style — the dir name IS the escaped path
   const ws = await loadWorkspace()
   let entry = ws.projects.find((p) => p.folder === folder)
   if (!entry) {
-    entry = { id: crypto.randomUUID().slice(0, 8), folder, name: folderName(folder), lastOpened: Date.now() }
+    entry = { id, folder, name: folderName(folder), lastOpened: Date.now() }
     ws.projects.push(entry)
+  } else {
+    entry.id = id // migrate a legacy random-id entry to the deterministic dir name
   }
   entry.lastOpened = Date.now()
   await saveWorkspace(ws)
 
-  const raw = await read(projMetaPath(entry.id))
+  const raw = await read(projMetaPath(id))
   const parsed = raw ? (JSON.parse(raw) as Partial<ProjectMeta>) : null
   const meta: ProjectMeta = {
     version: 1,
@@ -69,7 +72,7 @@ export async function openProject(folder: string): Promise<{ id: string; meta: P
     sessions: parsed?.sessions ?? [],
     canvases: parsed?.canvases ?? [],
   }
-  return { id: entry.id, meta }
+  return { id, meta }
 }
 
 export const saveProject = (id: string, meta: ProjectMeta): Promise<void> =>
@@ -99,4 +102,13 @@ export const deleteCanvasScene = (projId: string, canvasId: string): Promise<voi
 export function folderName(p: string): string {
   const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/)
   return parts[parts.length - 1] || p
+}
+
+/**
+ * The project's dir name under ~/.flowm — the same escaping Claude Code uses for ~/.claude/projects:
+ * the absolute folder with every non-alphanumeric char turned into '-' (so `D:\Episodes\The-Office`
+ * → `D--Episodes-The-Office`). Deterministic + human-readable, and lines up with Claude's own dir.
+ */
+export function projectDirName(folder: string): string {
+  return folder.replace(/[/\\]+$/, '').replace(/[^a-zA-Z0-9]/g, '-')
 }
