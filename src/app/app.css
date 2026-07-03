@@ -752,6 +752,8 @@
 .picker-row-btn:hover { opacity: 1; }
 .picker-empty { padding: 8px; color: #999; font-size: 12px; text-align: center; }
 
-/* The canvas picker floats over the canvas — fixed width + the island shadow on its bar. */
-.canvas-bar { width: 210px; }
+/* The canvas picker floats over the canvas — fixed width + the island shadow on its bar. The picker
+   must flex to fill the bar (it's a flex child, so it would otherwise shrink to content width). */
+.canvas-bar { width: 240px; }
+.canvas-bar .picker { flex: 1; min-width: 0; }
 .canvas-bar .picker-bar { box-shadow: var(--fm-shadow-island); }
