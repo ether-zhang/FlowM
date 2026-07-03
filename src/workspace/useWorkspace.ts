@@ -3,6 +3,8 @@ import type { CanvasPort } from '../protocol'
 import { ClaudeAdapter, Conversation } from '../llm'
 import type { DisplayMessage } from '../chat/types'
 import {
+  deleteCanvasScene,
+  deleteSessionDisplay,
   folderName,
   loadCanvasScene,
   loadSessionDisplay,
@@ -28,11 +30,15 @@ export interface WorkspaceApi {
   activeSessionId: string | null
   newSession: () => Promise<void>
   selectSession: (id: string) => Promise<void>
+  renameSession: (id: string, name: string) => Promise<void>
+  deleteSession: (id: string) => Promise<void>
   // Canvases = drawing surfaces, INDEPENDENT of sessions (画布 ⊥ session).
   canvases: CanvasMeta[]
   activeCanvasId: string | null
   newCanvas: () => Promise<void>
   selectCanvas: (id: string) => Promise<void>
+  renameCanvas: (id: string, name: string) => Promise<void>
+  deleteCanvas: (id: string) => Promise<void>
   // Shared.
   openFolder: () => Promise<void>
   /** Persist the active session's bubbles + the active canvas's scene — call after each send. */
@@ -180,6 +186,86 @@ export function useWorkspace(opts: {
     await persistMeta()
   }, [persistActiveCanvas, activateCanvas, syncLists, persistMeta])
 
+  const renameSession = useCallback(
+    async (id: string, name: string) => {
+      const sm = metaRef.current?.sessions.find((s) => s.id === id)
+      if (!sm || !name.trim()) return
+      sm.name = name.trim()
+      syncLists()
+      await persistMeta()
+    },
+    [syncLists, persistMeta],
+  )
+
+  const deleteSession = useCallback(
+    async (id: string) => {
+      const meta = metaRef.current
+      const projId = projIdRef.current
+      if (!meta || !projId) return
+      const idx = meta.sessions.findIndex((s) => s.id === id)
+      if (idx < 0) return
+      meta.sessions.splice(idx, 1)
+      runtimes.current.delete(id)
+      if (activeSessRef.current === id) {
+        activeSessRef.current = null // don't re-save the deleted session on the next activate
+        const next = meta.sessions[Math.min(idx, meta.sessions.length - 1)]
+        if (next) {
+          // Sync AFTER activation: the reduced list and the new highlight then land in one React
+          // commit, instead of a flash of "no row active" across activateSession's IPC await.
+          await activateSession(next)
+          syncLists()
+          await persistMeta()
+        } else {
+          await newSession() // always keep at least one; it syncs + persists itself
+        }
+      } else {
+        syncLists()
+        await persistMeta()
+      }
+      await deleteSessionDisplay(projId, id) // the data file goes with the meta entry
+    },
+    [syncLists, activateSession, newSession, persistMeta],
+  )
+
+  const renameCanvas = useCallback(
+    async (id: string, name: string) => {
+      const cm = metaRef.current?.canvases.find((c) => c.id === id)
+      if (!cm || !name.trim()) return
+      cm.name = name.trim()
+      syncLists()
+      await persistMeta()
+    },
+    [syncLists, persistMeta],
+  )
+
+  const deleteCanvas = useCallback(
+    async (id: string) => {
+      const meta = metaRef.current
+      const projId = projIdRef.current
+      if (!meta || !projId) return
+      const idx = meta.canvases.findIndex((c) => c.id === id)
+      if (idx < 0) return
+      meta.canvases.splice(idx, 1)
+      if (activeCanvasRef.current === id) {
+        activeCanvasRef.current = null // don't re-save the deleted canvas on the next activate
+        const next = meta.canvases[Math.min(idx, meta.canvases.length - 1)]
+        if (next) {
+          // Sync AFTER activation — one commit for the reduced list + new active id (no flicker).
+          await activateCanvas(next)
+          syncLists()
+          await persistMeta()
+        } else {
+          await newCanvas() // always keep at least one; it syncs + persists itself
+        }
+      } else {
+        syncLists()
+        await persistMeta()
+      }
+      await deleteCanvasScene(projId, id) // the scene file goes with the meta entry
+    },
+    [syncLists, activateCanvas, newCanvas, persistMeta],
+  )
+
   const openFolder = useCallback(async () => {
     const folder = await pickFolder()
     if (!folder) return
@@ -212,10 +298,14 @@ export function useWorkspace(opts: {
     activeSessionId,
     newSession,
     selectSession,
+    renameSession,
+    deleteSession,
     canvases,
     activeCanvasId,
     newCanvas,
     selectCanvas,
+    renameCanvas,
+    deleteCanvas,
     openFolder,
     persistActive,
     activeConv,

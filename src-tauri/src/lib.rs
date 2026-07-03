@@ -263,6 +263,18 @@ fn flowm_write(app: AppHandle, rel: String, content: String) -> Result<(), Strin
     fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+/// Delete a file under `~/.flowm` (a deleted session's bubbles / a deleted canvas's scene), so
+/// deleting the meta entry doesn't strand its data file. Idempotent: a missing file is fine.
+#[tauri::command]
+fn flowm_delete(app: AppHandle, rel: String) -> Result<(), String> {
+    let path = flowm_dir(&app)?.join(&rel);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// One entry in a directory listing for the right-hand file panel.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -353,6 +365,7 @@ pub fn run() {
             write_design,
             flowm_read,
             flowm_write,
+            flowm_delete,
             list_dir,
             pick_folder,
             read_file,

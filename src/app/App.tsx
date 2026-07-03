@@ -74,6 +74,21 @@ export function App() {
   const [keyInput, setKeyInput] = useState('')
   // Settings dialog holds the claude executable path (moved out of the chat config row).
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // A shared small dialog for rename (an input) and delete-confirm, used by both the session list
+  // and the canvas bar. `onOk` is the action to run on confirm.
+  const [dialog, setDialog] = useState<
+    | { kind: 'rename'; title: string; onOk: (value: string) => void }
+    | { kind: 'confirm'; title: string; message: string; onOk: () => void }
+    | null
+  >(null)
+  const [dialogInput, setDialogInput] = useState('')
+  const openRename = useCallback((title: string, current: string, onOk: (v: string) => void) => {
+    setDialogInput(current)
+    setDialog({ kind: 'rename', title, onOk })
+  }, [])
+  const openConfirm = useCallback((title: string, message: string, onOk: () => void) => {
+    setDialog({ kind: 'confirm', title, message, onOk })
+  }, [])
 
   // The working directory the local Claude Code engines run in (canvas·Claude + build).
   const cwdRef = useRef(localStorage.getItem(CWD_STORAGE) ?? '')
@@ -330,6 +345,8 @@ export function App() {
         activeSessionId={ws.activeSessionId}
         onNew={ws.newSession}
         onSelect={ws.selectSession}
+        onRename={(id, name) => openRename('重命名对话', name, (v) => ws.renameSession(id, v))}
+        onDelete={(id, name) => openConfirm('删除对话', `确定删除对话「${name}」？此操作不可撤销。`, () => ws.deleteSession(id))}
       />
     ) : undefined
 
@@ -362,6 +379,8 @@ export function App() {
             activeCanvasId={ws.activeCanvasId}
             onNew={ws.newCanvas}
             onSelect={ws.selectCanvas}
+            onRename={(id, name) => openRename('重命名画布', name, (v) => ws.renameCanvas(id, v))}
+            onDelete={(id, name) => openConfirm('删除画布', `确定删除画布「${name}」？画布内容将一并删除。`, () => ws.deleteCanvas(id))}
           />
         )}
       </main>
@@ -392,6 +411,70 @@ export function App() {
     </div>
 
     {openFile && <FloatingEditor path={openFile} onClose={() => setOpenFile(null)} />}
+
+    {dialog && (
+      <div className="modal-backdrop" onClick={() => setDialog(null)}>
+        {/* Escape closes from anywhere in the dialog (bubbles up from the focused control). */}
+        <div
+          className="modal"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setDialog(null)
+          }}
+        >
+          <h3 className="modal-title">{dialog.title}</h3>
+          {dialog.kind === 'rename' ? (
+            <>
+              <input
+                className="modal-input"
+                autoFocus
+                value={dialogInput}
+                onChange={(e) => setDialogInput(e.target.value)}
+                onKeyDown={(e) => {
+                  // A blank name is a no-op in the hook — keep the dialog open (with 确定 visibly
+                  // disabled) instead of silently closing with nothing renamed.
+                  if (e.key === 'Enter' && dialogInput.trim()) {
+                    dialog.onOk(dialogInput)
+                    setDialog(null)
+                  }
+                }}
+              />
+              <div className="modal-actions">
+                <button onClick={() => setDialog(null)}>取消</button>
+                <button
+                  className="primary"
+                  disabled={!dialogInput.trim()}
+                  onClick={() => {
+                    dialog.onOk(dialogInput)
+                    setDialog(null)
+                  }}
+                >
+                  确定
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="modal-hint">{dialog.message}</p>
+              <div className="modal-actions">
+                {/* Focus lands on 取消: Enter right after opening cancels (never deletes), Escape
+                    closes — deleting always takes an explicit click / Tab+Enter. */}
+                <button autoFocus onClick={() => setDialog(null)}>取消</button>
+                <button
+                  className="danger"
+                  onClick={() => {
+                    dialog.onOk()
+                    setDialog(null)
+                  }}
+                >
+                  删除
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    )}
 
     {settingsOpen && (
       <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>

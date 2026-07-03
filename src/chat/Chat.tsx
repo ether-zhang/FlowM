@@ -25,6 +25,35 @@ export interface ChatProps {
   onLoad: () => void
 }
 
+type RenderItem =
+  | { type: 'msg'; m: DisplayMessage }
+  | { type: 'sysgroup'; id: string; notes: DisplayMessage[] }
+
+/**
+ * Fold each maximal run of consecutive `system` notes (tool progress: Read/Grep/工具完成/✓ 完成…)
+ * into one group — mirroring the Claude Code VSCode extension, which collapses tool activity into a
+ * single expandable row. A real reply (assistant/user/debug) breaks the run, so notes only collapse
+ * when there's no actual reply between them.
+ */
+/** An error note (the send catch's `出错：…`) — must stay visible, never folded away. */
+const isErrorNote = (m: DisplayMessage) => m.text.startsWith('出错')
+
+function groupMessages(messages: DisplayMessage[]): RenderItem[] {
+  const items: RenderItem[] = []
+  for (const m of messages) {
+    // Errors break the run and render standalone: folded into the collapsed success-styled
+    // progress group they'd read as normal completed activity (and hide behind its summary).
+    if (m.role === 'system' && !isErrorNote(m)) {
+      const last = items[items.length - 1]
+      if (last && last.type === 'sysgroup') last.notes.push(m)
+      else items.push({ type: 'sysgroup', id: m.id, notes: [m] })
+    } else {
+      items.push({ type: 'msg', m })
+    }
+  }
+  return items
+}
+
 export function Chat({
   messages,
   busy,
@@ -120,7 +149,37 @@ export function Chat({
             在画布上放置或手绘图形，选中后在这里向大模型描述需求；模型可直接修改画布。
           </p>
         )}
-        {messages.map((m) => {
+        {groupMessages(messages).map((it) => {
+          if (it.type === 'sysgroup') {
+            // A single note renders as one plain system line; a run collapses into one expandable
+            // group whose summary tracks the latest note (the ✓ 完成 line once it lands).
+            if (it.notes.length === 1) {
+              const m = it.notes[0]
+              return (
+                <div key={m.id} className="msg msg-system">
+                  {m.text}
+                </div>
+              )
+            }
+            const summary = it.notes[it.notes.length - 1].text
+            return (
+              <details key={it.id} className="msg msg-sysgroup">
+                <summary>
+                  <span className="sysgroup-count">{it.notes.length} 步</span>
+                  <span className="sysgroup-summary">{summary}</span>
+                </summary>
+                <div className="sysgroup-body">
+                  {/* The last note is already the (always-visible) summary — don't show it twice. */}
+                  {it.notes.slice(0, -1).map((n) => (
+                    <div key={n.id} className="sysgroup-note">
+                      {n.text}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )
+          }
+          const m = it.m
           if (m.role === 'debug') {
             return (
               <details key={m.id} className="msg msg-debug">
@@ -142,7 +201,7 @@ export function Chat({
             )
           }
           return (
-            <div key={m.id} className={`msg msg-${m.role}`}>
+            <div key={m.id} className={`msg msg-${m.role}${m.role === 'system' && isErrorNote(m) ? ' msg-error' : ''}`}>
               {m.text}
             </div>
           )

@@ -13,6 +13,7 @@ import type { ProjectMeta, Workspace } from './types'
 
 const read = (rel: string) => invoke<string | null>('flowm_read', { rel })
 const write = (rel: string, content: string) => invoke<void>('flowm_write', { rel, content })
+const del = (rel: string) => invoke<void>('flowm_delete', { rel })
 
 /** One entry from the file-panel directory listing (dirs first, then name). */
 export interface FsEntry {
@@ -89,6 +90,10 @@ export async function loadCanvasScene(projId: string, canvasId: string): Promise
 }
 export const saveCanvasScene = (projId: string, canvasId: string, scene: unknown): Promise<void> =>
   write(canvasPath(projId, canvasId), JSON.stringify({ scene }))
+
+/** Remove a deleted session's / canvas's data file along with its meta entry (idempotent). */
+export const deleteSessionDisplay = (projId: string, sessId: string): Promise<void> => del(sessPath(projId, sessId))
+export const deleteCanvasScene = (projId: string, canvasId: string): Promise<void> => del(canvasPath(projId, canvasId))
 
 /** The last path segment of a folder, used as the project's display name. */
 export function folderName(p: string): string {

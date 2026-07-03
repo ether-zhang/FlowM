@@ -12,12 +12,16 @@ export function ConversationList({
   activeSessionId,
   onNew,
   onSelect,
+  onRename,
+  onDelete,
 }: {
   projectName: string | null
   sessions: SessionMeta[]
   activeSessionId: string | null
   onNew: () => void
   onSelect: (id: string) => void
+  onRename: (id: string, name: string) => void
+  onDelete: (id: string, name: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   return (
@@ -46,6 +50,26 @@ export function ConversationList({
             >
               <span className="conv-kind">💬</span>
               <span className="conv-name">{s.name}</span>
+              <button
+                className="row-btn"
+                title="重命名"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRename(s.id, s.name)
+                }}
+              >
+                ✎
+              </button>
+              <button
+                className="row-btn"
+                title="删除"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete(s.id, s.name)
+                }}
+              >
+                🗑
+              </button>
             </div>
           ))}
         </div>
