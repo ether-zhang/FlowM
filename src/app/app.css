@@ -103,8 +103,10 @@
 /* Canvas controls floating at the canvas top-right, below Excalidraw's own Library button. */
 .canvas-bar {
   position: absolute;
-  top: 52px;
-  right: 8px;
+  /* Below Excalidraw's whole top row (menu · tools · Library all sit at ~top:8–48), on the right
+     where — unlike the left — no properties panel appears when a shape is selected. */
+  top: 64px;
+  right: 12px;
   z-index: 5;
   display: flex;
   gap: 6px;
@@ -614,3 +616,47 @@
   border-top: 1px solid #f0e0c0;
 }
 .sysgroup-note { opacity: 0.85; white-space: pre-wrap; word-break: break-word; }
+
+/* ── Toolbar unification: one button + dropdown language across the chat bar, file panel,
+   conversation list and the floating canvas bar (previously three different looks). ──────── */
+/* Every toolbar button: white surface, --fm-border, --fm-radius, never squished/text-wrapped.
+   The chat bar wraps WHOLE buttons to a second row on a narrow pane, so 保存/加载 stay one line
+   instead of breaking into 保\n存. */
+.chat-bar { flex-wrap: wrap; row-gap: 6px; }
+.chat-bar button,
+.conv-open,
+.file-open,
+.canvas-new,
+.canvas-icon {
+  flex: none;
+  white-space: nowrap;
+  background: #fff;
+  border: 1px solid var(--fm-border);
+  border-radius: var(--fm-radius);
+  color: #1a1a1a;
+  line-height: 1.2;
+}
+.canvas-icon { padding: 4px 8px; }
+
+/* Dropdowns (engine + canvas switchers) become clean custom pills — native OS chrome removed,
+   our own chevron drawn with gradients (no external asset / data URI, CSP-safe). */
+.chat-bar select,
+.canvas-select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--fm-border);
+  border-radius: var(--fm-radius);
+  background-color: #fff;
+  background-image: linear-gradient(45deg, transparent 50%, #888 50%), linear-gradient(135deg, #888 50%, transparent 50%);
+  background-position: right 13px center, right 8px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding: 5px 26px 5px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: #1a1a1a;
+  cursor: pointer;
+}
+.chat-bar select:hover,
+.canvas-select:hover { background-color: var(--fm-surface-hover); }
+.canvas-select { max-width: 140px; }
