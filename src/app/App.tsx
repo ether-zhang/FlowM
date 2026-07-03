@@ -4,7 +4,7 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
-import { FilePanel, FloatingEditor, ConversationList, CanvasBar, useWorkspace } from '../workspace'
+import { FilePanel, FloatingEditor, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
@@ -12,8 +12,7 @@ import { IS_TAURI } from '../runtime'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
-// Persisted across restarts so heavy iteration doesn't mean re-picking the engine + re-typing paths.
-const CWD_STORAGE = 'flowm.cwd'
+// Persisted across restarts so heavy iteration doesn't mean re-picking the engine / re-typing the path.
 const BIN_STORAGE = 'flowm.bin'
 const ENGINE_STORAGE = 'flowm.engine'
 // Shell pane geometry (files left / chat right), persisted so the layout survives restarts.
@@ -74,25 +73,18 @@ export function App() {
   const [keyInput, setKeyInput] = useState('')
   // Settings dialog holds the claude executable path (moved out of the chat config row).
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // A shared small dialog for rename (an input) and delete-confirm, used by both the session list
-  // and the canvas bar. `onOk` is the action to run on confirm.
-  const [dialog, setDialog] = useState<
-    | { kind: 'rename'; title: string; onOk: (value: string) => void }
-    | { kind: 'confirm'; title: string; message: string; onOk: () => void }
-    | null
-  >(null)
-  const [dialogInput, setDialogInput] = useState('')
-  const openRename = useCallback((title: string, current: string, onOk: (v: string) => void) => {
-    setDialogInput(current)
-    setDialog({ kind: 'rename', title, onOk })
-  }, [])
+  // A small confirm dialog for destructive actions (delete session / canvas). Rename is inline in
+  // the picker (double-click), so it needs no dialog. `onOk` runs on 删除.
+  const [dialog, setDialog] = useState<{ title: string; message: string; onOk: () => void } | null>(null)
   const openConfirm = useCallback((title: string, message: string, onOk: () => void) => {
-    setDialog({ kind: 'confirm', title, message, onOk })
+    setDialog({ title, message, onOk })
   }, [])
 
-  // The working directory the local Claude Code engines run in (canvas·Claude + build).
-  const cwdRef = useRef(localStorage.getItem(CWD_STORAGE) ?? '')
-  const [cwd, setCwd] = useState(cwdRef.current)
+  // The working directory the local Claude Code engines run in (canvas·Claude + build). NOT restored
+  // from localStorage: the folder now comes from 打开工程 in-session, so a fresh launch shows no files
+  // until a project is opened (a persisted folder with no open project was confusing).
+  const cwdRef = useRef('')
+  const [cwd, setCwd] = useState('')
   // Path to the user's `claude` executable; prefilled from the backend's platform default (see the
   // effect below). A GUI Mac app doesn't inherit the shell PATH, so an absolute path is what lets
   // `claude` spawn; empty means "resolve `claude` via PATH".
@@ -135,7 +127,6 @@ export function App() {
   const setFolder = useCallback((folder: string) => {
     cwdRef.current = folder
     setCwd(folder)
-    localStorage.setItem(CWD_STORAGE, folder)
   }, [])
 
   // The project / multi-conversation layer (desktop). Sits ABOVE the engines: when a project is
@@ -339,13 +330,14 @@ export function App() {
   // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
   const engineConfig =
     engineId === 'canvas-claude' ? (
-      <ConversationList
-        projectName={ws.projectName}
-        sessions={ws.sessions}
-        activeSessionId={ws.activeSessionId}
-        onNew={ws.newSession}
+      <PickerBar
+        items={ws.sessions}
+        activeId={ws.activeSessionId}
+        placeholder={ws.projectName ? '（无对话）' : '未打开工程（左侧文件栏「打开工程」）'}
+        newTitle="新建对话"
         onSelect={ws.selectSession}
-        onRename={(id, name) => openRename('重命名对话', name, (v) => ws.renameSession(id, v))}
+        onNew={ws.newSession}
+        onRename={(id, name) => ws.renameSession(id, name)}
         onDelete={(id, name) => openConfirm('删除对话', `确定删除对话「${name}」？此操作不可撤销。`, () => ws.deleteSession(id))}
       />
     ) : undefined
@@ -371,17 +363,21 @@ export function App() {
       )}
       <main className="canvas-pane">
         <Canvas onReady={onReady} />
-        {/* 新画布 + switcher float over the canvas top-right (below Excalidraw's Library button).
-            Only when a project is open — canvases are a project concept, decoupled from sessions. */}
+        {/* Canvas picker floats over the canvas top-right (below Excalidraw's Library button). Only
+            when a project is open — canvases are a project concept, decoupled from sessions. */}
         {ws.activeCanvasId && (
-          <CanvasBar
-            canvases={ws.canvases}
-            activeCanvasId={ws.activeCanvasId}
-            onNew={ws.newCanvas}
-            onSelect={ws.selectCanvas}
-            onRename={(id, name) => openRename('重命名画布', name, (v) => ws.renameCanvas(id, v))}
-            onDelete={(id, name) => openConfirm('删除画布', `确定删除画布「${name}」？画布内容将一并删除。`, () => ws.deleteCanvas(id))}
-          />
+          <div className="canvas-bar">
+            <PickerBar
+              items={ws.canvases}
+              activeId={ws.activeCanvasId}
+              placeholder="（无画布）"
+              newTitle="新建画布（不新建对话）"
+              onSelect={ws.selectCanvas}
+              onNew={ws.newCanvas}
+              onRename={(id, name) => ws.renameCanvas(id, name)}
+              onDelete={(id, name) => openConfirm('删除画布', `确定删除画布「${name}」？画布内容将一并删除。`, () => ws.deleteCanvas(id))}
+            />
+          </div>
         )}
       </main>
       <Resizer width={chatW} setWidth={persistChatW} sign={-1} />
@@ -423,55 +419,21 @@ export function App() {
           }}
         >
           <h3 className="modal-title">{dialog.title}</h3>
-          {dialog.kind === 'rename' ? (
-            <>
-              <input
-                className="modal-input"
-                autoFocus
-                value={dialogInput}
-                onChange={(e) => setDialogInput(e.target.value)}
-                onKeyDown={(e) => {
-                  // A blank name is a no-op in the hook — keep the dialog open (with 确定 visibly
-                  // disabled) instead of silently closing with nothing renamed.
-                  if (e.key === 'Enter' && dialogInput.trim()) {
-                    dialog.onOk(dialogInput)
-                    setDialog(null)
-                  }
-                }}
-              />
-              <div className="modal-actions">
-                <button onClick={() => setDialog(null)}>取消</button>
-                <button
-                  className="primary"
-                  disabled={!dialogInput.trim()}
-                  onClick={() => {
-                    dialog.onOk(dialogInput)
-                    setDialog(null)
-                  }}
-                >
-                  确定
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="modal-hint">{dialog.message}</p>
-              <div className="modal-actions">
-                {/* Focus lands on 取消: Enter right after opening cancels (never deletes), Escape
-                    closes — deleting always takes an explicit click / Tab+Enter. */}
-                <button autoFocus onClick={() => setDialog(null)}>取消</button>
-                <button
-                  className="danger"
-                  onClick={() => {
-                    dialog.onOk()
-                    setDialog(null)
-                  }}
-                >
-                  删除
-                </button>
-              </div>
-            </>
-          )}
+          <p className="modal-hint">{dialog.message}</p>
+          <div className="modal-actions">
+            {/* Focus lands on 取消: Enter right after opening cancels (never deletes), Escape
+                closes — deleting always takes an explicit click / Tab+Enter. */}
+            <button autoFocus onClick={() => setDialog(null)}>取消</button>
+            <button
+              className="danger"
+              onClick={() => {
+                dialog.onOk()
+                setDialog(null)
+              }}
+            >
+              删除
+            </button>
+          </div>
         </div>
       </div>
     )}
