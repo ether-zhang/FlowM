@@ -55,6 +55,7 @@ Windows、macOS、iPad。
                 - [ ] **暂缓（按需再建，判据见 doc §3 pass vs op）**：region 整片移动（**op**：`move_shape` 收 `[Bn]`）、新形状锚定到 region（**pass**：align/place 实现器，但读图变准后模型自放置大概率已够、冗余）、自动配色（**pass**）。均无当下需求，YAGNI
         - [x] 中心/边界计算脚本+自反馈视觉+涉及组件放置(生成/移动)时进入移动模式更多思考
             - [x] 自反馈视觉做成**显式 refine 门控**（结构化精修）：建图 → 渲首图喂回模型**复核一次** → 模型用 `move_shape` 纠位 / 补 `declare_structure`。详见下「结构化精修门控」与 [docs/structured-refine.md](docs/structured-refine.md)
+              - [x] **复核用区域而非仅新形状**：复核门控改渲染新/改动形状**所占区域**（其 bbox + 落在框内的所有形状）的整图，而非仅新形状的孤立裁剪——否则与**已有邻居**的重叠/拥挤在「裁掉邻居」的图里根本看不见。实现：`CanvasPort.regionOf(ids)`（把 `selectionRegion` 的 bbox 求交抽成 `regionOfIds` 复用）；`reviewGate` 用 `regionOf(reviewIds)` 出图 + 列表 + marks；`REVIEW_PROMPT` 加提示「图里可能含既有形状=上下文，移动你的新形状避让、别重排既有」。远处未触碰的板仍在区域外、不进复核。可调：当前是紧 bbox（`exportToCanvas` 自带 padding），若需固定边距/更克制可再收
         - [ ] 让模型在真正布置前划定操作区？操作区在完成前的不可操作？
         - [ ] 流程图 vs 随意排布的自动判别准确度调优（多模态已铺好，靠 prompt + 实测迭代）
     - 结构化精修门控（本期，见 [docs/structured-refine.md](docs/structured-refine.md) / [docs/structure-schema.md](docs/structure-schema.md)）

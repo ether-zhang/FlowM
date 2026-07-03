@@ -50,19 +50,30 @@ function selectionRegion(
   all: readonly ExcalidrawElement[],
   selected: Record<string, boolean>,
 ): Set<string> | null {
-  const sel = all.filter((el) => selected[el.id])
-  if (sel.length === 0) return null
+  const seeds = new Set(all.filter((el) => selected[el.id]).map((el) => el.id))
+  return seeds.size === 0 ? null : regionOfIds(all, seeds)
+}
+
+/**
+ * The region-expansion core: the combined bounding box of the seed shapes, then every shape whose
+ * bbox intersects it (the seeds themselves always kept). Bound text labels are skipped from the scan
+ * (they travel with their container). Used by selectionRegion (seeds = the selection) and the port's
+ * regionOf (seeds = the review gate's new/changed shapes).
+ */
+function regionOfIds(all: readonly ExcalidrawElement[], seeds: ReadonlySet<string>): Set<string> {
+  const seedEls = all.filter((el) => seeds.has(el.id))
+  if (seedEls.length === 0) return new Set(seeds)
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
   let maxY = -Infinity
-  for (const el of sel) {
+  for (const el of seedEls) {
     minX = Math.min(minX, el.x)
     minY = Math.min(minY, el.y)
     maxX = Math.max(maxX, el.x + el.width)
     maxY = Math.max(maxY, el.y + el.height)
   }
-  const ids = new Set<string>()
+  const ids = new Set<string>(seeds)
   for (const el of all) {
     if (isText(el) && el.containerId) continue
     if (el.x <= maxX && el.x + el.width >= minX && el.y <= maxY && el.y + el.height >= minY) ids.add(el.id)
@@ -429,6 +440,10 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
     selectionScope() {
       const all = getNonDeletedElements(api.getSceneElements())
       return selectionRegion(all, api.getAppState().selectedElementIds)
+    },
+
+    regionOf(ids) {
+      return regionOfIds(getNonDeletedElements(api.getSceneElements()), ids)
     },
 
     snapshot(scope, ids) {

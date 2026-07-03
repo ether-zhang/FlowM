@@ -35,8 +35,8 @@ const MAX_ITERATIONS = 8
 /** Tools the model may call: the canvas ops plus the structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
 
-const REVIEW_PROMPT = `Here is your drawing as it actually rendered. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Review it ONCE:
-- Fix anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping).
+const REVIEW_PROMPT = `Here is your drawing as it actually rendered, shown IN CONTEXT — the image covers the whole area your new work occupies, so it may also include EXISTING shapes you did not just make. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Review it ONCE:
+- Fix anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping). If your new work overlaps or crowds an EXISTING shape, move YOUR new shapes to clear it — don't rearrange the existing ones.
 - If you spot a real structure you didn't already declare — a connected chain, a grid, a nesting — call \`declare_structure\` for it (by shape id).
 - If it already looks right, reply briefly with NO tool calls.`
 
@@ -216,13 +216,17 @@ export class Conversation {
     return changed
   }
 
-  /** Show just the shapes the model created/changed this turn and let it fix misplacements
-   *  (and declare any structure it missed). Scoped to `ids`, so a big existing board stays
-   *  out of the way and the model only reasons about its own fresh work. */
+  /** Show the model its fresh work IN CONTEXT and let it fix misplacements (and declare any
+   *  structure it missed). Reviewed over the whole spatial REGION the new/changed shapes occupy —
+   *  their bounding box plus every shape sitting in it — not an isolated cutout of only the new
+   *  shapes: an overlap or crowding against an EXISTING neighbour is invisible in a cutout that
+   *  omits that neighbour. A far-off untouched board still stays out of the way (it's outside the
+   *  region), so the model keeps reasoning mostly about its own work, now against real surroundings. */
   private async reviewGate(port: CanvasPort, cb: SendCallbacks, ids: ReadonlySet<string>): Promise<void> {
-    const shapes = port.snapshot('all', ids)
+    const regionIds = port.regionOf(ids)
+    const shapes = port.snapshot('all', regionIds)
     const marks = nodeMarks(shapes)
-    const image = await port.exportImage('all', marks, ids)
+    const image = await port.exportImage('all', marks, regionIds)
     if (!image) return
 
     for (const m of this.history) if (m.role === 'user') delete m.image

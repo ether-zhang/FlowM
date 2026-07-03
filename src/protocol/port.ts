@@ -18,6 +18,14 @@ export interface CanvasPort {
    *  what the user actually selected (not just the new shapes in isolation). */
   selectionScope(): ReadonlySet<string> | null
   /**
+   * Expand a set of shape ids to the whole spatial REGION they occupy: every shape whose bounding
+   * box intersects the seeds' combined bounding box (plus the seeds themselves). The review gate
+   * uses this so the model judges its new work against the EXISTING shapes sitting in the same area
+   * (overlaps, crowding) instead of an isolated cutout of only the new shapes. Bound text labels are
+   * folded into their container. Returns the seeds unchanged when they match no live shapes.
+   */
+  regionOf(ids: ReadonlySet<string>): Set<string>
+  /**
    * Apply a batch of ops in order, resolving create-refs so later ops can target them.
    * `scope` (from the gate's structure declarations) limits which nodes the intent
    * passes may move; omit it (pre-gate / no declarations) to keep today's global B.
