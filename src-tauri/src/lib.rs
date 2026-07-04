@@ -323,6 +323,7 @@ async fn codex_run(
     bin: Option<String>,
     prompt: String,
     cwd: String,
+    agent_cwd: Option<String>,
     output_schema: Option<String>,
     resume: Option<String>,
     image: Option<String>,
@@ -330,6 +331,7 @@ async fn codex_run(
     on_event: Channel<CodexEvent>,
 ) -> Result<Option<String>, String> {
     let bin = bin.unwrap_or_else(|| "codex".to_string());
+    let run_cwd = agent_cwd.clone().unwrap_or_else(|| cwd.clone());
     let last_path = unique_flowm_file(&cwd, "codex-last", "txt")?;
     let schema_path = if let Some(schema) = &output_schema {
         let path = unique_flowm_file(&cwd, "codex-schema", "json")?;
@@ -348,6 +350,8 @@ async fn codex_run(
 
     if resume.is_some() {
         cmd.arg("resume");
+    } else if agent_cwd.is_some() {
+        cmd.arg("--add-dir").arg(&cwd);
     }
     cmd.arg("--json")
         .arg("--output-last-message")
@@ -364,7 +368,7 @@ async fn codex_run(
     cmd.arg("-");
 
     let mut child = cmd
-        .current_dir(&cwd)
+        .current_dir(&run_cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -450,6 +454,18 @@ async fn codex_run(
 fn write_guide(cwd: String, content: String) -> Result<(), String> {
     let path = PathBuf::from(&cwd).join("CLAUDE.local.md");
     fs::write(path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_codex_guide(cwd: String, content: String) -> Result<String, String> {
+    let dir = PathBuf::from(&cwd).join(".flowm");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ignore = dir.join(".gitignore");
+    if !ignore.exists() {
+        fs::write(&ignore, "*\n").map_err(|e| e.to_string())?;
+    }
+    fs::write(dir.join("AGENTS.md"), content).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
 }
 
 /// FlowM's own store dir: `~/.flowm` (created on demand). Holds the workspace index and each
@@ -585,6 +601,7 @@ pub fn run() {
             codex_run,
             default_codex_bin,
             write_guide,
+            write_codex_guide,
             write_design,
             flowm_read,
             flowm_write,

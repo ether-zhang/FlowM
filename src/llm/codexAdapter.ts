@@ -1,13 +1,13 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmToolCall, LlmTurn } from './types'
 import type { ToolDef } from '../protocol'
-import { codexRun } from '../engine/codexCli'
+import { codexRun, writeCodexGuide } from '../engine/codexCli'
 import { createCodexStderrFilter, interpretCodexLine, extractCodexThreadId } from '../engine/codexStream'
 import { writeDesign } from '../engine/claudeCode'
 
 const FLOWM_CODEX_GUIDE = `# FlowM canvas mode for Codex
 
-You are FlowM's canvas assistant. Each turn you get the current canvas as text, and when present a rendered image of the current selection/canvas. You may inspect the project, but this canvas mode is read-only for the repository: do not edit files. Your deliverable is a JSON object matching the output schema.
+You are FlowM's canvas assistant. Each turn you get the current canvas as text, and when present a rendered image of the current selection/canvas. You may inspect the project root supplied in the user prompt, but this canvas mode is read-only for the repository: do not edit files. Your deliverable is a JSON object matching the output schema.
 
 Pick one mode:
 - Answer mode: for explanations or questions that do not ask for drawing/editing, leave operations empty and put the complete answer in reply.
@@ -29,15 +29,14 @@ Coordinates: x grows right, y grows down. Prefer omitting x/y/w/h for structured
 
 Use the user's language for labels and reply. Return only data matching the schema; set unused operation fields to null.`
 
-const FLOWM_CODEX_TURN_HINT =
-  'Repo inspection reminder: use narrow file-location commands and small line-range reads; avoid broad full-repo searches and non-existent path lists.'
-
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
   private getBin: () => string
   private session: string | null = null
   private sent = 0
   private turn = 0
+  private guideCwd: string | null = null
+  private agentCwd: string | null = null
 
   constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
     this.getCwd = getCwd
@@ -53,20 +52,25 @@ export class CodexAdapter implements LlmAdapter {
     const cwd = this.getCwd().trim()
     if (!cwd) throw new Error('请先打开工程')
 
+    if (this.guideCwd !== cwd) {
+      this.agentCwd = await writeCodexGuide(cwd, FLOWM_CODEX_GUIDE)
+      this.guideCwd = cwd
+    }
+
     const fresh = params.messages.slice(this.sent)
     this.sent = params.messages.length
     const hasUser = fresh.some((m) => m.role === 'user')
     const hasError = fresh.some((m) => m.role === 'tool' && /"ok"\s*:\s*false|^error/i.test(m.content))
     if (!hasUser && !hasError) return { text: '', toolCalls: [] }
 
-    const includeGuide = this.session == null && this.turn === 0
-    const { prompt, image } = await this.composeDelta(fresh, cwd, includeGuide)
+    const { prompt, image } = await this.composeDelta(fresh, cwd)
     const schema = buildCodexOpsSchema(params.tools)
     this.turn++
 
     cb.onDebug?.(
       `▶ 实际发给 Codex · 第 ${this.turn} 轮\n` +
         `resume: ${this.session ?? '(新会话)'} · output-schema: { reply, operations[] }\n` +
+        `system: 不在请求里 → .flowm/AGENTS.md\n` +
         `repo policy: read-only · sandbox: platform default · image: ${image ?? '(无)'}\n` +
         `本轮增量：${fresh.length} 条 / ${prompt.length} 字符\n${prompt}`,
     )
@@ -93,6 +97,7 @@ export class CodexAdapter implements LlmAdapter {
       },
       {
         bin: this.getBin().trim() || undefined,
+        agentCwd: this.agentCwd ?? undefined,
         outputSchema: schema,
         resume: this.session ?? undefined,
         image,
@@ -124,14 +129,13 @@ export class CodexAdapter implements LlmAdapter {
   private async composeDelta(
     fresh: LlmMessage[],
     cwd: string,
-    includeGuide: boolean,
   ): Promise<{ prompt: string; image?: string }> {
-    const parts: string[] = includeGuide ? [FLOWM_CODEX_GUIDE] : [FLOWM_CODEX_TURN_HINT]
+    const parts: string[] = [`Project root: ${cwd}`]
     let image: string | undefined
     for (const m of fresh) {
       if (m.role === 'user') {
         parts.push(m.content)
-        if (m.image) image = await writeDesign(cwd, m.image)
+        if (m.image) image = projectPath(cwd, await writeDesign(cwd, m.image))
       } else if (m.role === 'tool') {
         parts.push(`Result of the previous operations: ${m.content}`)
       }
@@ -139,6 +143,11 @@ export class CodexAdapter implements LlmAdapter {
     if (image) parts.push(`The rendered canvas image is attached and also saved at ${image}.`)
     return { prompt: parts.join('\n\n'), image }
   }
+}
+
+function projectPath(cwd: string, rel: string): string {
+  if (/^[a-zA-Z]:[\\/]/.test(rel) || rel.startsWith('\\\\') || rel.startsWith('/')) return rel
+  return `${cwd.replace(/[\\/]+$/, '')}${cwd.includes('\\') ? '\\' : '/'}${rel.replace(/^[\\/]+/, '')}`
 }
 
 function parseStructured(raw: string | null): unknown {
