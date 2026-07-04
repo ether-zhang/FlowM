@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { CanvasPort } from '../protocol'
-import { ClaudeAdapter, Conversation } from '../llm'
+import { ClaudeAdapter, CodexAdapter, Conversation } from '../llm'
 import type { DisplayMessage } from '../chat/types'
 import {
   deleteCanvasScene,
@@ -16,11 +16,18 @@ import {
 } from './store'
 import type { CanvasMeta, ProjectMeta, SessionMeta } from './types'
 
-/** One session's live runtime: its Conversation (message history) + the ClaudeAdapter whose Claude
- *  session it owns. Kept alive across switches so the adapter's --resume/delta continuity holds. */
-interface Runtime {
+export type AgentKind = 'claude' | 'codex'
+
+/** One local agent runtime for a FlowM session. Kept alive across switches so the adapter's
+ *  resume/delta continuity holds. */
+interface AgentRuntime {
   conv: Conversation
-  adapter: ClaudeAdapter
+  adapter: ClaudeAdapter | CodexAdapter
+}
+
+interface Runtime {
+  claude?: AgentRuntime
+  codex?: AgentRuntime
 }
 
 export interface WorkspaceApi {
@@ -43,8 +50,8 @@ export interface WorkspaceApi {
   openFolder: () => Promise<void>
   /** Persist the active session's bubbles + the active canvas's scene — call after each send. */
   persistActive: () => Promise<void>
-  /** The active session's Conversation, for the canvas engine's getConv (null = no project). */
-  activeConv: () => Conversation | null
+  /** The active session's Conversation, for local-agent canvas engines (null = no project). */
+  activeConv: (agent?: AgentKind) => Conversation | null
 }
 
 /**
@@ -66,6 +73,7 @@ export function useWorkspace(opts: {
   setMessages: (m: DisplayMessage[]) => void
   getCwd: () => string
   getBin: () => string
+  getCodexBin: () => string
   setFolder: (folder: string) => void
 }): WorkspaceApi {
   const [projectName, setProjectName] = useState<string | null>(null)
@@ -81,14 +89,20 @@ export function useWorkspace(opts: {
   const activeCanvasRef = useRef<string | null>(null)
 
   const ensureRuntime = useCallback(
-    (sm: SessionMeta): Runtime => {
+    (sm: SessionMeta, agent: AgentKind): AgentRuntime => {
       let rt = runtimes.current.get(sm.id)
       if (!rt) {
-        const adapter = new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null)
-        rt = { conv: new Conversation(adapter), adapter }
+        rt = {}
         runtimes.current.set(sm.id, rt)
       }
-      return rt
+      if (!rt[agent]) {
+        const adapter =
+          agent === 'claude'
+            ? new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null)
+            : new CodexAdapter(opts.getCwd, opts.getCodexBin, sm.codexSessionId ?? null)
+        rt[agent] = { conv: new Conversation(adapter), adapter }
+      }
+      return rt[agent]
     },
     [opts],
   )
@@ -102,8 +116,11 @@ export function useWorkspace(opts: {
   const persistMeta = useCallback(async () => {
     if (!projIdRef.current || !metaRef.current) return
     for (const sm of metaRef.current.sessions) {
-      const sid = runtimes.current.get(sm.id)?.adapter.sessionId
-      if (sid) sm.sessionId = sid
+      const rt = runtimes.current.get(sm.id)
+      const claudeSid = rt?.claude?.adapter.sessionId
+      const codexSid = rt?.codex?.adapter.sessionId
+      if (claudeSid) sm.sessionId = claudeSid
+      if (codexSid) sm.codexSessionId = codexSid
     }
     await saveProject(projIdRef.current, metaRef.current)
   }, [])
@@ -127,7 +144,6 @@ export function useWorkspace(opts: {
 
   const activateSession = useCallback(
     async (sm: SessionMeta) => {
-      ensureRuntime(sm)
       const display = projIdRef.current ? await loadSessionDisplay(projIdRef.current, sm.id) : null
       opts.setMessages(display ?? [])
       activeSessRef.current = sm.id
@@ -287,10 +303,11 @@ export function useWorkspace(opts: {
   }, [persistActive, opts, syncLists, newSession, newCanvas, activateSession, activateCanvas])
 
   // Stable (reads refs), so the engine's getConv closure captured once stays live across switches.
-  const activeConv = useCallback(() => {
+  const activeConv = useCallback((agent: AgentKind = 'claude') => {
     const id = activeSessRef.current
-    return id ? runtimes.current.get(id)?.conv ?? null : null
-  }, [])
+    const sm = metaRef.current?.sessions.find((s) => s.id === id)
+    return sm ? ensureRuntime(sm, agent).conv : null
+  }, [ensureRuntime])
 
   return {
     projectName,

@@ -109,7 +109,7 @@ export function Chat({
           <select
             value={engineId}
             onChange={(e) => onSelectEngine(e.target.value)}
-            title="选择引擎：画布助手 / Claude Code"
+            title="选择引擎：画布助手 / 本地 agent"
             style={{ marginLeft: 8 }}
           >
             {engines.map((e) => (
@@ -129,7 +129,7 @@ export function Chat({
         >
           {debug ? 'Debug ✓' : 'Debug'}
         </button>
-        <button onClick={onOpenSettings} title="设置（Claude 可执行文件路径等）">
+        <button onClick={onOpenSettings} title="设置（本地 agent 可执行文件路径等）">
           ⚙
         </button>
         <button onClick={onConfigureKey} title="设置 Poe API Key">

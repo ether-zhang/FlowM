@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use tauri::ipc::Channel;
@@ -79,6 +80,15 @@ async fn poe_chat(app: AppHandle, body: serde_json::Value) -> Result<serde_json:
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum ClaudeEvent {
+    Stdout { line: String },
+    Stderr { line: String },
+    Exit { code: Option<i32> },
+}
+
+/// One line of streamed output (or the exit) from a spawned `codex` process.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum CodexEvent {
     Stdout { line: String },
     Stderr { line: String },
     Exit { code: Option<i32> },
@@ -222,6 +232,217 @@ fn default_claude_bin(app: AppHandle) -> String {
     resolve_claude_bin(&app)
 }
 
+fn resolve_codex_bin(app: &AppHandle) -> String {
+    let exe = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let home = app.path().home_dir().ok();
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(h) = &home {
+        if cfg!(windows) {
+            // Preferred native desktop-app install location.
+            candidates.push(
+                h.join("AppData")
+                    .join("Local")
+                    .join("Programs")
+                    .join("OpenAI")
+                    .join("Codex")
+                    .join("bin")
+                    .join(exe),
+            );
+            candidates.push(h.join("AppData").join("Roaming").join("npm").join(exe));
+            if let Ok(entries) = fs::read_dir(h.join(".vscode").join("extensions")) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with("openai.chatgpt-") {
+                        candidates.push(
+                            entry
+                                .path()
+                                .join("bin")
+                                .join("windows-x86_64")
+                                .join(exe),
+                        );
+                    }
+                }
+            }
+        } else {
+            candidates.push(h.join(".local").join("bin").join(exe));
+            candidates.push(h.join(".npm-global").join("bin").join(exe));
+        }
+    }
+    if !cfg!(windows) {
+        candidates.push(PathBuf::from("/opt/homebrew/bin").join(exe));
+        candidates.push(PathBuf::from("/usr/local/bin").join(exe));
+    }
+
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| exe.to_string())
+}
+
+#[tauri::command]
+fn default_codex_bin(app: AppHandle) -> String {
+    resolve_codex_bin(&app)
+}
+
+fn codex_sandbox_mode(read_only: Option<bool>) -> &'static str {
+    if cfg!(windows) {
+        // Codex Agent mode on native Windows currently depends on a sandbox helper that may be
+        // absent from the desktop/extension bundles. Use the CLI's explicit no-sandbox mode so
+        // local project reads do not fail before the model can inspect files.
+        return "danger-full-access";
+    }
+    if read_only.unwrap_or(false) {
+        "read-only"
+    } else {
+        "workspace-write"
+    }
+}
+
+fn is_codex_windows_sandbox_helper_failure(line: &str) -> bool {
+    line.contains("orchestrator_helper_launch_failed")
+        && line.contains("codex-windows-sandbox-setup.exe")
+}
+
+fn unique_flowm_file(cwd: &str, stem: &str, ext: &str) -> Result<PathBuf, String> {
+    let dir = PathBuf::from(cwd).join(".flowm");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    Ok(dir.join(format!("{stem}-{n}.{ext}")))
+}
+
+/// Spawn the user's local `codex` CLI in non-interactive JSON mode and stream events back to the
+/// renderer. When `output_schema` is provided, Codex receives it through --output-schema and the
+/// command returns the final message file content after exit.
+#[tauri::command]
+async fn codex_run(
+    bin: Option<String>,
+    prompt: String,
+    cwd: String,
+    output_schema: Option<String>,
+    resume: Option<String>,
+    image: Option<String>,
+    read_only: Option<bool>,
+    on_event: Channel<CodexEvent>,
+) -> Result<Option<String>, String> {
+    let bin = bin.unwrap_or_else(|| "codex".to_string());
+    let last_path = unique_flowm_file(&cwd, "codex-last", "txt")?;
+    let schema_path = if let Some(schema) = &output_schema {
+        let path = unique_flowm_file(&cwd, "codex-schema", "json")?;
+        fs::write(&path, schema).map_err(|e| e.to_string())?;
+        Some(path)
+    } else {
+        None
+    };
+
+    let mut cmd = TokioCommand::new(&bin);
+    cmd.arg("--sandbox")
+        .arg(codex_sandbox_mode(read_only))
+        .arg("--ask-for-approval")
+        .arg("never")
+        .arg("exec");
+
+    if resume.is_some() {
+        cmd.arg("resume");
+    }
+    cmd.arg("--json")
+        .arg("--output-last-message")
+        .arg(&last_path);
+    if let Some(path) = &schema_path {
+        cmd.arg("--output-schema").arg(path);
+    }
+    if let Some(img) = &image {
+        cmd.arg("--image").arg(img);
+    }
+    if let Some(session) = &resume {
+        cmd.arg(session);
+    }
+    cmd.arg("-");
+
+    let mut child = cmd
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            format!("spawn `{bin}` failed: {e} — is Codex CLI installed and on PATH? Set the full path to codex.exe in FlowM settings")
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(prompt.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        });
+    }
+
+    let stdout = child.stdout.take().ok_or("no stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("no stderr pipe")?;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CodexEvent>();
+    let tx_err = tx.clone();
+    let h_out = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx.send(CodexEvent::Stdout { line }).is_err() {
+                break;
+            }
+        }
+    });
+    let h_err = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx_err.send(CodexEvent::Stderr { line }).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut fatal_sandbox_error: Option<String> = None;
+    while let Some(ev) = rx.recv().await {
+        if let CodexEvent::Stderr { line } = &ev {
+            if is_codex_windows_sandbox_helper_failure(line) {
+                fatal_sandbox_error = Some(
+                    "Codex Windows sandbox helper is missing. FlowM stopped this run; use the native Codex app path or rerun after updating Codex/WSL."
+                        .to_string(),
+                );
+            }
+        }
+        let _ = on_event.send(ev);
+        if fatal_sandbox_error.is_some() {
+            break;
+        }
+    }
+    if fatal_sandbox_error.is_some() {
+        let _ = child.start_kill();
+    }
+    let _ = h_out.await;
+    let _ = h_err.await;
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let _ = on_event.send(CodexEvent::Exit { code: status.code() });
+
+    let _ = schema_path.as_ref().map(fs::remove_file);
+    if let Some(msg) = fatal_sandbox_error {
+        let _ = fs::remove_file(&last_path);
+        return Err(msg);
+    }
+    let last = match fs::read_to_string(&last_path) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.to_string()),
+    };
+    let _ = fs::remove_file(&last_path);
+    if !status.success() {
+        return Err(format!("Codex exited with {}", status.code().unwrap_or(-1)));
+    }
+    Ok(last)
+}
+
 /// Write FlowM's drawing guide to `<cwd>/CLAUDE.local.md` — the project "switch" Claude Code
 /// auto-loads on every invocation (and prompt-caches across --resume). FlowM owns this file;
 /// CLAUDE.local.md is conventionally gitignored, so it doesn't pollute the user's tracked repo.
@@ -361,6 +582,8 @@ pub fn run() {
             poe_chat,
             claude_run,
             default_claude_bin,
+            codex_run,
+            default_codex_bin,
             write_guide,
             write_design,
             flowm_read,

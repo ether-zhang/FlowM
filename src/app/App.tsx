@@ -2,18 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { PoeAdapter, TauriAdapter, ClaudeAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
+import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { FilePanel, FloatingEditor, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { CanvasEngine, ClaudeEngine, defaultClaudeBin, type ChatEngine } from '../engine'
+import { CanvasEngine, ClaudeEngine, CodexEngine, defaultClaudeBin, defaultCodexBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
 // Persisted across restarts so heavy iteration doesn't mean re-picking the engine / re-typing the path.
 const BIN_STORAGE = 'flowm.bin'
+const CODEX_BIN_STORAGE = 'flowm.codexBin'
 const ENGINE_STORAGE = 'flowm.engine'
 // Shell pane geometry (files left / chat right), persisted so the layout survives restarts.
 const FILES_W_STORAGE = 'flowm.filesW'
@@ -24,6 +25,8 @@ const numFromStorage = (k: string, fallback: number) => {
   const n = Number(localStorage.getItem(k))
   return Number.isFinite(n) && n > 0 ? n : fallback
 }
+
+const isVsCodeBundledCodex = (p: string) => /[\\/]\.vscode[\\/]extensions[\\/]openai\.chatgpt-/i.test(p)
 
 /** Render one outgoing model request as readable text for the debug panel. */
 function formatRequest(params: RunTurnParams, iteration: number): string {
@@ -90,6 +93,8 @@ export function App() {
   // `claude` spawn; empty means "resolve `claude` via PATH".
   const binRef = useRef(localStorage.getItem(BIN_STORAGE) ?? '')
   const [bin, setBin] = useState(binRef.current)
+  const codexBinRef = useRef(localStorage.getItem(CODEX_BIN_STORAGE) ?? '')
+  const [codexBin, setCodexBin] = useState(codexBinRef.current)
 
   // Shell pane geometry. Panels are data-driven (side + width + shown) so a future VSCode-style
   // rearrange only changes this state, not the render — the seam is here. Defaults keep the centre
@@ -119,6 +124,10 @@ export function App() {
   if (IS_TAURI && !claudeConvRef.current) {
     claudeConvRef.current = new Conversation(new ClaudeAdapter(() => cwdRef.current, () => binRef.current))
   }
+  const codexConvRef = useRef<Conversation | null>(null)
+  if (IS_TAURI && !codexConvRef.current) {
+    codexConvRef.current = new Conversation(new CodexAdapter(() => cwdRef.current, () => codexBinRef.current))
+  }
 
   // A live mirror of `messages` so the workspace's async save/switch reads the latest bubbles
   // (a state closure would be stale). Kept in sync by the effect below.
@@ -139,6 +148,7 @@ export function App() {
     setMessages,
     getCwd: () => cwdRef.current,
     getBin: () => binRef.current,
+    getCodexBin: () => codexBinRef.current,
     setFolder,
   })
 
@@ -155,7 +165,9 @@ export function App() {
       ? [
           poe,
           new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手 · Claude', debugViaAdapter: true }),
+          new CanvasEngine(() => ws.activeConv('codex') ?? codexConvRef.current, () => portRef.current, { id: 'canvas-codex', label: '画布助手 · Codex', debugViaAdapter: true }),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
+          new CodexEngine(() => cwdRef.current, () => portRef.current, () => codexBinRef.current),
         ]
       : [poe]
   }
@@ -191,6 +203,16 @@ export function App() {
       if (!binRef.current) {
         binRef.current = p
         setBin(p)
+      }
+    })
+  }, [])
+  useEffect(() => {
+    if (!IS_TAURI) return
+    defaultCodexBin().then((p) => {
+      if (!codexBinRef.current || (isVsCodeBundledCodex(codexBinRef.current) && p !== codexBinRef.current)) {
+        codexBinRef.current = p
+        setCodexBin(p)
+        localStorage.setItem(CODEX_BIN_STORAGE, p)
       }
     })
   }, [])
@@ -319,17 +341,17 @@ export function App() {
     convRef.current?.reset(project.api)
   }, [])
 
-  const isClaude = engineId.includes('claude') // canvas-claude + build both need a cwd, not a key
-  const canSend = isClaude ? !!cwd.trim() : apiKeySet
+  const isLocalAgent = engineId.includes('claude') || engineId.includes('codex')
+  const canSend = isLocalAgent ? !!cwd.trim() : apiKeySet
   const placeholder = canSend
     ? '描述需求…（Enter 发送）'
-    : isClaude
+    : isLocalAgent
       ? '请先打开工程（右侧文件栏「打开工程」）'
       : '请先设置 Poe API Key'
   // The Claude canvas engine's config row is just the session switcher now; 打开工程 moved to the file
   // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
   const engineConfig =
-    engineId === 'canvas-claude' ? (
+    (engineId === 'canvas-claude' || engineId === 'canvas-codex') ? (
       <PickerBar
         items={ws.sessions}
         activeId={ws.activeSessionId}
@@ -443,8 +465,9 @@ export function App() {
         <div className="modal" onClick={(e) => e.stopPropagation()}>
           <h3 className="modal-title">设置</h3>
           <p className="modal-hint">
-            Claude 可执行文件路径。留空则用 PATH 中的 <code>claude</code>；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
+            本地 agent 可执行文件路径。留空则使用 PATH；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
           </p>
+          <p className="modal-hint">Claude</p>
           <input
             className="modal-input"
             autoFocus
@@ -454,6 +477,21 @@ export function App() {
               binRef.current = e.target.value
               setBin(e.target.value)
               localStorage.setItem(BIN_STORAGE, e.target.value)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
+            }}
+            style={{ fontFamily: 'monospace' }}
+          />
+          <p className="modal-hint">Codex</p>
+          <input
+            className="modal-input"
+            value={codexBin}
+            placeholder="如 /Users/you/.local/bin/codex 或 codex.exe 的完整路径"
+            onChange={(e) => {
+              codexBinRef.current = e.target.value
+              setCodexBin(e.target.value)
+              localStorage.setItem(CODEX_BIN_STORAGE, e.target.value)
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
