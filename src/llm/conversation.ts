@@ -35,10 +35,9 @@ const MAX_ITERATIONS = 8
 /** Tools the model may call: the canvas ops plus the structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
 
-const REVIEW_PROMPT = `Here is your drawing as it actually rendered, shown IN CONTEXT — the image covers the whole area your new work occupies, so it may also include EXISTING shapes you did not just make. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Review it ONCE:
-- Fix anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping). If your new work overlaps or crowds an EXISTING shape, move YOUR new shapes to clear it — don't rearrange the existing ones.
-- If you spot a real structure you didn't already declare — a connected chain, a grid, a nesting — call \`declare_structure\` for it (by shape id).
-- If it already looks right, reply briefly with NO tool calls.`
+const REVIEW_PROMPT = `Here is your drawing as it actually rendered, shown IN CONTEXT — the image covers the whole area your new work occupies, so it may also include EXISTING shapes you did not just make. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Do TWO things:
+1. FIX LAYOUT (tool calls): move anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping); if your new work overlaps or crowds an EXISTING shape, move YOUR new shapes to clear it — don't rearrange the existing ones. If you spot a real structure you didn't already declare (a connected chain, a grid, a nesting) call \`declare_structure\` for it (by shape id). If the layout already looks right, make NO tool calls.
+2. EXPLAIN (reply): Now that the diagram has been finalized, provide a detailed explanation in the reply — go through each element you drew in this round one by one, using their real labels / names, and explain the role of each element as well as the inputs and outputs they receive (if any), in the user’s language. This is the per-node explanation that was deferred during the build phase; make it complete and do not limit it to a single sentence.`
 
 interface OpCall {
   id: string
