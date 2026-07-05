@@ -70,6 +70,8 @@ export function Chat({
 }: ChatProps) {
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
+  const engineMenuRef = useRef<HTMLDivElement>(null)
+  const [engineMenuOpen, setEngineMenuOpen] = useState(false)
   // IME (CJK) guards for Enter-to-send. No single signal is reliable across webviews, so onKeyDown
   // combines them. `composingRef` is true between compositionstart and compositionend.
   const composingRef = useRef(false)
@@ -90,6 +92,22 @@ export function Chat({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
   }, [messages])
 
+  useEffect(() => {
+    if (!engineMenuOpen) return
+    const closeOnOutside = (e: PointerEvent) => {
+      if (!engineMenuRef.current?.contains(e.target as Node)) setEngineMenuOpen(false)
+    }
+    const closeOnEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEngineMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [engineMenuOpen])
+
   const send = () => {
     const t = text.trim()
     if (!t || busy) return
@@ -97,23 +115,45 @@ export function Chat({
     setText('')
   }
 
+  const activeEngine = engines.find((e) => e.id === engineId) ?? engines[0]
+
   return (
     <div className="chat">
       <header className="chat-bar">
         <strong>FlowM</strong>
         {engines.length > 1 && (
-          <select
-            value={engineId}
-            onChange={(e) => onSelectEngine(e.target.value)}
-            title="选择引擎：画布助手 / 本地 agent"
-            style={{ marginLeft: 8 }}
-          >
-            {engines.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.label}
-              </option>
-            ))}
-          </select>
+          <div className="engine-menu" ref={engineMenuRef}>
+            <button
+              type="button"
+              className="chat-engine-select"
+              aria-haspopup="listbox"
+              aria-expanded={engineMenuOpen}
+              title="选择画布助手"
+              onClick={() => setEngineMenuOpen((open) => !open)}
+            >
+              <span>{activeEngine?.label ?? '画布助手'}</span>
+              <span className="engine-chevron" aria-hidden="true" />
+            </button>
+            {engineMenuOpen && (
+              <div className="engine-menu-list" role="listbox" aria-label="选择画布助手">
+                {engines.map((e) => (
+                  <button
+                    key={e.id}
+                    type="button"
+                    role="option"
+                    aria-selected={e.id === engineId}
+                    className={`engine-option${e.id === engineId ? ' active' : ''}`}
+                    onClick={() => {
+                      onSelectEngine(e.id)
+                      setEngineMenuOpen(false)
+                    }}
+                  >
+                    {e.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
         <span className="spacer" />
         <button onClick={onSave} title="保存工程">保存</button>
@@ -125,7 +165,7 @@ export function Chat({
         >
           {debug ? 'Debug ✓' : 'Debug'}
         </button>
-        <button onClick={onOpenSettings} title="设置（API 与本地 agent）">
+        <button onClick={onOpenSettings} title="设置（API 与本地Agent）">
           ⚙
         </button>
       </header>

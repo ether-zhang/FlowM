@@ -160,22 +160,23 @@ export function App() {
   if (!enginesRef.current) {
     const poe = new CanvasEngine(() => convRef.current, () => portRef.current, {
       id: 'canvas',
-      label: '画布助手 API',
+      label: '画布助手·API',
     })
     enginesRef.current = IS_TAURI
       ? [
           poe,
-          new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手 · Claude', debugViaAdapter: true }),
-          new CanvasEngine(() => ws.activeConv('codex') ?? codexConvRef.current, () => portRef.current, { id: 'canvas-codex', label: '画布助手 · Codex', debugViaAdapter: true }),
+          new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手·Claude', debugViaAdapter: true }),
+          new CanvasEngine(() => ws.activeConv('codex') ?? codexConvRef.current, () => portRef.current, { id: 'canvas-codex', label: '画布助手·Codex', debugViaAdapter: true }),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
           new CodexEngine(() => cwdRef.current, () => portRef.current, () => codexBinRef.current),
         ]
       : [poe]
   }
   const engines = enginesRef.current
+  const visibleEngines = engines.filter((e) => e.id !== 'claude' && e.id !== 'codex')
   const [engineId, setEngineId] = useState(() => {
     const saved = localStorage.getItem(ENGINE_STORAGE)
-    return saved && engines.some((e) => e.id === saved) ? saved : 'canvas'
+    return saved && visibleEngines.some((e) => e.id === saved) ? saved : 'canvas'
   })
 
   // Tauri's adapter keeps the API key in Rust; the browser adapter keeps it in localStorage.
@@ -405,7 +406,7 @@ export function App() {
           busy={busy}
           canSend={canSend}
           debug={debug}
-          engines={engines.map((e) => ({ id: e.id, label: e.label }))}
+          engines={visibleEngines.map((e) => ({ id: e.id, label: e.label }))}
           engineId={engineId}
           onSelectEngine={(id) => {
             setEngineId(id)
@@ -492,7 +493,7 @@ export function App() {
             <button className="primary" disabled={!apiKeyInput.trim()} onClick={saveApiKey}>保存 Key</button>
           </div>
 
-          <p className="modal-hint"><strong>本地 Agent</strong></p>
+          <p className="modal-hint"><strong>本地Agent</strong></p>
           <p className="modal-hint">
             可执行文件路径。留空则使用 PATH；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
           </p>
