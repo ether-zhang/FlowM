@@ -18,11 +18,18 @@ export const MODEL = 'claude-opus-4.8'
  * proxy — the direct URL will CORS-fail. The Tauri build avoids this entirely by
  * making the HTTP call from Rust (see src/llm/tauri.ts).
  */
-function resolveBaseUrl(): string {
-  if (import.meta.env.DEV && typeof window !== 'undefined') {
+export function normalizeApiBaseUrl(baseUrl: string): string {
+  return (baseUrl.trim() || POE_BASE_URL)
+    .replace(/\/+$/, '')
+    .replace(/\/chat\/completions$/i, '')
+}
+
+function resolveBaseUrl(baseUrl: string): string {
+  const normalized = normalizeApiBaseUrl(baseUrl)
+  if (normalized === POE_BASE_URL && import.meta.env.DEV && typeof window !== 'undefined') {
     return `${window.location.origin}/poe/v1`
   }
-  return POE_BASE_URL
+  return normalized
 }
 
 function toOpenAiMessages(system: string, messages: LlmMessage[]): ChatCompletionMessageParam[] {
@@ -132,14 +139,21 @@ export function parseTurn(res: ChatResponseLike, cb: TurnCallbacks): LlmTurn {
  * MVP use; the Tauri build moves the call behind a Rust command (see tauri.ts).
  */
 export class PoeAdapter implements LlmAdapter {
-  private client: OpenAI
+  private apiKey: string
+  private getBaseUrl: () => string
 
-  constructor(apiKey: string) {
-    this.client = new OpenAI({ apiKey, baseURL: resolveBaseUrl(), dangerouslyAllowBrowser: true })
+  constructor(apiKey: string, getBaseUrl: () => string = () => POE_BASE_URL) {
+    this.apiKey = apiKey
+    this.getBaseUrl = getBaseUrl
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
-    const res = await this.client.chat.completions.create(buildChatBody(params))
+    const client = new OpenAI({
+      apiKey: this.apiKey,
+      baseURL: resolveBaseUrl(this.getBaseUrl()),
+      dangerouslyAllowBrowser: true,
+    })
+    const res = await client.chat.completions.create(buildChatBody(params))
     return parseTurn(res as ChatResponseLike, cb)
   }
 }

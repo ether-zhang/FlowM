@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmTurn } from './types'
-import { buildChatBody, parseTurn, type ChatResponseLike } from './poe'
+import { buildChatBody, normalizeApiBaseUrl, parseTurn, POE_BASE_URL, type ChatResponseLike } from './poe'
 
 /**
  * Desktop adapter: builds the same OpenAI-format request as the browser adapter
@@ -10,9 +10,18 @@ import { buildChatBody, parseTurn, type ChatResponseLike } from './poe'
  * browser CORS restriction.
  */
 export class TauriAdapter implements LlmAdapter {
+  private getBaseUrl: () => string
+
+  constructor(getBaseUrl: () => string = () => POE_BASE_URL) {
+    this.getBaseUrl = getBaseUrl
+  }
+
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
     const body = buildChatBody(params)
-    const res = await invoke<ChatResponseLike>('poe_chat', { body })
+    const res = await invoke<ChatResponseLike>('poe_chat', {
+      body,
+      baseUrl: normalizeApiBaseUrl(this.getBaseUrl()),
+    })
     return parseTurn(res, cb)
   }
 }

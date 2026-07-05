@@ -8,7 +8,6 @@ export interface ChatProps {
   busy: boolean
   /** Whether the selected engine can send right now (key set / dir filled). */
   canSend: boolean
-  apiKeySet: boolean
   debug: boolean
   /** Engines to choose between; the selector hides itself when there's only one. */
   engines: { id: string; label: string }[]
@@ -18,7 +17,6 @@ export interface ChatProps {
   engineConfig?: React.ReactNode
   placeholder: string
   onSend: (text: string) => void
-  onConfigureKey: () => void
   onToggleDebug: () => void
   onOpenSettings: () => void
   onSave: () => void
@@ -58,7 +56,6 @@ export function Chat({
   messages,
   busy,
   canSend,
-  apiKeySet,
   debug,
   engines,
   engineId,
@@ -66,7 +63,6 @@ export function Chat({
   engineConfig,
   placeholder,
   onSend,
-  onConfigureKey,
   onToggleDebug,
   onOpenSettings,
   onSave,
@@ -129,11 +125,8 @@ export function Chat({
         >
           {debug ? 'Debug ✓' : 'Debug'}
         </button>
-        <button onClick={onOpenSettings} title="设置（本地 agent 可执行文件路径等）">
+        <button onClick={onOpenSettings} title="设置（API 与本地 agent）">
           ⚙
-        </button>
-        <button onClick={onConfigureKey} title="设置 Poe API Key">
-          {apiKeySet ? 'Key ✓' : 'Key'}
         </button>
       </header>
 

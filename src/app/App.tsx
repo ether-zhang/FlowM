@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, tauriKey, Conversation, type RunTurnParams } from '../llm'
+import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
 import { FilePanel, FloatingEditor, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
@@ -12,6 +12,7 @@ import { IS_TAURI } from '../runtime'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
+const API_URL_STORAGE = 'flowm.apiUrl'
 // Persisted across restarts so heavy iteration doesn't mean re-picking the engine / re-typing the path.
 const BIN_STORAGE = 'flowm.bin'
 const CODEX_BIN_STORAGE = 'flowm.codexBin'
@@ -69,12 +70,12 @@ export function App() {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
   const [debug, setDebug] = useState(false)
-  // Key entry uses an in-app dialog, NOT window.prompt: WKWebView (macOS Tauri) and WebKitGTK
-  // (Linux) don't implement window.prompt — it returns null, so the key could never be set on
-  // the desktop app. A React <input> works on every platform.
-  const [keyDialogOpen, setKeyDialogOpen] = useState(false)
-  const [keyInput, setKeyInput] = useState('')
-  // Settings dialog holds the claude executable path (moved out of the chat config row).
+  const initialApiUrl = localStorage.getItem(API_URL_STORAGE) ?? POE_BASE_URL
+  const apiUrlRef = useRef(initialApiUrl)
+  const [apiUrl, setApiUrl] = useState(initialApiUrl)
+  // The saved API key is never prefilled; this field only holds a replacement typed in Settings.
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  // Settings dialog holds API config and local agent executable paths.
   const [settingsOpen, setSettingsOpen] = useState(false)
   // A small confirm dialog for destructive actions (delete session / canvas). Rename is inline in
   // the picker (double-click), so it needs no dialog. `onOk` runs on 删除.
@@ -153,13 +154,13 @@ export function App() {
   })
 
   // Selectable chat engines (decoupled behind ChatEngine). They read live conv/port/cwd via
-  // getters, so they stay valid as those are recreated. On desktop: the Poe canvas assistant,
+  // getters, so they stay valid as those are recreated. On desktop: the API canvas assistant,
   // the SAME canvas assistant backed by Claude Code, and the build engine (画布 → 工程).
   const enginesRef = useRef<ChatEngine[] | null>(null)
   if (!enginesRef.current) {
     const poe = new CanvasEngine(() => convRef.current, () => portRef.current, {
       id: 'canvas',
-      label: IS_TAURI ? '画布助手 · Poe' : '画布助手',
+      label: '画布助手 API',
     })
     enginesRef.current = IS_TAURI
       ? [
@@ -177,9 +178,11 @@ export function App() {
     return saved && engines.some((e) => e.id === saved) ? saved : 'canvas'
   })
 
-  // Tauri's adapter needs no client-side key; the browser's PoeAdapter does.
+  // Tauri's adapter keeps the API key in Rust; the browser adapter keeps it in localStorage.
   const ensureConversation = useCallback((key?: string) => {
-    const adapter = IS_TAURI ? new TauriAdapter() : new PoeAdapter(key ?? '')
+    const adapter = IS_TAURI
+      ? new TauriAdapter(() => apiUrlRef.current)
+      : new PoeAdapter(key ?? '', () => apiUrlRef.current)
     const prev = convRef.current
     const conv = new Conversation(adapter)
     if (prev) conv.reset(prev.messages) // preserve history across key changes
@@ -251,24 +254,9 @@ export function App() {
   const appendToMessage = (id: string, delta: string) =>
     setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, text: msg.text + delta } : msg)))
 
-  // The Key button just opens the dialog; the input starts empty (the stored key is never
-  // prefilled — in Tauri it lives in the backend and is never exposed to the renderer).
-  const onConfigureKey = useCallback(() => {
-    setKeyInput('')
-    setKeyDialogOpen(true)
-  }, [])
-
-  // Save the dialog's key. Empty input clears the stored key. Storage branches by platform
-  // (Tauri backend file vs localStorage); the rest is identical.
-  const submitKey = useCallback(async () => {
-    const key = keyInput.trim()
-    setKeyDialogOpen(false)
-    if (!key) {
-      if (IS_TAURI) await tauriKey.clear()
-      else localStorage.removeItem(KEY_STORAGE)
-      setApiKeySet(false)
-      return
-    }
+  const saveApiKey = async () => {
+    const key = apiKeyInput.trim()
+    if (!key) return
     if (IS_TAURI) {
       await tauriKey.set(key)
       ensureConversation()
@@ -277,13 +265,21 @@ export function App() {
       ensureConversation(key)
     }
     setApiKeySet(true)
-  }, [keyInput, ensureConversation])
+    setApiKeyInput('')
+  }
+
+  const clearApiKey = async () => {
+    if (IS_TAURI) await tauriKey.clear()
+    else localStorage.removeItem(KEY_STORAGE)
+    setApiKeySet(false)
+    setApiKeyInput('')
+  }
 
   const onSend = useCallback(
     async (text: string) => {
       const engine = engines.find((e) => e.id === engineId)
       if (!engine) return
-      // The Poe canvas engine needs a live Conversation; create it on first use.
+      // The API canvas engine needs a live Conversation; create it on first use.
       if (engineId === 'canvas' && !convRef.current) {
         if (IS_TAURI) ensureConversation()
         else {
@@ -347,7 +343,7 @@ export function App() {
     ? '描述需求…（Enter 发送）'
     : isLocalAgent
       ? '请先打开工程（右侧文件栏「打开工程」）'
-      : '请先设置 Poe API Key'
+      : '请先在设置中填写 API Key'
   // The Claude canvas engine's config row is just the session switcher now; 打开工程 moved to the file
   // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
   const engineConfig =
@@ -368,7 +364,7 @@ export function App() {
     <>
     {/* Shell: 文件左 · 画布中 · 对话右. Panes are data-driven (width/shown state above), so widths
         drag-resize and the file pane hides — and a future VSCode-style rearrange only touches that
-        state. The file pane is desktop-only; browser (Poe) mode is just 画布中 · 对话右. */}
+        state. The file pane is desktop-only; browser API mode is just 画布中 · 对话右. */}
     <div className="layout">
       {IS_TAURI && filesShown && (
         <>
@@ -408,7 +404,6 @@ export function App() {
           messages={messages}
           busy={busy}
           canSend={canSend}
-          apiKeySet={apiKeySet}
           debug={debug}
           engines={engines.map((e) => ({ id: e.id, label: e.label }))}
           engineId={engineId}
@@ -419,7 +414,6 @@ export function App() {
           engineConfig={engineConfig}
           placeholder={placeholder}
           onSend={onSend}
-          onConfigureKey={onConfigureKey}
           onToggleDebug={() => setDebug((d) => !d)}
           onOpenSettings={() => setSettingsOpen(true)}
           onSave={onSave}
@@ -464,13 +458,47 @@ export function App() {
       <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
           <h3 className="modal-title">设置</h3>
+          <p className="modal-hint"><strong>API</strong></p>
+          <p className="modal-hint">OpenAI-compatible URL</p>
+          <input
+            className="modal-input"
+            autoFocus
+            value={apiUrl}
+            placeholder={POE_BASE_URL}
+            onChange={(e) => {
+              apiUrlRef.current = e.target.value
+              setApiUrl(e.target.value)
+              localStorage.setItem(API_URL_STORAGE, e.target.value)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
+            }}
+            style={{ fontFamily: 'monospace' }}
+          />
+          <p className="modal-hint">API Key（{apiKeySet ? '已设置' : '未设置'}）</p>
+          <input
+            className="modal-input"
+            type="password"
+            value={apiKeyInput}
+            placeholder={apiKeySet ? '留空表示不修改已保存 Key' : '输入 API Key'}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void saveApiKey()
+              else if (e.key === 'Escape') setSettingsOpen(false)
+            }}
+          />
+          <div className="modal-actions">
+            <button onClick={clearApiKey}>清除 Key</button>
+            <button className="primary" disabled={!apiKeyInput.trim()} onClick={saveApiKey}>保存 Key</button>
+          </div>
+
+          <p className="modal-hint"><strong>本地 Agent</strong></p>
           <p className="modal-hint">
-            本地 agent 可执行文件路径。留空则使用 PATH；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
+            可执行文件路径。留空则使用 PATH；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
           </p>
           <p className="modal-hint">Claude</p>
           <input
             className="modal-input"
-            autoFocus
             value={bin}
             placeholder="如 /Users/you/.local/bin/claude 或 claude.exe 的完整路径"
             onChange={(e) => {
@@ -500,35 +528,6 @@ export function App() {
           />
           <div className="modal-actions">
             <button className="primary" onClick={() => setSettingsOpen(false)}>完成</button>
-          </div>
-        </div>
-      </div>
-    )}
-
-    {keyDialogOpen && (
-      <div className="modal-backdrop" onClick={() => setKeyDialogOpen(false)}>
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <h3 className="modal-title">设置 Poe API Key</h3>
-          <p className="modal-hint">
-            {IS_TAURI
-              ? '存于桌面后端文件，不进入渲染层。留空并确定可清除。'
-              : '仅存于本地 localStorage。留空并确定可清除。'}
-          </p>
-          <input
-            className="modal-input"
-            type="password"
-            autoFocus
-            value={keyInput}
-            placeholder="在 poe.com/api/keys 获取"
-            onChange={(e) => setKeyInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submitKey()
-              else if (e.key === 'Escape') setKeyDialogOpen(false)
-            }}
-          />
-          <div className="modal-actions">
-            <button onClick={() => setKeyDialogOpen(false)}>取消</button>
-            <button className="primary" onClick={submitKey}>确定</button>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 //! FlowM desktop backend.
 //!
-//! Keeps the Poe API key out of the renderer: the key is stored in a file under
+//! Keeps the API key out of the renderer: the key is stored in a file under
 //! the app config dir, and the LLM HTTP call is made here in Rust (so the key
 //! never enters JS, and native HTTP has no browser CORS restriction).
 
@@ -15,9 +15,9 @@ use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
-const POE_URL: &str = "https://api.poe.com/v1/chat/completions";
+const DEFAULT_API_BASE_URL: &str = "https://api.poe.com/v1";
 
-/// Path of the file holding the Poe API key (created on demand).
+/// Path of the file holding the API key (created on demand).
 fn key_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -54,14 +54,33 @@ fn clear_api_key(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn chat_completions_url(base_url: Option<String>) -> String {
+    let trimmed = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_API_BASE_URL)
+        .trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
+    }
+}
+
 /// Authenticated thin proxy: forward an OpenAI-format chat-completions body to
-/// Poe with the stored key, return Poe's JSON response verbatim.
+/// the configured API endpoint with the stored key, return JSON response verbatim.
 #[tauri::command]
-async fn poe_chat(app: AppHandle, body: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn poe_chat(
+    app: AppHandle,
+    body: serde_json::Value,
+    base_url: Option<String>,
+) -> Result<serde_json::Value, String> {
     let key = read_key(&app)?;
+    let url = chat_completions_url(base_url);
     let client = reqwest::Client::new();
     let res = client
-        .post(POE_URL)
+        .post(&url)
         .bearer_auth(key)
         .json(&body)
         .send()
@@ -71,7 +90,7 @@ async fn poe_chat(app: AppHandle, body: serde_json::Value) -> Result<serde_json:
     let status = res.status();
     let text = res.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("Poe {}: {}", status, text));
+        return Err(format!("API {}: {}", status, text));
     }
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
