@@ -20,6 +20,7 @@ First decide whether this request needs the canvas, then pick ONE mode:
 - create_text {op,x?,y?,text,ref?}
 - connect_shapes {op,from,to,text?}    from/to = a ref you gave a new shape, or the id of an existing shape in the canvas list
 - move_shape / update_text / delete_shape  {op,id,...}   edit an existing shape (by its id)
+- place_region {op,ids:[...],prefer?:right|below|left|above|nearest,anchorId?,margin?}   explicitly ask the FlowM framework to keep these ids together, find a nearby empty slot, move them as one unit, and re-route attached arrows
 - declare_structure {op,relations:[...]}   declare a region's structure so the framework lays it out (see below)
 Coordinates: x grows right, y grows down. Give each new shape a short ref; connect with refs.
 
@@ -48,8 +49,8 @@ Declare any regular structure you drew (a chain of connected nodes, a grid, a ne
 Reference shapes by id (returned on create, shown in the list). Don't declare free-form / mesh placement — the framework leaves it untouched.
 
 ## marks
-In the rendered image each node has an orange [n] at its top-left, matching [n] in the list — just a handle to point at a shape ("[3] overlaps [5]"), not an order / flow. Review turn: fix clear misplacements with move_shape; if it looks right, return empty operations and don't re-read the code.`
+In the rendered image each node has an orange [n] at its top-left, matching [n] in the list — just a handle to point at a shape ("[3] overlaps [5]"), not an order / flow. Review turn: fix clear misplacements with move_shape for exact local nudges, or place_region when a whole group should be moved to an empty nearby area by the framework; if it looks right, return empty operations and don't re-read the code.`
 
 export const FLOWM_CANVAS_REVIEW_PROMPT = `Here is your drawing as it actually rendered, shown IN CONTEXT — the image covers the whole area your new work occupies, so it may also include EXISTING shapes you did not just make. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Do TWO things:
-1. FIX LAYOUT (tool calls): move anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping); if your new work overlaps or crowds an EXISTING shape, move YOUR new shapes to clear it — don't rearrange the existing ones. If you spot a real structure you didn't already declare (a connected chain, a grid, a nesting) call \`declare_structure\` for it (by shape id). If the layout already looks right, make NO tool calls.
+1. FIX LAYOUT (tool calls): move anything clearly misplaced or overlapping. Use \`move_shape\` for exact local nudges. Use \`place_region\` when YOUR new shapes need to move as a group into a free area: list only the ids you are allowed to move, and the FlowM framework will choose the final empty slot, preserve the group's internal geometry, and re-route attached arrows. If your new work overlaps or crowds an EXISTING shape, move YOUR new shapes to clear it — don't rearrange the existing ones. If you spot a real structure you didn't already declare (a connected chain, a grid, a nesting) call \`declare_structure\` for it (by shape id). If the layout already looks right, make NO tool calls.
 2. EXPLAIN (reply): Now that the diagram has been finalized, provide a detailed explanation in the reply — go through each element you drew in this round one by one, using their real labels / names, and explain the role of each element as well as the inputs and outputs they receive (if any), in the user's language. This is the per-node explanation that was deferred during the build phase; make it complete and do not limit it to a single sentence.`

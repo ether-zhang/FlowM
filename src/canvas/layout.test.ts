@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOverlaps, routeBoundArrow, labelBoxSize, fitFontSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox } from './layout'
+import { resolveOverlaps, findVacantRect, routeBoundArrow, labelBoxSize, fitFontSize, normalizeSpacing, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox } from './layout'
 import { solveEndpoint, type Shape, type Pt } from './bindingGeometry'
 
 const box = (id: string, x: number, y: number, w: number, h: number, movable = true): LayoutBox => ({ id, x, y, w, h, movable })
@@ -313,5 +313,31 @@ describe('normalizeSpacing (2 — edge-direction gap rhythm)', () => {
     const labeled = normalizeSpacing([a, b], [{ from: 'a', to: 'b', labelW: 200, labelH: 24 }], { gap: 80 }).get('b')!
     const plain = normalizeSpacing([a, b], [{ from: 'a', to: 'b' }], { gap: 80 }).get('b')!
     expect(labeled.y).toBeCloseTo(plain.y, 6)
+  })
+})
+describe('findVacantRect (explicit framework placement)', () => {
+  it('keeps a clear nearest placement untouched', () => {
+    const p = findVacantRect({ x: 0, y: 0, w: 100, h: 80 }, [box('o', 300, 0, 100, 80)])
+    expect(p).toEqual({ x: 0, y: 0 })
+  })
+
+  it('places to the preferred side of an anchor when that side is clear', () => {
+    const anchor = { x: 0, y: 0, w: 120, h: 80 }
+    const p = findVacantRect({ x: 20, y: 10, w: 100, h: 60 }, [], { anchor, prefer: 'right', margin: 20 })
+    expect(p.x).toBe(anchor.x + anchor.w + 20)
+    expect(p.y).toBe(anchor.y + 10)
+  })
+
+  it('falls back to a clear slot when the preferred side is occupied', () => {
+    const moving = box('moving', 0, 0, 100, 80)
+    const anchor = { x: 0, y: 0, w: 100, h: 80 }
+    const obstacles = [
+      box('right', 120, 0, 100, 80, false),
+      box('left', -120, 0, 100, 80, false),
+      box('above', 0, -100, 100, 80, false),
+    ]
+    const p = findVacantRect(moving, obstacles, { anchor, prefer: 'right', margin: 20 })
+    const placed = { ...moving, ...p }
+    for (const o of obstacles) expect(gapBetween(placed, o)).toBeGreaterThanOrEqual(20)
   })
 })

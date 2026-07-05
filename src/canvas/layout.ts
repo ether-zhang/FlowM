@@ -106,6 +106,113 @@ export function resolveOverlaps(
   return out
 }
 
+export type PlacementPreference = 'right' | 'below' | 'left' | 'above' | 'nearest'
+
+export interface PlacementRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+const rectCenter = (r: PlacementRect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 })
+
+function rectHitsObstacle(a: PlacementRect, b: PlacementRect, margin: number): boolean {
+  return a.x < b.x + b.w + margin && a.x + a.w > b.x - margin && a.y < b.y + b.h + margin && a.y + a.h > b.y - margin
+}
+
+function placementDirectionPenalty(prefer: PlacementPreference, candidate: PlacementRect, anchor: PlacementRect): number {
+  if (prefer === 'nearest') return 0
+  const c = rectCenter(candidate)
+  const a = rectCenter(anchor)
+  if (prefer === 'right') return c.x >= a.x ? 0 : 1e9
+  if (prefer === 'left') return c.x <= a.x ? 0 : 1e9
+  if (prefer === 'below') return c.y >= a.y ? 0 : 1e9
+  return c.y <= a.y ? 0 : 1e9
+}
+
+function placementIdeal(rect: PlacementRect, anchor: PlacementRect, prefer: PlacementPreference, margin: number): Pt {
+  const ac = rectCenter(anchor)
+  if (prefer === 'right') return { x: anchor.x + anchor.w + margin + rect.w / 2, y: ac.y }
+  if (prefer === 'left') return { x: anchor.x - margin - rect.w / 2, y: ac.y }
+  if (prefer === 'below') return { x: ac.x, y: anchor.y + anchor.h + margin + rect.h / 2 }
+  if (prefer === 'above') return { x: ac.x, y: anchor.y - margin - rect.h / 2 }
+  return rectCenter(rect)
+}
+
+/**
+ * Find a clear top-left for a rectangle while treating every obstacle as pinned.
+ * This is a placement helper for explicit region moves, not an automatic layout pass:
+ * callers decide which region is authorised to move and pass every other box here as
+ * an obstacle. Pure and canvas-library agnostic.
+ */
+export function findVacantRect(
+  rect: PlacementRect,
+  obstacles: PlacementRect[],
+  opts: { prefer?: PlacementPreference; anchor?: PlacementRect; margin?: number; maxRings?: number } = {},
+): Pt {
+  const margin = opts.margin ?? MARGIN
+  const prefer = opts.prefer ?? 'nearest'
+  const anchor = opts.anchor ?? rect
+  const clear = (x: number, y: number): boolean => !obstacles.some((o) => rectHitsObstacle({ ...rect, x, y }, o, margin))
+  if (prefer === 'nearest' && clear(rect.x, rect.y)) return { x: rect.x, y: rect.y }
+
+  const candidates = new Map<string, Pt>()
+  const add = (x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+    candidates.set(`${Math.round(x * 1000)}/${Math.round(y * 1000)}`, { x, y })
+  }
+
+  const ac = rectCenter(anchor)
+  add(anchor.x + anchor.w + margin, ac.y - rect.h / 2)
+  add(anchor.x - rect.w - margin, ac.y - rect.h / 2)
+  add(ac.x - rect.w / 2, anchor.y + anchor.h + margin)
+  add(ac.x - rect.w / 2, anchor.y - rect.h - margin)
+  add(rect.x, rect.y)
+
+  const xs = new Set<number>([rect.x, anchor.x, anchor.x + anchor.w + margin, anchor.x - rect.w - margin, ac.x - rect.w / 2])
+  const ys = new Set<number>([rect.y, anchor.y, anchor.y + anchor.h + margin, anchor.y - rect.h - margin, ac.y - rect.h / 2])
+  for (const o of obstacles) {
+    xs.add(o.x - rect.w - margin)
+    xs.add(o.x + o.w + margin)
+    xs.add(o.x)
+    xs.add(o.x + o.w - rect.w)
+    ys.add(o.y - rect.h - margin)
+    ys.add(o.y + o.h + margin)
+    ys.add(o.y)
+    ys.add(o.y + o.h - rect.h)
+  }
+  for (const x of xs) for (const y of ys) add(x, y)
+
+  const step = Math.max(rect.w, rect.h, anchor.w, anchor.h) + margin
+  const rings = opts.maxRings ?? 12
+  for (let r = 1; r <= rings; r++) {
+    const d = step * r
+    add(anchor.x + anchor.w + margin + d, ac.y - rect.h / 2)
+    add(anchor.x - rect.w - margin - d, ac.y - rect.h / 2)
+    add(ac.x - rect.w / 2, anchor.y + anchor.h + margin + d)
+    add(ac.x - rect.w / 2, anchor.y - rect.h - margin - d)
+    add(ac.x - rect.w / 2 + d, ac.y - rect.h / 2 + d)
+    add(ac.x - rect.w / 2 - d, ac.y - rect.h / 2 + d)
+    add(ac.x - rect.w / 2 + d, ac.y - rect.h / 2 - d)
+    add(ac.x - rect.w / 2 - d, ac.y - rect.h / 2 - d)
+  }
+
+  const ideal = placementIdeal(rect, anchor, prefer, margin)
+  const original = rectCenter(rect)
+  const scored = [...candidates.values()]
+    .filter((p) => clear(p.x, p.y))
+    .map((p) => {
+      const candidate = { ...rect, x: p.x, y: p.y }
+      const c = rectCenter(candidate)
+      const idealScore = (c.x - ideal.x) ** 2 + (c.y - ideal.y) ** 2
+      const driftScore = (c.x - original.x) ** 2 + (c.y - original.y) ** 2
+      return { p, score: placementDirectionPenalty(prefer, candidate, anchor) + idealScore + driftScore * 0.01 }
+    })
+    .sort((a, b) => a.score - b.score)
+  return scored[0]?.p ?? { x: rect.x, y: rect.y }
+}
+
 // --- content sizing + spacing normalisation (67 + 2) ---
 
 /**

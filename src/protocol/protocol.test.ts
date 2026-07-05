@@ -34,6 +34,11 @@ describe('parseOp', () => {
   it('rejects move_shape missing coordinates', () => {
     expect(() => parseOp({ op: 'move_shape', id: 'x' })).toThrow()
   })
+
+  it('parses place_region with explicit ids and placement preference', () => {
+    const op = parseOp({ op: 'place_region', ids: ['a', 'b'], prefer: 'right', anchorId: 'p', margin: 24 })
+    expect(op).toMatchObject({ op: 'place_region', ids: ['a', 'b'], prefer: 'right', anchorId: 'p', margin: 24 })
+  })
 })
 
 describe('toolCallToOp + parseOp round-trip', () => {
@@ -42,6 +47,7 @@ describe('toolCallToOp + parseOp round-trip', () => {
       create_geo: { shape: 'diamond', x: 0, y: 0 },
       create_text: { x: 0, y: 0, text: 'hi' },
       move_shape: { id: 'a', x: 1, y: 2 },
+      place_region: { ids: ['a', 'b'], prefer: 'nearest' },
       update_text: { id: 'a', text: 'new' },
       delete_shape: { id: 'a' },
       connect_shapes: { from: 'a', to: 'b' },

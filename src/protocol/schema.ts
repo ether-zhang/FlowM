@@ -13,6 +13,8 @@ import { z } from 'zod'
 
 export const GeoKind = z.enum(['rectangle', 'ellipse', 'diamond', 'triangle'])
 export type GeoKind = z.infer<typeof GeoKind>
+export const PlacementPreference = z.enum(['right', 'below', 'left', 'above', 'nearest'])
+export type PlacementPreference = z.infer<typeof PlacementPreference>
 
 /** A shape read back from the canvas and sent to the model as context. */
 export const CanvasShape = z.object({
@@ -66,6 +68,13 @@ export const CanvasOp = z.discriminatedUnion('op', [
     y: z.number(),
   }),
   z.object({
+    op: z.literal('place_region'),
+    ids: z.array(z.string()).min(1),
+    prefer: PlacementPreference.optional(),
+    anchorId: z.string().optional(),
+    margin: z.number().nonnegative().optional(),
+  }),
+  z.object({
     op: z.literal('update_text'),
     id: z.string(),
     text: z.string(),
@@ -89,7 +98,12 @@ export interface OpResult {
   ok: boolean
   /** real id of a created shape (and the ref it was assigned, if any) */
   id?: string
+  ids?: string[]
   ref?: string
+  x?: number
+  y?: number
+  dx?: number
+  dy?: number
   error?: string
 }
 

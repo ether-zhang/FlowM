@@ -51,7 +51,7 @@ function splitTools(toolCalls: LlmToolCall[]): { opCalls: OpCall[]; declareCalls
 
 /** Ops whose ok result id is a shape the model created/moved this turn — the review
  *  looks at exactly these (not the whole canvas, which would drown a complex board). */
-const REVIEWABLE_OPS = new Set(['create_geo', 'create_text', 'connect_shapes', 'move_shape'])
+const REVIEWABLE_OPS = new Set(['create_geo', 'create_text', 'connect_shapes', 'move_shape', 'place_region'])
 
 /** Union two B-pass scopes (the per-batch declaration into the accumulated turn scope). */
 function mergeScope(into: LayoutScope | null, add: LayoutScope): LayoutScope {
@@ -306,7 +306,10 @@ export class Conversation {
       const r = results[vi++]
       if (r.ok) {
         applied++
-        if (changed && r.id && REVIEWABLE_OPS.has(r.op)) changed.add(r.id)
+        if (changed && REVIEWABLE_OPS.has(r.op)) {
+          if (r.id) changed.add(r.id)
+          if (r.ids) for (const id of r.ids) changed.add(id)
+        }
       }
       this.history.push({ role: 'tool', toolCallId: c.id, content: JSON.stringify(r) })
     }

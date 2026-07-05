@@ -13,7 +13,7 @@ import type {
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import { clusterDrawRegions, type CanvasPort, type CanvasShape, type CanvasOp, type OpResult, type LayoutScope } from '../protocol'
 import { solveArrowEndpoints } from './bindingGeometry'
-import { routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
+import { findVacantRect, routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
 import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
 import { autoLayout, type AutoEdge } from './autoLayout'
 
@@ -84,6 +84,25 @@ const center = (el: { x: number; y: number; width: number; height: number }) => 
   x: el.x + el.width / 2,
   y: el.y + el.height / 2,
 })
+const boxOf = (el: { x: number; y: number; width: number; height: number }) => ({
+  x: el.x,
+  y: el.y,
+  w: el.width,
+  h: el.height,
+})
+function unionBox(elements: readonly ExcalidrawElement[]): { x: number; y: number; w: number; h: number } {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const el of elements) {
+    minX = Math.min(minX, el.x)
+    minY = Math.min(minY, el.y)
+    maxX = Math.max(maxX, el.x + el.width)
+    maxY = Math.max(maxY, el.y + el.height)
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+}
 // Short id: the model has to copy these back verbatim when it edits an existing shape (in
 // connect_shapes / edits), so keep them brief. 8 hex chars (~4.3e9) is plenty unique per scene;
 // the `flowm-` prefix marks FlowM-created shapes apart from user-drawn (Excalidraw nanoid) ones.
@@ -581,6 +600,40 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               }
             }
             results[i] = { op: op.op, ok: true, id: el.id }
+            break
+          }
+          case 'place_region': {
+            const moveIds = new Set(op.ids)
+            const moving = op.ids
+              .map((id) => byId.get(id))
+              .filter((el): el is ExcalidrawElement => !!el && el.type !== 'arrow' && !(isText(el) && el.containerId))
+            if (moving.length === 0) {
+              results[i] = { op: op.op, ok: false, error: `no movable non-arrow shapes in ids: ${op.ids.join(', ')}` }
+              break
+            }
+
+            const region = unionBox(moving)
+            const anchorEl = op.anchorId ? byId.get(op.anchorId) : undefined
+            const anchor = anchorEl && anchorEl.type !== 'arrow' && !(isText(anchorEl) && anchorEl.containerId) ? boxOf(anchorEl) : region
+            const obstacles = [...byId.values()]
+              .filter((el) => el.type !== 'arrow' && !(isText(el) && el.containerId) && !moveIds.has(el.id))
+              .map((el) => ({ ...boxOf(el), id: el.id, movable: false }))
+            const place = findVacantRect(region, obstacles, { prefer: op.prefer, anchor, margin: op.margin })
+            const dx = place.x - region.x
+            const dy = place.y - region.y
+
+            if (dx !== 0 || dy !== 0) {
+              for (const el of moving) {
+                byId.set(el.id, newElementWith(el, { x: el.x + dx, y: el.y + dy }))
+                movedIds.add(el.id)
+              }
+              for (const t of byId.values()) {
+                if (isText(t) && t.containerId && moveIds.has(t.containerId)) {
+                  byId.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+                }
+              }
+            }
+            results[i] = { op: op.op, ok: true, ids: moving.map((el) => el.id), x: place.x, y: place.y, dx, dy }
             break
           }
           case 'update_text': {

@@ -68,6 +68,29 @@ export const canvasTools: ToolDef[] = [
     },
   },
   {
+    name: 'place_region',
+    description:
+      'Ask the FlowM framework to place a group of existing non-arrow shapes into a nearby free slot. Use this instead of guessing far-away coordinates when a region overlaps/crowds existing content. The framework keeps the listed ids together, treats unlisted shapes as obstacles, finds the final empty area, moves the group as one unit, and re-routes attached arrows.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Explicit shape ids to move together. List only shapes you are allowed to move.',
+        },
+        prefer: {
+          type: 'string',
+          enum: ['right', 'below', 'left', 'above', 'nearest'],
+          description: 'Preferred placement direction relative to anchorId, or relative to the region itself when anchorId is omitted.',
+        },
+        anchorId: { type: 'string', description: 'Optional existing shape id to place near.' },
+        margin: { type: 'number', description: 'Optional minimum clear gap in page pixels.' },
+      },
+      required: ['ids'],
+    },
+  },
+  {
     name: 'update_text',
     description: 'Replace the text/label of an existing shape.',
     parameters: {
