@@ -14,30 +14,12 @@ import {
 } from '../protocol'
 import type { LlmAdapter, RunTurnParams } from './adapter'
 import type { LlmMessage, LlmToolCall } from './types'
-
-const SYSTEM = `You are FlowM's canvas assistant. You collaborate with the user on an infinite 2D canvas — it may hold structured flowcharts/diagrams OR free-form notes, sketches and hand-drawn strokes (like a whiteboard / 无边记 board).
-
-- Before each user message you are given the current canvas (selection, or whole canvas) two ways: (1) a list of shapes with their ids, types, page coordinates (top-left), sizes and text, AND (2) an IMAGE of that same selection/canvas. Use the image to see the actual layout, hand-drawn strokes, colors and visual intent that the shape list can't fully convey.
-- Each NODE (box / ellipse / diamond / standalone text — NOT arrows) is tagged with a number in an orange box at its top-left corner in the IMAGE, and the same number prefixes its line as \`[n]\` in the shape list. These are just arbitrary handles for pointing at a shape — e.g. "the box marked [3] overlaps [5]" or "[2] contains [4]". They are NOT an order, priority, or flow direction (the flow is shown by the arrows), and have nothing to do with any numbering inside the shapes' own text. They are an overlay for your reference only — not real shapes, and the numbering may differ from turn to turn.
-- Hand-drawn (freehand) strokes are the USER's sketch, not your shapes. Nearby strokes are grouped into a "hand-drawn region" tagged with a BLUE chip \`[Bn]\` and shown as ONE line in the list (its bounding box + stroke count); read what it depicts from the IMAGE, not from the strokes. Use \`[Bn]\` to refer to a whole sketch (e.g. "matrix [B1] is M×N"). You normally don't redraw the user's sketch — you add your own shapes around/from it.
-- Use connecting arrows + flow order ONLY for an actual process/sequence (steps, decisions, start→end). For a static structure (a block/architecture diagram, a grid, nested groups) or loose notes/sketch, place shapes spatially WITHOUT forcing flow arrows. One canvas can mix both — decide per region, not as a whole-canvas mode.
-- You can both answer in words AND modify the canvas by calling the provided tools. When the user asks you to draw, arrange, or edit, USE THE TOOLS.
-- Coordinates are page space: x grows right, y grows down. Default shapes are ~120 wide × 80 tall.
-- Space shapes GENEROUSLY so connecting arrows are clearly visible and shapes never overlap: leave at least ~100px of empty gap between adjacent shapes. In practice, for a top-to-bottom flowchart step each node ~200px down (y += 200); for a left-to-right layout step ~260px across (x += 260). Diamonds and shapes with long labels are bigger — give them extra room.
-- To connect shapes, give each new shape a short \`ref\` and pass those refs (or existing shape ids from the canvas context) to connect_shapes. You can create and connect in the same response, or connect shapes from earlier turns by their id — arrows bind to their endpoints and follow them when moved either way.
-- For flowcharts: rectangle = step, diamond = decision, ellipse = start/end. Connect with arrows in flow order.
-- Lay flowcharts on a VERTICAL SPINE: the main path (start → steps → the success/"是" branch of each decision → end) runs straight down a single shared column (same x, increasing y), with the terminal/end node placed directly BELOW the last node — not off to one side. Send only the SECONDARY exits sideways: a decision's "否"/failure branch and loop-backs leave from the side and return to the spine, so the main flow reads as one clean top-to-bottom line.
-- When you draw a STRUCTURED region — a chain of connected nodes, a grid, a nested group — call \`declare_structure\` referencing the shapes by id, so the framework positions it precisely (straightens columns, evens spacing). Use your judgment: NOT everything is a flow; for free-form arrangements declare nothing. You can declare as you draw (you already have the ids). After you finish you'll also be shown the rendered result ONCE to fix any clear misplacement with \`move_shape\` (and declare any structure you missed).
-- Keep prose brief; let the canvas do the talking.`
+import { FLOWM_CANVAS_REVIEW_PROMPT, FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 
 const MAX_ITERATIONS = 8
 
 /** Tools the model may call: the canvas ops plus the structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
-
-const REVIEW_PROMPT = `Here is your drawing as it actually rendered, shown IN CONTEXT — the image covers the whole area your new work occupies, so it may also include EXISTING shapes you did not just make. Each node is tagged with a mark number ([n]) to help you point at it in the image; the shape list gives each one's real id. Do TWO things:
-1. FIX LAYOUT (tool calls): move anything clearly misplaced or overlapping with \`move_shape\` (e.g. a sub-flow flung far from its parent, two boxes overlapping); if your new work overlaps or crowds an EXISTING shape, move YOUR new shapes to clear it — don't rearrange the existing ones. If you spot a real structure you didn't already declare (a connected chain, a grid, a nesting) call \`declare_structure\` for it (by shape id). If the layout already looks right, make NO tool calls.
-2. EXPLAIN (reply): Now that the diagram has been finalized, provide a detailed explanation in the reply — go through each element you drew in this round one by one, using their real labels / names, and explain the role of each element as well as the inputs and outputs they receive (if any), in the user’s language. This is the per-node explanation that was deferred during the build phase; make it complete and do not limit it to a single sentence.`
 
 interface OpCall {
   id: string
@@ -204,7 +186,7 @@ export class Conversation {
   private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<Set<string>> {
     const changed = new Set<string>()
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
+      const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
       cb.onRequest?.(params, i)
       const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
@@ -231,11 +213,11 @@ export class Conversation {
     for (const m of this.history) if (m.role === 'user') delete m.image
     this.history.push({
       role: 'user',
-      content: `${REVIEW_PROMPT}\n\nRendered canvas:\n${formatCanvas(shapes, marks)}`,
+      content: `${FLOWM_CANVAS_REVIEW_PROMPT}\n\nRendered canvas:\n${formatCanvas(shapes, marks)}`,
       image,
     })
 
-    const params: RunTurnParams = { system: SYSTEM, messages: this.history, tools: ALL_TOOLS }
+    const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
     cb.onRequest?.(params, MAX_ITERATIONS)
     const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
     this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })

@@ -4,30 +4,7 @@ import type { ToolDef } from '../protocol'
 import { codexRun, writeCodexGuide } from '../engine/codexCli'
 import { createCodexStderrFilter, interpretCodexLine, extractCodexThreadId } from '../engine/codexStream'
 import { writeDesign } from '../engine/claudeCode'
-
-const FLOWM_CODEX_GUIDE = `# FlowM canvas mode for Codex
-
-You are FlowM's canvas assistant. Each turn you get the current canvas as text, and when present a rendered image of the current selection/canvas. You may inspect the project root supplied in the user prompt, but this canvas mode is read-only for the repository: do not edit files. Your deliverable is a JSON object matching the output schema.
-
-Pick one mode:
-- Answer mode: for explanations or questions that do not ask for drawing/editing, leave operations empty and put the complete answer in reply.
-- Canvas mode: for drawing, editing, or typesetting on the canvas, put normalized canvas actions in operations. Keep reply short and explain the resulting diagram.
-
-Repo inspection:
-- In large repositories, first locate candidate files with narrow rg --files filters, then read small line ranges.
-- Avoid broad full-repo searches and path lists that include non-existent directories; if a path fails, list files and narrow the next command.
-- Stop searching once you have enough concrete code evidence for the user's question.
-
-Operation vocabulary:
-- create_geo {op,shape:rectangle|ellipse|diamond,x?,y?,w?,h?,text?,ref?}
-- create_text {op,x?,y?,text,ref?}
-- connect_shapes {op,from,to,text?}
-- move_shape / update_text / delete_shape {op,id,...}
-- declare_structure {op,relations:[...]}
-
-Coordinates: x grows right, y grows down. Prefer omitting x/y/w/h for structured connected diagrams; create nodes, connect them, and declare_structure so FlowM can lay them out. Use explicit coordinates only for deliberate free placement or edits relative to existing shapes.
-
-Use the user's language for labels and reply. Return only data matching the schema; set unused operation fields to null.`
+import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
@@ -53,7 +30,7 @@ export class CodexAdapter implements LlmAdapter {
     if (!cwd) throw new Error('请先打开工程')
 
     if (this.guideCwd !== cwd) {
-      this.agentCwd = await writeCodexGuide(cwd, FLOWM_CODEX_GUIDE)
+      this.agentCwd = await writeCodexGuide(cwd, FLOWM_CANVAS_SYSTEM_PROMPT)
       this.guideCwd = cwd
     }
 
