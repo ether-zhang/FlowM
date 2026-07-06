@@ -9,6 +9,7 @@ import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, CodexEngine, defaultClaudeBin, defaultCodexBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
+import { ActivityBar, activityViews, isActivityView, type ActivityView } from './ActivityBar'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
@@ -21,6 +22,7 @@ const ENGINE_STORAGE = 'flowm.engine'
 const FILES_W_STORAGE = 'flowm.filesW'
 const CHAT_W_STORAGE = 'flowm.chatW'
 const FILES_SHOWN_STORAGE = 'flowm.filesShown'
+const ACTIVITY_VIEW_STORAGE = 'flowm.activityView'
 
 const numFromStorage = (k: string, fallback: number) => {
   const n = Number(localStorage.getItem(k))
@@ -103,6 +105,10 @@ export function App() {
   const [filesW, setFilesW] = useState(() => numFromStorage(FILES_W_STORAGE, 240))
   const [chatW, setChatW] = useState(() => numFromStorage(CHAT_W_STORAGE, 340))
   const [filesShown, setFilesShown] = useState(() => localStorage.getItem(FILES_SHOWN_STORAGE) !== '0')
+  const [activeActivity, setActiveActivity] = useState<ActivityView>(() => {
+    const saved = localStorage.getItem(ACTIVITY_VIEW_STORAGE)
+    return isActivityView(saved) ? saved : 'files'
+  })
   // The file currently open in the floating editor (absolute path), or null.
   const [openFile, setOpenFile] = useState<string | null>(null)
 
@@ -117,6 +123,11 @@ export function App() {
   const toggleFiles = (shown: boolean) => {
     setFilesShown(shown)
     localStorage.setItem(FILES_SHOWN_STORAGE, shown ? '1' : '0')
+  }
+  const selectActivity = (view: ActivityView) => {
+    setActiveActivity(view)
+    localStorage.setItem(ACTIVITY_VIEW_STORAGE, view)
+    toggleFiles(activeActivity === view ? !filesShown : true)
   }
 
   // A second Conversation driven by Claude Code (same pipeline, different LlmAdapter). Needs no
@@ -360,6 +371,7 @@ export function App() {
         onDelete={(id, name) => openConfirm('删除对话', `确定删除对话「${name}」？此操作不可撤销。`, () => ws.deleteSession(id))}
       />
     ) : undefined
+  const activeActivityLabel = activityViews.find((view) => view.id === activeActivity)?.label ?? ''
 
   return (
     <>
@@ -367,18 +379,30 @@ export function App() {
         drag-resize and the file pane hides — and a future VSCode-style rearrange only touches that
         state. The file pane is desktop-only; browser API mode is just 画布中 · 对话右. */}
     <div className="layout">
-      {IS_TAURI && filesShown && (
-        <>
-          <aside className="side-pane file-pane-wrap" style={{ width: filesW }}>
-            <FilePanel folder={cwd} onOpenFile={setOpenFile} onOpenFolder={ws.openFolder} onHide={() => toggleFiles(false)} />
-          </aside>
-          <Resizer width={filesW} setWidth={persistFilesW} sign={1} />
-        </>
-      )}
-      {IS_TAURI && !filesShown && (
-        <button className="file-rail" onClick={() => toggleFiles(true)} title="显示文件栏">
-          »
-        </button>
+      {IS_TAURI && (
+        <aside className="activity-shell">
+          <ActivityBar active={activeActivity} panelOpen={filesShown} onSelect={selectActivity} />
+          {filesShown && (
+            <>
+              {activeActivity === 'files' ? (
+                <section className="side-pane file-pane-wrap" style={{ width: filesW }}>
+                  <FilePanel folder={cwd} onOpenFile={setOpenFile} onOpenFolder={ws.openFolder} onHide={() => toggleFiles(false)} />
+                </section>
+              ) : (
+                <section className="side-pane activity-pane" style={{ width: filesW }}>
+                  <div className="activity-panel-head">
+                    <span className="activity-panel-title">{activeActivityLabel}</span>
+                    <button className="file-hide" onClick={() => toggleFiles(false)} title="隐藏侧栏">
+                      «
+                    </button>
+                  </div>
+                  <div className="activity-empty">暂无内容</div>
+                </section>
+              )}
+              <Resizer width={filesW} setWidth={persistFilesW} sign={1} />
+            </>
+          )}
+        </aside>
       )}
       <main className="canvas-pane">
         <Canvas onReady={onReady} />

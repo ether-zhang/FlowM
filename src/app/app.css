@@ -25,9 +25,102 @@
 .chat-pane {
   border-left: 1px solid var(--flowm-border, #e5e4e7);
 }
+.activity-shell {
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.activity-bar {
+  flex: none;
+  width: 48px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px 0;
+  background: #303342;
+  border-right: 1px solid #242632;
+  color: #b7bfdc;
+}
+.activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.activity-btn {
+  position: relative;
+  width: 48px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.activity-btn svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.activity-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+.activity-btn.active {
+  color: #fff;
+}
+.activity-btn.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--fm-accent, #6965db);
+}
+.activity-btn:focus-visible {
+  outline: 2px solid var(--fm-accent-active-bg, #e0dfff);
+  outline-offset: -2px;
+}
 .file-pane-wrap {
   border-right: 1px solid var(--flowm-border, #e5e4e7);
-  background: #fafafa;
+  background: #fff;
+}
+.activity-pane {
+  flex-direction: column;
+  border-right: 1px solid var(--flowm-border, #e5e4e7);
+  background: #fff;
+  color: #1a1a1a;
+  font-size: 13px;
+}
+.activity-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e4e7;
+}
+.activity-panel-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.activity-empty {
+  padding: 12px;
+  color: #999;
+  font-size: 12px;
 }
 
 /* Drag handle between panes (its visible line is the pane's border; the handle itself is a wide
@@ -39,18 +132,6 @@
   background: transparent;
 }
 .resizer:hover { background: #d4d4d8; }
-
-/* Slim rail shown in place of the hidden file pane, to reopen it. */
-.file-rail {
-  flex: none;
-  width: 22px;
-  border: none;
-  border-right: 1px solid var(--flowm-border, #e5e4e7);
-  background: #fafafa;
-  color: #888;
-  cursor: pointer;
-}
-.file-rail:hover { background: #f0f0f0; color: #333; }
 
 .file-pane {
   display: flex;
@@ -527,7 +608,6 @@
 .conv-open:hover,
 .file-open:hover,
 .canvas-new:hover,
-.file-rail:hover,
 .modal-actions button:hover { background: var(--fm-surface-hover); }
 .conv-row:not(.active):hover,
 .file-row:hover { background: var(--fm-surface-hover); }
