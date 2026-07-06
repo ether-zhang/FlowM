@@ -1,5 +1,6 @@
 export type { SessionMeta, CanvasMeta, ProjectMeta, WorkspaceEntry, Workspace } from './types'
 export { FilePanel } from './FilePanel'
+export { GitPanel } from './GitPanel'
 export { FloatingEditor } from './FloatingEditor'
 export { PickerBar } from './PickerBar'
 export { useWorkspace, type WorkspaceApi } from './useWorkspace'

@@ -5,8 +5,8 @@
 //! never enters JS, and native HTTP has no browser CORS restriction).
 
 use std::fs;
-use std::path::PathBuf;
-use std::process::Stdio;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -549,6 +549,103 @@ struct DirEntry {
     is_dir: bool,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFile {
+    path: String,
+    status: String,
+    index_status: String,
+    worktree_status: String,
+    is_untracked: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatus {
+    repo_root: String,
+    branch: String,
+    head: String,
+    files: Vec<GitFile>,
+}
+
+const MAX_GIT_TEXT_BYTES: usize = 1_000_000;
+
+fn git_output(cwd: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("spawn git failed: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("git exited with {}", out.status.code().unwrap_or(-1))
+        } else {
+            stderr
+        })
+    }
+}
+
+fn git_string(cwd: &str, args: &[&str]) -> Result<String, String> {
+    String::from_utf8(git_output(cwd, args)?).map_err(|e| e.to_string())
+}
+
+fn limited_git_text(bytes: Vec<u8>) -> String {
+    if bytes.len() <= MAX_GIT_TEXT_BYTES {
+        return String::from_utf8_lossy(&bytes).into_owned();
+    }
+    let mut s = String::from_utf8_lossy(&bytes[..MAX_GIT_TEXT_BYTES]).into_owned();
+    s.push_str("\n\n[FlowM: diff truncated at 1 MB]");
+    s
+}
+
+fn repo_root(cwd: &str) -> Result<String, String> {
+    Ok(git_string(cwd, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string())
+}
+
+fn safe_repo_rel_path(path: &str) -> Result<&str, String> {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return Err("absolute git paths are not allowed".to_string());
+    }
+    for component in p.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => return Err("git path escapes the repository".to_string()),
+        }
+    }
+    Ok(path)
+}
+
+fn parse_git_status(bytes: &[u8]) -> Vec<GitFile> {
+    let mut out = Vec::new();
+    let mut chunks = bytes.split(|b| *b == 0).filter(|c| !c.is_empty());
+    while let Some(raw) = chunks.next() {
+        if raw.len() < 4 {
+            continue;
+        }
+        let x = raw[0] as char;
+        let y = raw[1] as char;
+        let path = String::from_utf8_lossy(&raw[3..]).into_owned();
+        if x == 'R' || x == 'C' {
+            let _ = chunks.next();
+        }
+        out.push(GitFile {
+            path,
+            status: format!("{x}{y}"),
+            index_status: x.to_string(),
+            worktree_status: y.to_string(),
+            is_untracked: x == '?' && y == '?',
+        });
+    }
+    out
+}
+
 /// List a directory's immediate children (dirs first, then case-insensitive by name) for the file
 /// panel. Lazy per-dir: the panel calls this again to expand a subfolder, so no deep recursion.
 #[tauri::command]
@@ -592,6 +689,108 @@ fn write_file(path: String, content: String) -> Result<(), String> {
 /// it on the OS main thread; we bridge its callback to a oneshot so the command can be `async`.
 /// Returns the chosen absolute path, or `None` if the user cancelled.
 #[tauri::command]
+fn git_status(cwd: String) -> Result<GitStatus, String> {
+    let root = repo_root(&cwd)?;
+    let branch = git_string(&root, &["branch", "--show-current"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let head = git_string(&root, &["rev-parse", "--short", "HEAD"])
+        .unwrap_or_else(|_| "no HEAD".to_string())
+        .trim()
+        .to_string();
+    let status = git_output(&root, &["status", "--porcelain=v1", "-z", "-uall"])?;
+    Ok(GitStatus {
+        repo_root: root,
+        branch: if branch.is_empty() {
+            "(detached)".to_string()
+        } else {
+            branch
+        },
+        head,
+        files: parse_git_status(&status),
+    })
+}
+
+fn git_diff_part(root: &str, cached: bool, path: &str) -> Result<Vec<u8>, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(root)
+        .arg("diff")
+        .arg("--no-ext-diff")
+        .arg("--find-renames");
+    if cached {
+        cmd.arg("--cached");
+    }
+    let out = cmd
+        .arg("--")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("spawn git failed: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+fn git_path_is_tracked(root: &str, path: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("ls-files")
+        .arg("--error-unmatch")
+        .arg("--")
+        .arg(path)
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn untracked_file_diff(root: &str, path: &str) -> Result<String, String> {
+    let full = Path::new(root).join(path);
+    let meta = fs::metadata(&full).map_err(|e| e.to_string())?;
+    if meta.is_dir() {
+        return Ok(String::new());
+    }
+    let bytes = fs::read(&full).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_GIT_TEXT_BYTES {
+        return Ok(format!(
+            "diff --git a/{0} b/{0}\nnew file mode 100644\n--- /dev/null\n+++ b/{0}\n\n[FlowM: new file is larger than 1 MB]",
+            path
+        ));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "binary file diff is not shown".to_string())?;
+    let mut out = format!(
+        "diff --git a/{0} b/{0}\nnew file mode 100644\n--- /dev/null\n+++ b/{0}\n@@ -0,0 +1,{1} @@\n",
+        path,
+        text.lines().count()
+    );
+    for line in text.lines() {
+        out.push('+');
+        out.push_str(line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn git_diff(cwd: String, path: String) -> Result<String, String> {
+    let root = repo_root(&cwd)?;
+    let path_ref = safe_repo_rel_path(&path)?;
+    let mut bytes = git_diff_part(&root, true, path_ref)?;
+    let unstaged = git_diff_part(&root, false, path_ref)?;
+    if !bytes.is_empty() && !unstaged.is_empty() {
+        bytes.push(b'\n');
+    }
+    bytes.extend(unstaged);
+    if bytes.is_empty() && !git_path_is_tracked(&root, path_ref) {
+        return untracked_file_diff(&root, path_ref);
+    }
+    Ok(limited_git_text(bytes))
+}
+
+#[tauri::command]
 async fn pick_folder(app: AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -634,6 +833,8 @@ pub fn run() {
             flowm_write,
             flowm_delete,
             list_dir,
+            git_status,
+            git_diff,
             pick_folder,
             read_file,
             write_file

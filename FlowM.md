@@ -41,7 +41,7 @@ Windows、macOS、iPad。
 - [ ] **本地 Agent Runtime 收口**：Claude/Codex 都不要把大段 guide 放进 CLI 参数；统一放到项目 `.flowm` 下，由短 `--append-system-prompt` / prompt 触发读取。当前优先把 Claude 改成 `.flowm/claude-canvas.md`，Codex 已走 `.flowm/codex-canvas.md`。
 - [ ] **Codex 侧画布 prompt 继续迭代**：当前已改为独立 Codex prompt，但仍需实测结构图/流程图判别、详略、布局倾向。先按 prompt + 框架后处理继续调；模型能力差异单独记录，不把“等 GPT-5.6”作为当前阻塞项。
 - [x] **左侧文件栏改成 VSCode activity bar 样式**：不要只有窄箭头；做成可扩展侧栏，左边竖向图标入口，右侧 panel 可展开/收起/切换，后续可承载文件、搜索、Git、运行等视图。
-- [ ] **Git 栏整合进左侧栏**：基于 activity bar 增加 Source Control panel，基础功能至少包含 changed files 树状列表、diff 查看、刷新、分支/HEAD 信息；后续再补 stage/unstage、commit message、commit 按钮、历史图谱/简易 log。
+- [x] **Git 栏整合进左侧栏**：基于 activity bar 增加 Source Control panel，基础功能至少包含 changed files 树状列表、diff 查看、刷新、分支/HEAD 信息；后续再补 stage/unstage、commit message、commit 按钮、历史图谱/简易 log。
 - [ ] **右侧对话栏支持模型主动询问**：不只是被动接收日志；当本地 agent 需要确认时，UI 能呈现 yes / no / other 格式问题，并把用户选择/补充发回同一会话，行为参考 VSCode Codex/Claude 插件。
 - [ ] **画布布局观感优化**：当前自动摆放间距偏保守、箭头路由容易乱拐。需要调节点间距策略、group margin、arrow routing/label 避让，让图更紧凑但不重叠，优先解决大图空旷和长箭头折返问题。
 

@@ -4,7 +4,7 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type RunTurnParams } from '../llm'
 import { Chat, type DisplayMessage } from '../chat'
-import { FilePanel, FloatingEditor, PickerBar, useWorkspace } from '../workspace'
+import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, CodexEngine, defaultClaudeBin, defaultCodexBin, type ChatEngine } from '../engine'
@@ -387,6 +387,10 @@ export function App() {
               {activeActivity === 'files' ? (
                 <section className="side-pane file-pane-wrap" style={{ width: filesW }}>
                   <FilePanel folder={cwd} onOpenFile={setOpenFile} onOpenFolder={ws.openFolder} onHide={() => toggleFiles(false)} />
+                </section>
+              ) : activeActivity === 'git' ? (
+                <section className="side-pane activity-pane" style={{ width: filesW }}>
+                  <GitPanel folder={cwd} onHide={() => toggleFiles(false)} />
                 </section>
               ) : (
                 <section className="side-pane activity-pane" style={{ width: filesW }}>
