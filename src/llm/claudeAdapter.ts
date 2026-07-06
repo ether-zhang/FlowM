@@ -1,7 +1,7 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn, LlmToolCall } from './types'
 import type { ToolDef } from '../protocol'
-import { claudeRun, writeDesign } from '../engine/claudeCode'
+import { claudeRun, writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
 import { interpretClaudeLine, extractStructured, extractSessionId } from '../engine/claudeStream'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 
@@ -15,8 +15,8 @@ import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
  *     (`params.tools`) become a `--json-schema` of `{reply, operations[]}`. Claude explores the
  *     repo with its native Read/Grep, then emits the operations; we map them to LlmToolCall[]
  *     and Conversation validates each with its existing parseOp / parseStructure.
- *  2. The shared FlowM canvas guide is passed through `--append-system-prompt` on each FlowM
- *     canvas invocation, so it is scoped to this call path instead of shared project memory.
+ *  2. The shared FlowM canvas guide is written under `<cwd>/.flowm/claude-canvas.md`, then
+ *     referenced by a short `--append-system-prompt` for this FlowM call path.
  *  3. History is NOT replayed: each `runTurn` sends only the messages new since the last one
  *     (plus `--resume`), because Claude Code's own session JSON already holds the conversation.
  *
@@ -34,6 +34,8 @@ export class ClaudeAdapter implements LlmAdapter {
   private sent = 0
   /** Bump per turn so tool-call ids are unique across the within-turn build loop. */
   private turn = 0
+  private guideCwd: string | null = null
+  private guidePath = '.flowm/claude-canvas.md'
   /** Path to the `claude` executable (empty → let the backend resolve `claude` via PATH). */
   private getBin: () => string
 
@@ -56,6 +58,11 @@ export class ClaudeAdapter implements LlmAdapter {
     const cwd = this.getCwd().trim()
     if (!cwd) throw new Error('请先填写工程目录')
 
+    if (this.guideCwd !== cwd) {
+      this.guidePath = await writeClaudeCanvasGuide(cwd, FLOWM_CANVAS_SYSTEM_PROMPT)
+      this.guideCwd = cwd
+    }
+
     // (3) Only what's new since the last runTurn; Claude's session has the rest.
     const fresh = params.messages.slice(this.sent)
     this.sent = params.messages.length
@@ -72,11 +79,11 @@ export class ClaudeAdapter implements LlmAdapter {
     this.turn++
 
     // Debug: report the REAL outgoing request (the Claude engine suppresses Conversation's logical
-    // onRequest). It's the short per-turn delta; the guide is appended as invocation-scoped
-    // system prompt, and history lives in the resumed Claude Code session.
+    // onRequest). It's the short per-turn delta; the guide lives in .flowm and is referenced by
+    // a short invocation-scoped system prompt. History lives in the resumed Claude Code session.
     cb.onDebug?.(
       `▶ 实际发给 Claude · 第 ${this.turn} 轮\n` +
-        `system: --append-system-prompt（FlowM 调用内注入）\n` +
+        `system: --append-system-prompt -> ${this.guidePath}\n` +
         `resume: ${this.session ?? '(新会话)'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
         `本轮增量（${fresh.length} 条 / ${prompt.length} 字）:\n${prompt}`,
     )
@@ -113,7 +120,7 @@ export class ClaudeAdapter implements LlmAdapter {
       // Task subagent inflates cost and (suspected) perturbs the result stream so the structured
       // ops fail to land — the "drew nothing" failure. Also kills the review-turn essay.
       ['Task'],
-      FLOWM_CANVAS_SYSTEM_PROMPT,
+      `FlowM canvas mode is active. Read ${this.guidePath} before drawing.`,
     )
 
     const result = toTurn(structured, this.turn)

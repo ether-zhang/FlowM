@@ -482,9 +482,18 @@ async fn codex_run(
 
 #[tauri::command]
 fn write_codex_canvas_guide(cwd: String, content: String) -> Result<String, String> {
-    let dir = ensure_project_flowm_dir(&cwd)?;
-    fs::write(dir.join("codex-canvas.md"), content).map_err(|e| e.to_string())?;
-    Ok(".flowm/codex-canvas.md".to_string())
+    write_project_flowm_text(&cwd, "codex-canvas.md", &content)
+}
+
+#[tauri::command]
+fn write_claude_canvas_guide(cwd: String, content: String) -> Result<String, String> {
+    write_project_flowm_text(&cwd, "claude-canvas.md", &content)
+}
+
+fn write_project_flowm_text(cwd: &str, filename: &str, content: &str) -> Result<String, String> {
+    let dir = ensure_project_flowm_dir(cwd)?;
+    fs::write(dir.join(filename), content).map_err(|e| e.to_string())?;
+    Ok(format!(".flowm/{filename}"))
 }
 
 /// FlowM's own store dir: `~/.flowm` (created on demand). Holds the workspace index and each
@@ -619,6 +628,7 @@ pub fn run() {
             codex_run,
             default_codex_bin,
             write_codex_canvas_guide,
+            write_claude_canvas_guide,
             write_design,
             flowm_read,
             flowm_write,

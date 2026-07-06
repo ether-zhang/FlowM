@@ -35,6 +35,16 @@ Windows、macOS、iPad。
 - [x] git 追踪、模块化开发
 
 ### 待办（TODO）
+
+#### 近期路线图（2026-07-07）
+
+- [ ] **本地 Agent Runtime 收口**：Claude/Codex 都不要把大段 guide 放进 CLI 参数；统一放到项目 `.flowm` 下，由短 `--append-system-prompt` / prompt 触发读取。当前优先把 Claude 改成 `.flowm/claude-canvas.md`，Codex 已走 `.flowm/codex-canvas.md`。
+- [ ] **Codex 侧画布 prompt 继续迭代**：当前已改为独立 Codex prompt，但仍需实测结构图/流程图判别、详略、布局倾向。先按 prompt + 框架后处理继续调；模型能力差异单独记录，不把“等 GPT-5.6”作为当前阻塞项。
+- [ ] **左侧文件栏改成 VSCode activity bar 样式**：不要只有窄箭头；做成可扩展侧栏，左边竖向图标入口，右侧 panel 可展开/收起/切换，后续可承载文件、搜索、Git、运行等视图。
+- [ ] **Git 栏整合进左侧栏**：基于 activity bar 增加 Source Control panel，基础功能至少包含 changed files 树状列表、diff 查看、刷新、分支/HEAD 信息；后续再补 stage/unstage、commit message、commit 按钮、历史图谱/简易 log。
+- [ ] **右侧对话栏支持模型主动询问**：不只是被动接收日志；当本地 agent 需要确认时，UI 能呈现 yes / no / other 格式问题，并把用户选择/补充发回同一会话，行为参考 VSCode Codex/Claude 插件。
+- [ ] **画布布局观感优化**：当前自动摆放间距偏保守、箭头路由容易乱拐。需要调节点间距策略、group margin、arrow routing/label 避让，让图更紧凑但不重叠，优先解决大图空旷和长箭头折返问题。
+
 - UI相关
    - [x] ~~右侧对话框增长影响画布移动逻辑~~ —— 已修复：整壳锁定视口，对话框内部独立滚动
    - [x] Tauri 桌面壳（需先装 Rust；并把模型调用移到 Rust 后端，Key 不入渲染层）—— 已就绪：`src-tauri/` + `TauriAdapter`，Key 存后端、HTTP 由 Rust 发起。Excalidraw 迁移后 `tauri dev` 已实测（窗口/生成/绑定均正常）
@@ -93,12 +103,12 @@ Windows、macOS、iPad。
 - Claude Code 引擎（画布侧，v0.7-dev；见记忆 `claude-code-is-an-llmadapter`）
     - [x] **Claude Code 作为 `LlmAdapter`**：同一条 Conversation 管线（序列化+marks → operations → apply → 复核），只把 Poe 换成用户本地的 `claude`。`protocol/`、`conversation.ts`、`canvas/` 不变，`ClaudeAdapter` 是唯一接缝。桌面（Tauri）专属——它 spawn 本地 `claude`
         - [x] **强制结构化输出**：canvas 工具编成 `--json-schema {reply, operations[]}`；Claude 用原生 Read/Grep 读代码后吐 operations，映射成 `LlmToolCall[]`，交现有 `parseOp`/`parseStructure` 校验（错误回灌自纠）
-        - [x] **CLAUDE.local.md = 工程开关**：FlowM 自己的 Claude guide（layout-freedom-first，**与 Poe SYSTEM 解耦**——Poe 的竖脊规则会把 Claude 逼成单列）每个 cwd 写一次到 `<cwd>/CLAUDE.local.md`（gitignored、不污染 repo）；Claude Code 每次自动加载 + prompt-cache 跨 `--resume`，永不在单轮 prompt 里重发
+        - [x] **`.flowm/claude-canvas.md` + 短 system 触发**：FlowM 自己的 Claude guide 写到项目 `<cwd>/.flowm/claude-canvas.md`（`.flowm` gitignored、不污染 repo）；每次 FlowM 调用只通过 `--append-system-prompt` 传短句 `Read .flowm/claude-canvas.md before drawing`，避免 `CLAUDE.local.md` 共享记忆污染，也避免大段 guide 进入 CLI 参数
         - [x] **只发增量**：每轮只发上次以来的新消息（+ `--resume`），历史在 Claude 自己的 session JSON 里。build-loop 的"确认轮"（纯 tool-result、无错）短路，不触发 Claude 调用省钱
         - [x] **`--disallowedTools Task`**：禁子代理（子代理抬成本 + 扰动结果流致 ops 落不了地 + 引发复核轮小作文）
         - [x] **坐标可选 + 框架自动分层**：`create_geo`/`create_text` 的 x/y/w/h 全可选；缺坐标节点 → 框架分层布局（纯库无关 `canvas/autoLayout.ts`：最长路分层 + 连通分量分区，含单测），有坐标 → 模型定位。模型自选：结构图省坐标交框架、自由/编辑给坐标。few-shot 无坐标样例是让模型真正省坐标的关键（纯指令 3 次失败）
         - [x] **内容优先 + 双层 guide**：先理解代码，再**综合宏观架构层 + 调用链/数据流层**画；用真实类/函数/数据结构名，并说清每个节点在宏观结构里的角色；**节点数不是关键**——严格遵循用户指令、把结构讲清楚才是；有序关系自上而下读、必要时引侧支；**按需动态**决定画调用链还是宏观图，不确定就都画并建立对应
-        - [x] **可穿透的 debug**：`onDebug` 显示"真正发给 Claude 的增量"（system 不在请求里 = CLAUDE.local.md 已缓存）+ Claude **原始结构化返回**（create_geo 带坐标计数，验证是否真交给框架）；`onSystem` 黄色工具进度提示；`debugViaAdapter` 抑制 Conversation 那条误导性 onRequest
+        - [x] **可穿透的 debug**：`onDebug` 显示"真正发给 Claude 的增量"（system 为短触发语，guide 文件在 `.flowm/claude-canvas.md`）+ Claude **原始结构化返回**（create_geo 带坐标计数，验证是否真交给框架）；`onSystem` 黄色工具进度提示；`debugViaAdapter` 抑制 Conversation 那条误导性 onRequest
         - [x] **短 id**：`flowm-${uuid.slice(0,8)}`（14 字 vs 42）
         - [x] **配置持久化**：engine / cwd / bin 存 localStorage（Claude 引擎的两个地址框跨重启保留）
         - [x] **macOS 桌面壳**：可在 macOS 跑（`getBin` + key 对话框 + cwd 默认空）
