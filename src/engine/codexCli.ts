@@ -11,7 +11,6 @@ export async function codexRun(
   onEvent: (e: CodexEvent) => void,
   opts: {
     bin?: string
-    agentCwd?: string
     outputSchema?: unknown
     resume?: string
     image?: string
@@ -24,7 +23,6 @@ export async function codexRun(
     prompt,
     cwd,
     bin: opts.bin ?? null,
-    agentCwd: opts.agentCwd ?? null,
     outputSchema: opts.outputSchema != null ? JSON.stringify(opts.outputSchema) : null,
     resume: opts.resume ?? null,
     image: opts.image ?? null,
@@ -37,6 +35,6 @@ export async function defaultCodexBin(): Promise<string> {
   return invoke<string>('default_codex_bin')
 }
 
-export async function writeCodexGuide(cwd: string, content: string): Promise<string> {
-  return invoke<string>('write_codex_guide', { cwd, content })
+export async function writeCodexCanvasGuide(cwd: string, content: string): Promise<string> {
+  return invoke<string>('write_codex_canvas_guide', { cwd, content })
 }

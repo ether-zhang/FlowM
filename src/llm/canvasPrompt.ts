@@ -1,9 +1,10 @@
 /**
- * Shared FlowM canvas prompt used by every canvas model surface.
+ * Shared FlowM canvas prompt used by the canvas model surfaces.
  *
- * Keep provider/runtime mechanics outside this file: Claude writes it to CLAUDE.local.md,
- * Codex writes it to .flowm/AGENTS.md, and OpenAI-compatible chat sends it as the system
- * message. The behavioral contract should stay identical across platforms.
+ * Keep provider/runtime mechanics outside this file: OpenAI-compatible chat sends it as the
+ * system message, Claude passes it with --append-system-prompt, and local agents may reference
+ * a copy under the project's .flowm folder. The behavioral contract should stay identical
+ * across platforms.
  */
 export const FLOWM_CANVAS_SYSTEM_PROMPT = `# FlowM canvas mode
 

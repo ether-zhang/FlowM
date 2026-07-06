@@ -1,7 +1,7 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmToolCall, LlmTurn } from './types'
 import type { ToolDef } from '../protocol'
-import { codexRun, writeCodexGuide } from '../engine/codexCli'
+import { codexRun, writeCodexCanvasGuide } from '../engine/codexCli'
 import { createCodexStderrFilter, interpretCodexLine, extractCodexThreadId } from '../engine/codexStream'
 import { writeDesign } from '../engine/claudeCode'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
@@ -13,7 +13,7 @@ export class CodexAdapter implements LlmAdapter {
   private sent = 0
   private turn = 0
   private guideCwd: string | null = null
-  private agentCwd: string | null = null
+  private guidePath = '.flowm/codex-canvas.md'
 
   constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
     this.getCwd = getCwd
@@ -30,7 +30,7 @@ export class CodexAdapter implements LlmAdapter {
     if (!cwd) throw new Error('请先打开工程')
 
     if (this.guideCwd !== cwd) {
-      this.agentCwd = await writeCodexGuide(cwd, FLOWM_CANVAS_SYSTEM_PROMPT)
+      this.guidePath = await writeCodexCanvasGuide(cwd, FLOWM_CANVAS_SYSTEM_PROMPT)
       this.guideCwd = cwd
     }
 
@@ -47,8 +47,8 @@ export class CodexAdapter implements LlmAdapter {
     cb.onDebug?.(
       `▶ 实际发给 Codex · 第 ${this.turn} 轮\n` +
         `resume: ${this.session ?? '(新会话)'} · output-schema: { reply, operations[] }\n` +
-        `system: 不在请求里 → .flowm/AGENTS.md\n` +
-        `repo policy: read-only · sandbox: platform default · image: ${image ?? '(无)'}\n` +
+        `system: invocation-scoped guide -> ${this.guidePath}\n` +
+        `cwd: ${cwd} · repo policy: read-only · sandbox: platform default · image: ${image ?? '(无)'}\n` +
         `本轮增量：${fresh.length} 条 / ${prompt.length} 字符\n${prompt}`,
     )
 
@@ -74,14 +74,12 @@ export class CodexAdapter implements LlmAdapter {
       },
       {
         bin: this.getBin().trim() || undefined,
-        agentCwd: this.agentCwd ?? undefined,
         outputSchema: schema,
         resume: this.session ?? undefined,
         image,
         readOnly: true,
       },
     )
-
     const structured = parseStructured(last)
     const result = toTurn(structured, this.turn)
     if (!result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
@@ -107,7 +105,10 @@ export class CodexAdapter implements LlmAdapter {
     fresh: LlmMessage[],
     cwd: string,
   ): Promise<{ prompt: string; image?: string }> {
-    const parts: string[] = [`Project root: ${cwd}`]
+    const parts: string[] = [
+      `FlowM canvas mode is active. Read ${this.guidePath} before drawing.`,
+      `Project root: ${cwd}`,
+    ]
     let image: string | undefined
     for (const m of fresh) {
       if (m.role === 'user') {

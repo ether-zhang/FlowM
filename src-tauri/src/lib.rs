@@ -126,6 +126,7 @@ async fn claude_run(
     json_schema: Option<String>,
     resume: Option<String>,
     disallowed_tools: Option<Vec<String>>,
+    append_system_prompt: Option<String>,
     on_event: Channel<ClaudeEvent>,
 ) -> Result<(), String> {
     let bin = bin.unwrap_or_else(|| "claude".to_string());
@@ -144,8 +145,14 @@ async fn claude_run(
     if let Some(schema) = &json_schema {
         cmd.arg("--json-schema").arg(schema);
     }
-    // Canvas session continuity: resume a prior session so the project guide (CLAUDE.local.md)
-    // + history live in Claude Code's session (cached) and this turn's prompt is just the delta.
+    if let Some(system_prompt) = append_system_prompt
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        cmd.arg("--append-system-prompt").arg(system_prompt);
+    }
+    // Canvas session continuity: resume a prior session so history lives in Claude Code's session
+    // and this turn's prompt is just the delta.
     if let Some(session) = &resume {
         cmd.arg("--resume").arg(session);
     }
@@ -324,9 +331,18 @@ fn is_codex_windows_sandbox_helper_failure(line: &str) -> bool {
         && line.contains("codex-windows-sandbox-setup.exe")
 }
 
-fn unique_flowm_file(cwd: &str, stem: &str, ext: &str) -> Result<PathBuf, String> {
+fn ensure_project_flowm_dir(cwd: &str) -> Result<PathBuf, String> {
     let dir = PathBuf::from(cwd).join(".flowm");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ignore = dir.join(".gitignore");
+    if !ignore.exists() {
+        fs::write(&ignore, "*\n").map_err(|e| e.to_string())?;
+    }
+    Ok(dir)
+}
+
+fn unique_flowm_file(cwd: &str, stem: &str, ext: &str) -> Result<PathBuf, String> {
+    let dir = ensure_project_flowm_dir(cwd)?;
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -342,7 +358,6 @@ async fn codex_run(
     bin: Option<String>,
     prompt: String,
     cwd: String,
-    agent_cwd: Option<String>,
     output_schema: Option<String>,
     resume: Option<String>,
     image: Option<String>,
@@ -350,7 +365,6 @@ async fn codex_run(
     on_event: Channel<CodexEvent>,
 ) -> Result<Option<String>, String> {
     let bin = bin.unwrap_or_else(|| "codex".to_string());
-    let run_cwd = agent_cwd.clone().unwrap_or_else(|| cwd.clone());
     let last_path = unique_flowm_file(&cwd, "codex-last", "txt")?;
     let schema_path = if let Some(schema) = &output_schema {
         let path = unique_flowm_file(&cwd, "codex-schema", "json")?;
@@ -365,12 +379,12 @@ async fn codex_run(
         .arg(codex_sandbox_mode(read_only))
         .arg("--ask-for-approval")
         .arg("never")
+        .arg("--cd")
+        .arg(&cwd)
         .arg("exec");
 
     if resume.is_some() {
         cmd.arg("resume");
-    } else if agent_cwd.is_some() {
-        cmd.arg("--add-dir").arg(&cwd);
     }
     cmd.arg("--json")
         .arg("--output-last-message")
@@ -387,7 +401,7 @@ async fn codex_run(
     cmd.arg("-");
 
     let mut child = cmd
-        .current_dir(&run_cwd)
+        .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -466,30 +480,16 @@ async fn codex_run(
     Ok(last)
 }
 
-/// Write FlowM's drawing guide to `<cwd>/CLAUDE.local.md` — the project "switch" Claude Code
-/// auto-loads on every invocation (and prompt-caches across --resume). FlowM owns this file;
-/// CLAUDE.local.md is conventionally gitignored, so it doesn't pollute the user's tracked repo.
 #[tauri::command]
-fn write_guide(cwd: String, content: String) -> Result<(), String> {
-    let path = PathBuf::from(&cwd).join("CLAUDE.local.md");
-    fs::write(path, content).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn write_codex_guide(cwd: String, content: String) -> Result<String, String> {
-    let dir = PathBuf::from(&cwd).join(".flowm");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let ignore = dir.join(".gitignore");
-    if !ignore.exists() {
-        fs::write(&ignore, "*\n").map_err(|e| e.to_string())?;
-    }
-    fs::write(dir.join("AGENTS.md"), content).map_err(|e| e.to_string())?;
-    Ok(dir.to_string_lossy().into_owned())
+fn write_codex_canvas_guide(cwd: String, content: String) -> Result<String, String> {
+    let dir = ensure_project_flowm_dir(&cwd)?;
+    fs::write(dir.join("codex-canvas.md"), content).map_err(|e| e.to_string())?;
+    Ok(".flowm/codex-canvas.md".to_string())
 }
 
 /// FlowM's own store dir: `~/.flowm` (created on demand). Holds the workspace index and each
 /// project's canvases + conversations — FlowM state, kept OUT of the user's code folders (the
-/// code folder only gets the gitignored CLAUDE.local.md the canvas engine writes).
+/// code folder only gets transient artifacts under its gitignored `.flowm` folder).
 fn flowm_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let dir = home.join(".flowm");
@@ -600,8 +600,7 @@ fn write_design(cwd: String, data_url: String) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| e.to_string())?;
-    let dir = PathBuf::from(&cwd).join(".flowm");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = ensure_project_flowm_dir(&cwd)?;
     fs::write(dir.join("design.png"), bytes).map_err(|e| e.to_string())?;
     Ok(".flowm/design.png".to_string())
 }
@@ -619,8 +618,7 @@ pub fn run() {
             default_claude_bin,
             codex_run,
             default_codex_bin,
-            write_guide,
-            write_codex_guide,
+            write_codex_canvas_guide,
             write_design,
             flowm_read,
             flowm_write,

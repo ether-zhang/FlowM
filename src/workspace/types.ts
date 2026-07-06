@@ -1,7 +1,7 @@
 /**
  * The workspace model for the VSCode-plugin-style shell. Decisions (confirmed):
  *  - 工程 = 代码文件夹: a project binds to one code folder; FlowM's own state lives under ~/.flowm,
- *    the code folder only gets the gitignored CLAUDE.local.md the canvas engine writes.
+ *    while per-invocation canvas artifacts live under the project's gitignored .flowm folder.
  *  - 每对话一条 session: each local agent stores its own resume id on the session. FlowM keeps no
  *    parallel model history; the agent session is the history, FlowM persists only the UI bubbles.
  *  - 画布 ⊥ session: canvases and sessions are INDEPENDENT lists under a project. A new canvas does
