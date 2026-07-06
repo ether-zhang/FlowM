@@ -168,12 +168,149 @@
   font-weight: 600;
 }
 .git-tree {
-  flex: 0 0 36%;
+  flex: 0 0 28%;
   min-height: 96px;
-  max-height: 45%;
+  max-height: 34%;
   overflow: auto;
   padding: 0 0 6px;
   border-bottom: 1px solid #e5e4e7;
+}
+.git-collapsible {
+  flex: none;
+  border-bottom: 1px solid #e5e4e7;
+}
+.git-diff-section.open {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.git-collapse-head {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: #fff;
+  color: #1a1a1a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 5px 10px;
+}
+.git-collapse-head:hover { background: var(--fm-surface-hover); }
+.git-collapse-caret {
+  flex: none;
+  width: 12px;
+  color: #777;
+  font-size: 10px;
+}
+.git-collapse-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-collapse-meta {
+  flex: none;
+  color: #777;
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.git-collapse-meta.add { color: #188038; }
+.git-collapse-meta.mod { color: #8a5a00; }
+.git-collapse-meta.delete { color: #c0392b; }
+.git-collapse-meta.warn { color: #7c3aed; }
+.git-graph {
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px 0 6px;
+  background: #20212b;
+  color: #e5e7eb;
+}
+.git-graph-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 6px;
+  min-height: 32px;
+  padding: 2px 8px 2px 0;
+}
+.git-graph-rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+.git-graph-line {
+  position: absolute;
+  top: 0;
+  bottom: -2px;
+  width: 2px;
+  background: #5b9dff;
+}
+.git-graph-line.last { bottom: 16px; }
+.git-graph-dot {
+  position: absolute;
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #5b9dff;
+  box-shadow: 0 0 0 2px #20212b;
+}
+.git-graph-dot.head {
+  background: #32a852;
+}
+.git-graph-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px 0;
+}
+.git-graph-message {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.git-graph-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.git-graph-author {
+  flex: none;
+  color: #a6adc8;
+  font-size: 11px;
+}
+.git-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.git-ref {
+  border-radius: 999px;
+  background: #7c4d9f;
+  color: #1f1028;
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 1px 6px;
+}
+.git-ref.current {
+  background: #5b9dff;
+  color: #06111f;
+}
+.git-graph-hash {
+  align-self: start;
+  margin-top: 5px;
+  color: #a6adc8;
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .git-row {
   width: 100%;
@@ -220,24 +357,8 @@
   color: #999;
   font-size: 12px;
 }
-.git-diff-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  border-bottom: 1px solid #e5e4e7;
-  font-size: 12px;
-  font-weight: 600;
-}
-.git-diff-head span:first-child {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .git-diff {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   background: #fbfbfc;

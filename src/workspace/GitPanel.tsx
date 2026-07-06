@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { gitDiff, gitStatus, type GitFile, type GitStatus } from './git'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { gitDiff, gitGraph, gitStatus, type GitCommit, type GitFile, type GitStatus } from './git'
 
 interface TreeNode {
   name: string
@@ -10,28 +10,35 @@ interface TreeNode {
 
 export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => void }) {
   const [status, setStatus] = useState<GitStatus | null>(null)
+  const [graph, setGraph] = useState<GitCommit[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [diff, setDiff] = useState('')
   const [loading, setLoading] = useState(false)
+  const [graphLoading, setGraphLoading] = useState(false)
   const [diffLoading, setDiffLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshId, setRefreshId] = useState(0)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [graphOpen, setGraphOpen] = useState(true)
+  const [diffOpen, setDiffOpen] = useState(true)
 
   useEffect(() => {
     if (!folder.trim()) {
       setStatus(null)
+      setGraph([])
       setSelected(null)
       setError(null)
       return
     }
     let alive = true
     setLoading(true)
+    setGraphLoading(true)
     setError(null)
-    gitStatus(folder)
-      .then((next) => {
+    Promise.all([gitStatus(folder), gitGraph(folder).catch(() => [] as GitCommit[])])
+      .then(([next, commits]) => {
         if (!alive) return
         setStatus(next)
+        setGraph(commits)
         setCollapsed(new Set())
         setSelected((prev) => {
           if (prev && next.files.some((file) => file.path === prev)) return prev
@@ -41,11 +48,15 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
       .catch((err) => {
         if (!alive) return
         setStatus(null)
+        setGraph([])
         setSelected(null)
         setError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => {
-        if (alive) setLoading(false)
+        if (alive) {
+          setLoading(false)
+          setGraphLoading(false)
+        }
       })
     return () => {
       alive = false
@@ -127,23 +138,113 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
               <div className="git-note">没有更改</div>
             )}
           </div>
-          <div className="git-diff-head">
-            <span>{selectedFile?.path ?? 'Diff'}</span>
-            {selectedFile && <span className={`git-status ${statusKind(selectedFile)}`}>{statusLabel(selectedFile)}</span>}
-          </div>
-          <div className="git-diff">
-            {diffLoading ? (
-              <div className="git-note">加载 diff...</div>
-            ) : selected ? (
-              <DiffText text={diff || '没有 diff'} />
-            ) : (
-              <div className="git-note">选择一个文件查看 diff</div>
-            )}
-          </div>
+          <GitCollapse
+            title="图表"
+            meta={graph.length ? String(graph.length) : undefined}
+            open={graphOpen}
+            onToggle={() => setGraphOpen((open) => !open)}
+            className="git-graph-section"
+          >
+            <div className="git-graph">
+              {graphLoading ? (
+                <div className="git-note">加载图表...</div>
+              ) : graph.length ? (
+                <GitGraphRows commits={graph} currentBranch={status?.branch ?? ''} />
+              ) : (
+                <div className="git-note">没有提交记录</div>
+              )}
+            </div>
+          </GitCollapse>
+          <GitCollapse
+            title={selectedFile?.path ?? 'Diff'}
+            meta={selectedFile ? statusLabel(selectedFile) : undefined}
+            metaClass={selectedFile ? statusKind(selectedFile) : undefined}
+            open={diffOpen}
+            onToggle={() => setDiffOpen((open) => !open)}
+            className="git-diff-section"
+          >
+            <div className="git-diff">
+              {diffLoading ? (
+                <div className="git-note">加载 diff...</div>
+              ) : selected ? (
+                <DiffText text={diff || '没有 diff'} />
+              ) : (
+                <div className="git-note">选择一个文件查看 diff</div>
+              )}
+            </div>
+          </GitCollapse>
         </>
       )}
     </div>
   )
+}
+
+function GitCollapse({
+  title,
+  meta,
+  metaClass,
+  open,
+  onToggle,
+  className,
+  children,
+}: {
+  title: string
+  meta?: string
+  metaClass?: string
+  open: boolean
+  onToggle: () => void
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <section className={`git-collapsible${open ? ' open' : ''}${className ? ` ${className}` : ''}`}>
+      <button className="git-collapse-head" onClick={onToggle} title={open ? '折叠' : '展开'}>
+        <span className="git-collapse-caret">{open ? '▾' : '▸'}</span>
+        <span className="git-collapse-title">{title}</span>
+        {meta && <span className={`git-collapse-meta ${metaClass ?? ''}`}>{meta}</span>}
+      </button>
+      {open && children}
+    </section>
+  )
+}
+
+function GitGraphRows({ commits, currentBranch }: { commits: GitCommit[]; currentBranch: string }) {
+  return (
+    <>
+      {commits.map((commit, index) => (
+        <div key={commit.hash} className="git-graph-row">
+          <div className="git-graph-rail">
+            <span className={`git-graph-line${index === commits.length - 1 ? ' last' : ''}`} />
+            <span className={`git-graph-dot${index === 0 ? ' head' : ''}`} />
+          </div>
+          <div className="git-graph-main">
+            <div className="git-graph-message">
+              <span className="git-graph-subject">{commit.subject}</span>
+              <span className="git-graph-author">{commit.author}</span>
+            </div>
+            {commit.refs.length > 0 && (
+              <div className="git-refs">
+                {commit.refs.map((ref) => (
+                  <span key={ref} className={`git-ref${isCurrentRef(ref, currentBranch) ? ' current' : ''}`}>
+                    {cleanRef(ref)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <span className="git-graph-hash">{commit.shortHash}</span>
+        </div>
+      ))}
+    </>
+  )
+}
+
+function cleanRef(ref: string): string {
+  return ref.replace(/^HEAD -> /, '')
+}
+
+function isCurrentRef(ref: string, currentBranch: string): boolean {
+  return ref === `HEAD -> ${currentBranch}` || ref === currentBranch
 }
 
 function GitTreeRows({

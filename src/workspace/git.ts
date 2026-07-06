@@ -15,6 +15,16 @@ export interface GitStatus {
   files: GitFile[]
 }
 
+export interface GitCommit {
+  hash: string
+  shortHash: string
+  subject: string
+  author: string
+  refs: string[]
+}
+
 export const gitStatus = (cwd: string) => invoke<GitStatus>('git_status', { cwd })
+
+export const gitGraph = (cwd: string) => invoke<GitCommit[]>('git_graph', { cwd })
 
 export const gitDiff = (cwd: string, path: string) => invoke<string>('git_diff', { cwd, path })

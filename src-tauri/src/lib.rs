@@ -568,6 +568,16 @@ struct GitStatus {
     files: Vec<GitFile>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommit {
+    hash: String,
+    short_hash: String,
+    subject: String,
+    author: String,
+    refs: Vec<String>,
+}
+
 const MAX_GIT_TEXT_BYTES: usize = 1_000_000;
 
 fn git_output(cwd: &str, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -646,6 +656,37 @@ fn parse_git_status(bytes: &[u8]) -> Vec<GitFile> {
     out
 }
 
+fn parse_git_commits(text: &str) -> Vec<GitCommit> {
+    text.split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim_matches('\n');
+            if record.is_empty() {
+                return None;
+            }
+            let mut fields = record.split('\x1f');
+            let hash = fields.next()?.to_string();
+            let short_hash = fields.next()?.to_string();
+            let subject = fields.next().unwrap_or_default().to_string();
+            let author = fields.next().unwrap_or_default().to_string();
+            let refs = fields
+                .next()
+                .unwrap_or_default()
+                .split(", ")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect();
+            Some(GitCommit {
+                hash,
+                short_hash,
+                subject,
+                author,
+                refs,
+            })
+        })
+        .collect()
+}
+
 /// List a directory's immediate children (dirs first, then case-insensitive by name) for the file
 /// panel. Lazy per-dir: the panel calls this again to expand a subfolder, so no deep recursion.
 #[tauri::command]
@@ -710,6 +751,22 @@ fn git_status(cwd: String) -> Result<GitStatus, String> {
         head,
         files: parse_git_status(&status),
     })
+}
+
+#[tauri::command]
+fn git_graph(cwd: String) -> Result<Vec<GitCommit>, String> {
+    let root = repo_root(&cwd)?;
+    let log = git_string(
+        &root,
+        &[
+            "log",
+            "--all",
+            "--decorate=short",
+            "--max-count=80",
+            "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%D%x1e",
+        ],
+    )?;
+    Ok(parse_git_commits(&log))
 }
 
 fn git_diff_part(root: &str, cached: bool, path: &str) -> Result<Vec<u8>, String> {
@@ -834,6 +891,7 @@ pub fn run() {
             flowm_delete,
             list_dir,
             git_status,
+            git_graph,
             git_diff,
             pick_folder,
             read_file,
