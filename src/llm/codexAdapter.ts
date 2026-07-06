@@ -4,7 +4,7 @@ import type { ToolDef } from '../protocol'
 import { codexRun, writeCodexCanvasGuide } from '../engine/codexCli'
 import { createCodexStderrFilter, interpretCodexLine, extractCodexThreadId } from '../engine/codexStream'
 import { writeDesign } from '../engine/claudeCode'
-import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
+import { FLOWM_CODEX_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
@@ -30,7 +30,7 @@ export class CodexAdapter implements LlmAdapter {
     if (!cwd) throw new Error('请先打开工程')
 
     if (this.guideCwd !== cwd) {
-      this.guidePath = await writeCodexCanvasGuide(cwd, FLOWM_CANVAS_SYSTEM_PROMPT)
+      this.guidePath = await writeCodexCanvasGuide(cwd, FLOWM_CODEX_CANVAS_SYSTEM_PROMPT)
       this.guideCwd = cwd
     }
 
