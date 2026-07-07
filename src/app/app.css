@@ -185,6 +185,15 @@
   display: flex;
   flex-direction: column;
 }
+.git-graph-section.open {
+  flex: 0 1 230px;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+}
+.git-diff-section:not(.open) + .git-graph-section.open {
+  flex: 1 1 auto;
+}
 .git-collapse-head {
   width: 100%;
   min-height: 32px;
@@ -225,12 +234,14 @@
 .git-collapse-meta.delete { color: #c0392b; }
 .git-collapse-meta.warn { color: #7c3aed; }
 .git-graph {
-  max-height: 220px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: 4px 0 6px;
-  background: #20212b;
-  color: #e5e7eb;
+  background: #fbfbfc;
+  color: #1f2328;
 }
+.git-graph-row:hover { background: var(--fm-surface-hover); }
 .git-graph-row {
   position: relative;
   display: grid;
@@ -259,7 +270,7 @@
   height: 10px;
   border-radius: 50%;
   background: #5b9dff;
-  box-shadow: 0 0 0 2px #20212b;
+  box-shadow: 0 0 0 2px #fbfbfc;
 }
 .git-graph-dot.head {
   background: #32a852;
@@ -286,7 +297,7 @@
 }
 .git-graph-author {
   flex: none;
-  color: #a6adc8;
+  color: #6f7782;
   font-size: 11px;
 }
 .git-refs {
@@ -296,20 +307,20 @@
 }
 .git-ref {
   border-radius: 999px;
-  background: #7c4d9f;
-  color: #1f1028;
+  background: #eadfff;
+  color: #5d3387;
   font-size: 11px;
   line-height: 1.2;
   padding: 1px 6px;
 }
 .git-ref.current {
-  background: #5b9dff;
-  color: #06111f;
+  background: #ddecff;
+  color: #0b5cab;
 }
 .git-graph-hash {
   align-self: start;
   margin-top: 5px;
-  color: #a6adc8;
+  color: #6f7782;
   font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .git-row {

@@ -139,23 +139,6 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
             )}
           </div>
           <GitCollapse
-            title="图表"
-            meta={graph.length ? String(graph.length) : undefined}
-            open={graphOpen}
-            onToggle={() => setGraphOpen((open) => !open)}
-            className="git-graph-section"
-          >
-            <div className="git-graph">
-              {graphLoading ? (
-                <div className="git-note">加载图表...</div>
-              ) : graph.length ? (
-                <GitGraphRows commits={graph} currentBranch={status?.branch ?? ''} />
-              ) : (
-                <div className="git-note">没有提交记录</div>
-              )}
-            </div>
-          </GitCollapse>
-          <GitCollapse
             title={selectedFile?.path ?? 'Diff'}
             meta={selectedFile ? statusLabel(selectedFile) : undefined}
             metaClass={selectedFile ? statusKind(selectedFile) : undefined}
@@ -170,6 +153,23 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
                 <DiffText text={diff || '没有 diff'} />
               ) : (
                 <div className="git-note">选择一个文件查看 diff</div>
+              )}
+            </div>
+          </GitCollapse>
+          <GitCollapse
+            title="图表"
+            meta={graph.length ? String(graph.length) : undefined}
+            open={graphOpen}
+            onToggle={() => setGraphOpen((open) => !open)}
+            className="git-graph-section"
+          >
+            <div className="git-graph">
+              {graphLoading ? (
+                <div className="git-note">加载图表...</div>
+              ) : graph.length ? (
+                <GitGraphRows commits={graph} currentBranch={status?.branch ?? ''} />
+              ) : (
+                <div className="git-note">没有提交记录</div>
               )}
             </div>
           </GitCollapse>
