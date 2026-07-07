@@ -213,10 +213,24 @@
 .git-collapse-head:hover { background: var(--fm-surface-hover); }
 .git-collapse-caret {
   flex: none;
-  width: 12px;
-  color: #777;
-  font-size: 10px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #303342;
+  font-size: 0;
 }
+.git-collapse-caret::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+.git-collapsible.open .git-collapse-caret::before { transform: rotate(45deg); }
+.git-collapse-head:hover .git-collapse-caret { color: #242632; }
 .git-collapse-title {
   flex: 1;
   min-width: 0;
@@ -967,9 +981,7 @@
 
 /* ── Toolbar unification: one button + dropdown language across the chat bar, file panel,
    conversation list and the floating canvas bar (previously three different looks). ──────── */
-/* Every toolbar button: white surface, --fm-border, --fm-radius, never squished/text-wrapped.
-   The chat bar wraps WHOLE buttons to a second row on a narrow pane, so 保存/加载 stay one line
-   instead of breaking into 保\n存. */
+/* Every toolbar button: white surface, --fm-border, --fm-radius, never squished/text-wrapped. */
 .chat-bar { flex-wrap: wrap; row-gap: 6px; }
 .chat-bar button,
 .conv-open,
@@ -985,6 +997,30 @@
   line-height: 1.2;
 }
 .canvas-icon { padding: 4px 8px; }
+.chat-bar .chat-settings-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 11px;
+}
+.chat-settings-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: #303342;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chat-bar .chat-settings-btn:hover {
+  background: var(--fm-surface-hover);
+}
+.chat-settings-btn:hover svg {
+  stroke: #242632;
+}
 
 /* Dropdowns (engine + canvas switchers) become clean custom pills — native OS chrome removed,
    our own chevron drawn with gradients (no external asset / data URI, CSP-safe). */

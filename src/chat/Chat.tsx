@@ -156,17 +156,26 @@ export function Chat({
           </div>
         )}
         <span className="spacer" />
-        <button onClick={onSave} title="保存工程">保存</button>
-        <button onClick={onLoad} title="加载工程">加载</button>
+        <button hidden onClick={onSave} title="保存工程">保存</button>
+        <button hidden onClick={onLoad} title="加载工程">加载</button>
         <button
+          hidden
           onClick={onToggleDebug}
           title="调试模式：显示每次发送给模型的请求"
           aria-pressed={debug}
         >
           {debug ? 'Debug ✓' : 'Debug'}
         </button>
-        <button onClick={onOpenSettings} title="设置（API 与本地Agent）">
-          ⚙
+        <button
+          className="chat-settings-btn"
+          onClick={onOpenSettings}
+          title="设置（API 与本地Agent）"
+          aria-label="设置"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+            <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.66V21a2 2 0 0 1-4 0v-.09a1.8 1.8 0 0 0-1.1-1.66 1.8 1.8 0 0 0-1.98.36l-.05.05a2 2 0 0 1-2.83-2.83l.05-.05A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.66-1.1H2.85a2 2 0 0 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.8a1.8 1.8 0 0 0-.36-1.98l-.05-.05a2 2 0 0 1 2.83-2.83l.05.05a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.1-1.66V2.6a2 2 0 0 1 4 0v.09a1.8 1.8 0 0 0 1.1 1.66 1.8 1.8 0 0 0 1.98-.36l.05-.05a2 2 0 0 1 2.83 2.83l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.66 1.1h.09a2 2 0 0 1 0 4h-.09A1.8 1.8 0 0 0 19.4 15Z" />
+          </svg>
         </button>
       </header>
 
