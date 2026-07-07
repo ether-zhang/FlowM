@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listDir, type FsEntry } from './store'
+import type { UiText } from '../app/uiText'
 
 /**
  * The right-hand file panel: a lazy tree over the project's code folder. Self-contained — it only
@@ -12,6 +13,7 @@ export function FilePanel({
   onOpenFile,
   onOpenFolder,
   onHide,
+  text,
 }: {
   folder: string
   /** Click a file → open it (the shell shows a floating editor). */
@@ -20,38 +22,39 @@ export function FilePanel({
   onOpenFolder?: () => void
   /** Collapse the panel (the shell shows a slim re-open rail). */
   onHide?: () => void
+  text: UiText
 }) {
   return (
     <div className="file-pane">
       <div className="file-toolbar">
         {onOpenFolder && (
-          <button className="file-open" onClick={onOpenFolder} title="选择工程的代码文件夹">
-            打开工程
+          <button className="file-open" onClick={onOpenFolder} title={text.file.openProjectHint}>
+            {text.file.openProject}
           </button>
         )}
         <span className="file-spacer" />
         {onHide && (
-          <button className="file-hide" onClick={onHide} title="隐藏文件栏">
+          <button className="file-hide" onClick={onHide} title={text.app.hidePanel}>
             «
           </button>
         )}
       </div>
       <div className="file-head" title={folder}>
-        <span className="file-head-name">{folder.trim() ? baseName(folder) : '未打开工程'}</span>
+        <span className="file-head-name">{folder.trim() ? baseName(folder) : text.file.noProject}</span>
       </div>
       {folder.trim() ? (
         <div className="file-tree">
-          <DirChildren path={folder} depth={0} onOpenFile={onOpenFile} />
+          <DirChildren path={folder} depth={0} onOpenFile={onOpenFile} text={text} />
         </div>
       ) : (
-        <div className="file-empty">点上方「打开工程」选择代码文件夹</div>
+        <div className="file-empty">{text.file.openProjectPrompt}</div>
       )}
     </div>
   )
 }
 
 /** The children of one directory, fetched lazily; re-fetched if `path` changes. */
-function DirChildren({ path, depth, onOpenFile }: { path: string; depth: number; onOpenFile?: (path: string) => void }) {
+function DirChildren({ path, depth, onOpenFile, text }: { path: string; depth: number; onOpenFile?: (path: string) => void; text: UiText }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -68,17 +71,17 @@ function DirChildren({ path, depth, onOpenFile }: { path: string; depth: number;
 
   if (error) return <div className="file-note" style={indent(depth)}>{error}</div>
   if (!entries) return <div className="file-note" style={indent(depth)}>…</div>
-  if (entries.length === 0) return <div className="file-note" style={indent(depth)}>（空）</div>
+  if (entries.length === 0) return <div className="file-note" style={indent(depth)}>({text.common.empty})</div>
   return (
     <>
       {entries.map((e) => (
-        <Node key={e.path} entry={e} depth={depth} onOpenFile={onOpenFile} />
+        <Node key={e.path} entry={e} depth={depth} onOpenFile={onOpenFile} text={text} />
       ))}
     </>
   )
 }
 
-function Node({ entry, depth, onOpenFile }: { entry: FsEntry; depth: number; onOpenFile?: (path: string) => void }) {
+function Node({ entry, depth, onOpenFile, text }: { entry: FsEntry; depth: number; onOpenFile?: (path: string) => void; text: UiText }) {
   const [open, setOpen] = useState(false)
   if (!entry.isDir) {
     return (
@@ -94,7 +97,7 @@ function Node({ entry, depth, onOpenFile }: { entry: FsEntry; depth: number; onO
         <span className="file-caret">{open ? '▾' : '▸'}</span>
         <span className="file-name">{entry.name}</span>
       </div>
-      {open && <DirChildren path={entry.path} depth={depth + 1} onOpenFile={onOpenFile} />}
+      {open && <DirChildren path={entry.path} depth={depth + 1} onOpenFile={onOpenFile} text={text} />}
     </>
   )
 }

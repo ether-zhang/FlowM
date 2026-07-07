@@ -9,7 +9,8 @@ import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, CodexEngine, defaultClaudeBin, defaultCodexBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
-import { ActivityBar, activityViews, isActivityView, type ActivityView } from './ActivityBar'
+import { ActivityBar, isActivityView, type ActivityView } from './ActivityBar'
+import { formatUiText, parseUiLanguage, UI_LANGUAGE_STORAGE, uiLanguageOptions, uiText, type UiLanguage } from './uiText'
 import './app.css'
 
 const KEY_STORAGE = 'flowm.apiKey'
@@ -72,6 +73,12 @@ export function App() {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
   const [debug, setDebug] = useState(false)
+  const [language, setLanguageState] = useState<UiLanguage>(() => parseUiLanguage(localStorage.getItem(UI_LANGUAGE_STORAGE)))
+  const text = uiText[language]
+  const setLanguage = (next: UiLanguage) => {
+    setLanguageState(next)
+    localStorage.setItem(UI_LANGUAGE_STORAGE, next)
+  }
   const initialApiUrl = localStorage.getItem(API_URL_STORAGE) ?? POE_BASE_URL
   const apiUrlRef = useRef(initialApiUrl)
   const [apiUrl, setApiUrl] = useState(initialApiUrl)
@@ -352,10 +359,10 @@ export function App() {
   const isLocalAgent = engineId.includes('claude') || engineId.includes('codex')
   const canSend = isLocalAgent ? !!cwd.trim() : apiKeySet
   const placeholder = canSend
-    ? '描述需求…（Enter 发送）'
+    ? text.app.placeholderReady
     : isLocalAgent
-      ? '请先打开工程（右侧文件栏「打开工程」）'
-      : '请先在设置中填写 API Key'
+      ? text.app.openProjectFirst
+      : text.app.apiKeyFirst
   // The Claude canvas engine's config row is just the session switcher now; 打开工程 moved to the file
   // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
   const engineConfig =
@@ -363,15 +370,16 @@ export function App() {
       <PickerBar
         items={ws.sessions}
         activeId={ws.activeSessionId}
-        placeholder={ws.projectName ? '（无对话）' : '未打开工程（左侧文件栏「打开工程」）'}
-        newTitle="新建对话"
+        placeholder={ws.projectName ? text.workspace.noSession : text.workspace.noProject}
+        newTitle={text.workspace.newSession}
         onSelect={ws.selectSession}
         onNew={ws.newSession}
         onRename={(id, name) => ws.renameSession(id, name)}
-        onDelete={(id, name) => openConfirm('删除对话', `确定删除对话「${name}」？此操作不可撤销。`, () => ws.deleteSession(id))}
+        onDelete={(id, name) => openConfirm(text.workspace.deleteSessionTitle, formatUiText(text.workspace.deleteSessionMessage, { name }), () => ws.deleteSession(id))}
+        text={text}
       />
     ) : undefined
-  const activeActivityLabel = activityViews.find((view) => view.id === activeActivity)?.label ?? ''
+  const activeActivityLabel = text.activity.labels[activeActivity]
 
   return (
     <>
@@ -381,26 +389,26 @@ export function App() {
     <div className="layout">
       {IS_TAURI && (
         <aside className="activity-shell">
-          <ActivityBar active={activeActivity} panelOpen={filesShown} onSelect={selectActivity} />
+          <ActivityBar active={activeActivity} panelOpen={filesShown} onSelect={selectActivity} text={text} />
           {filesShown && (
             <>
               {activeActivity === 'files' ? (
                 <section className="side-pane file-pane-wrap" style={{ width: filesW }}>
-                  <FilePanel folder={cwd} onOpenFile={setOpenFile} onOpenFolder={ws.openFolder} onHide={() => toggleFiles(false)} />
+                  <FilePanel folder={cwd} onOpenFile={setOpenFile} onOpenFolder={ws.openFolder} onHide={() => toggleFiles(false)} text={text} />
                 </section>
               ) : activeActivity === 'git' ? (
                 <section className="side-pane activity-pane" style={{ width: filesW }}>
-                  <GitPanel folder={cwd} onHide={() => toggleFiles(false)} />
+                  <GitPanel folder={cwd} onHide={() => toggleFiles(false)} text={text} />
                 </section>
               ) : (
                 <section className="side-pane activity-pane" style={{ width: filesW }}>
                   <div className="activity-panel-head">
                     <span className="activity-panel-title">{activeActivityLabel}</span>
-                    <button className="file-hide" onClick={() => toggleFiles(false)} title="隐藏侧栏">
+                    <button className="file-hide" onClick={() => toggleFiles(false)} title={text.app.hidePanel}>
                       «
                     </button>
                   </div>
-                  <div className="activity-empty">暂无内容</div>
+                  <div className="activity-empty">{text.app.emptyPanel}</div>
                 </section>
               )}
               <Resizer width={filesW} setWidth={persistFilesW} sign={1} />
@@ -417,12 +425,13 @@ export function App() {
             <PickerBar
               items={ws.canvases}
               activeId={ws.activeCanvasId}
-              placeholder="（无画布）"
-              newTitle="新建画布（不新建对话）"
+              placeholder={text.workspace.noCanvas}
+              newTitle={text.workspace.newCanvas}
               onSelect={ws.selectCanvas}
               onNew={ws.newCanvas}
               onRename={(id, name) => ws.renameCanvas(id, name)}
-              onDelete={(id, name) => openConfirm('删除画布', `确定删除画布「${name}」？画布内容将一并删除。`, () => ws.deleteCanvas(id))}
+              onDelete={(id, name) => openConfirm(text.workspace.deleteCanvasTitle, formatUiText(text.workspace.deleteCanvasMessage, { name }), () => ws.deleteCanvas(id))}
+              text={text}
             />
           </div>
         )}
@@ -447,11 +456,12 @@ export function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           onSave={onSave}
           onLoad={onLoad}
+          text={text}
         />
       </aside>
     </div>
 
-    {openFile && <FloatingEditor path={openFile} onClose={() => setOpenFile(null)} />}
+    {openFile && <FloatingEditor path={openFile} onClose={() => setOpenFile(null)} text={text} />}
 
     {dialog && (
       <div className="modal-backdrop" onClick={() => setDialog(null)}>
@@ -468,7 +478,7 @@ export function App() {
           <div className="modal-actions">
             {/* Focus lands on 取消: Enter right after opening cancels (never deletes), Escape
                 closes — deleting always takes an explicit click / Tab+Enter. */}
-            <button autoFocus onClick={() => setDialog(null)}>取消</button>
+            <button autoFocus onClick={() => setDialog(null)}>{text.common.cancel}</button>
             <button
               className="danger"
               onClick={() => {
@@ -476,7 +486,7 @@ export function App() {
                 setDialog(null)
               }}
             >
-              删除
+              {text.common.delete}
             </button>
           </div>
         </div>
@@ -486,8 +496,18 @@ export function App() {
     {settingsOpen && (
       <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <h3 className="modal-title">设置</h3>
-          <p className="modal-hint"><strong>API</strong></p>
+          <h3 className="modal-title">{text.settings.title}</h3>
+          <p className="modal-hint"><strong>{text.language.label}</strong></p>
+          <select
+            className="modal-input"
+            value={language}
+            onChange={(e) => setLanguage(parseUiLanguage(e.target.value))}
+          >
+            {uiLanguageOptions.map((id) => (
+              <option key={id} value={id}>{text.language.options[id]}</option>
+            ))}
+          </select>
+          <p className="modal-hint"><strong>{text.settings.apiSection}</strong></p>
           <p className="modal-hint">OpenAI-compatible URL</p>
           <input
             className="modal-input"
@@ -504,12 +524,12 @@ export function App() {
             }}
             style={{ fontFamily: 'monospace' }}
           />
-          <p className="modal-hint">API Key（{apiKeySet ? '已设置' : '未设置'}）</p>
+          <p className="modal-hint">{text.settings.apiKeyStatus} ({apiKeySet ? text.settings.apiKeySet : text.settings.apiKeyUnset})</p>
           <input
             className="modal-input"
             type="password"
             value={apiKeyInput}
-            placeholder={apiKeySet ? '留空表示不修改已保存 Key' : '输入 API Key'}
+            placeholder={apiKeySet ? text.settings.apiKeyKeep : text.settings.apiKeyInput}
             onChange={(e) => setApiKeyInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void saveApiKey()
@@ -517,19 +537,19 @@ export function App() {
             }}
           />
           <div className="modal-actions">
-            <button onClick={clearApiKey}>清除 Key</button>
-            <button className="primary" disabled={!apiKeyInput.trim()} onClick={saveApiKey}>保存 Key</button>
+            <button onClick={clearApiKey}>{text.settings.clearKey}</button>
+            <button className="primary" disabled={!apiKeyInput.trim()} onClick={saveApiKey}>{text.settings.saveKey}</button>
           </div>
 
-          <p className="modal-hint"><strong>本地Agent</strong></p>
+          <p className="modal-hint"><strong>{text.settings.localAgentSection}</strong></p>
           <p className="modal-hint">
-            可执行文件路径。留空则使用 PATH；GUI 应用可能不继承 shell PATH，填绝对路径最稳。
+            {text.settings.executableHint}
           </p>
           <p className="modal-hint">Claude</p>
           <input
             className="modal-input"
             value={bin}
-            placeholder="如 /Users/you/.local/bin/claude 或 claude.exe 的完整路径"
+            placeholder={text.settings.claudePlaceholder}
             onChange={(e) => {
               binRef.current = e.target.value
               setBin(e.target.value)
@@ -544,7 +564,7 @@ export function App() {
           <input
             className="modal-input"
             value={codexBin}
-            placeholder="如 /Users/you/.local/bin/codex 或 codex.exe 的完整路径"
+            placeholder={text.settings.codexPlaceholder}
             onChange={(e) => {
               codexBinRef.current = e.target.value
               setCodexBin(e.target.value)
@@ -556,7 +576,7 @@ export function App() {
             style={{ fontFamily: 'monospace' }}
           />
           <div className="modal-actions">
-            <button className="primary" onClick={() => setSettingsOpen(false)}>完成</button>
+            <button className="primary" onClick={() => setSettingsOpen(false)}>{text.common.done}</button>
           </div>
         </div>
       </div>

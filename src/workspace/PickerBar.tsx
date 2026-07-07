@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { UiText } from '../app/uiText'
 
 /**
  * A compact Claude-Code-style picker used for BOTH sessions and canvases (画布 ⊥ session, same UX):
@@ -33,6 +34,7 @@ export function PickerBar({
   onNew,
   onRename,
   onDelete,
+  text,
 }: {
   items: PickerItem[]
   activeId: string | null
@@ -46,6 +48,7 @@ export function PickerBar({
   onRename: (id: string, name: string) => void
   /** Delete routes through the caller's confirm dialog. */
   onDelete: (id: string, name: string) => void
+  text: UiText
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -95,11 +98,11 @@ export function PickerBar({
         {editingId && editingId === active?.id ? (
           <input {...editorProps} />
         ) : (
-          <span className="picker-name" title={active ? '双击改名' : ''} onDoubleClick={() => active && startEdit(active)}>
+          <span className="picker-name" title={active ? text.picker.renameHint : ''} onDoubleClick={() => active && startEdit(active)}>
             {active ? active.name : placeholder}
           </span>
         )}
-        <button className="picker-icon" title="历史 / 切换" onClick={() => setOpen((o) => !o)} disabled={!hasItems}>
+        <button className="picker-icon" title={text.picker.history} onClick={() => setOpen((o) => !o)} disabled={!hasItems}>
           <ClockIcon />
         </button>
         <button className="picker-icon" title={newTitle} onClick={onNew} disabled={!hasItems}>
@@ -108,7 +111,7 @@ export function PickerBar({
       </div>
       {open && (
         <div className="picker-menu">
-          <input className="picker-search" placeholder="搜索…" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
+          <input className="picker-search" placeholder={text.picker.search} value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
           <div className="picker-rows">
             {filtered.map((it) => (
               <div
@@ -134,7 +137,7 @@ export function PickerBar({
                 )}
                 <button
                   className="picker-row-btn"
-                  title="重命名"
+                  title={text.picker.rename}
                   onClick={(e) => {
                     e.stopPropagation()
                     startEdit(it)
@@ -144,7 +147,7 @@ export function PickerBar({
                 </button>
                 <button
                   className="picker-row-btn"
-                  title="删除"
+                  title={text.picker.delete}
                   onClick={(e) => {
                     e.stopPropagation()
                     onDelete(it.id, it.name)
@@ -154,7 +157,7 @@ export function PickerBar({
                 </button>
               </div>
             ))}
-            {filtered.length === 0 && <div className="picker-empty">无匹配</div>}
+            {filtered.length === 0 && <div className="picker-empty">{text.picker.noMatch}</div>}
           </div>
         </div>
       )}

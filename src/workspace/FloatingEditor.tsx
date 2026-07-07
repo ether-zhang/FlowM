@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { readFile, writeFile } from './store'
+import type { UiText } from '../app/uiText'
 
 /**
  * A floating, draggable text editor for one project file. Opened by clicking a file in the panel;
  * loads via read_file, saves via write_file. Kept self-contained (only the store), so the shell
  * just renders <FloatingEditor path onClose /> when a file is open — no coupling to conversations.
  */
-export function FloatingEditor({ path, onClose }: { path: string; onClose: () => void }) {
+export function FloatingEditor({ path, onClose, text: uiText }: { path: string; onClose: () => void; text: UiText }) {
   const [text, setText] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -65,7 +66,7 @@ export function FloatingEditor({ path, onClose }: { path: string; onClose: () =>
       <div className="float-editor-bar" onPointerDown={onDragStart}>
         <span className="float-editor-title" title={path}>{baseName(path)}{dirty ? ' •' : ''}</span>
         <span className="float-editor-spacer" />
-        <button onClick={save} disabled={saving || !dirty || text == null}>{saving ? '…' : '保存'}</button>
+        <button onClick={save} disabled={saving || !dirty || text == null}>{saving ? '…' : uiText.file.save}</button>
         <button onClick={onClose}>✕</button>
       </div>
       {error ? (

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DisplayMessage } from './types'
+import { engineDisplayLabel, isSystemErrorNote, localizeSystemNote, type UiText } from '../app/uiText'
 
 export interface ChatProps {
   messages: DisplayMessage[]
@@ -21,6 +22,7 @@ export interface ChatProps {
   onOpenSettings: () => void
   onSave: () => void
   onLoad: () => void
+  text: UiText
 }
 
 type RenderItem =
@@ -28,13 +30,13 @@ type RenderItem =
   | { type: 'sysgroup'; id: string; notes: DisplayMessage[] }
 
 /**
- * Fold each maximal run of consecutive `system` notes (tool progress: Read/Grep/工具完成/✓ 完成…)
+ * Fold each maximal run of consecutive `system` notes (tool progress: Read/Grep/tool done/result…)
  * into one group — mirroring the Claude Code VSCode extension, which collapses tool activity into a
  * single expandable row. A real reply (assistant/user/debug) breaks the run, so notes only collapse
  * when there's no actual reply between them.
  */
-/** An error note (the send catch's `出错：…`) — must stay visible, never folded away. */
-const isErrorNote = (m: DisplayMessage) => m.text.startsWith('出错')
+/** Error notes must stay visible, never folded away. */
+const isErrorNote = (m: DisplayMessage) => isSystemErrorNote(m.text)
 
 function groupMessages(messages: DisplayMessage[]): RenderItem[] {
   const items: RenderItem[] = []
@@ -67,6 +69,7 @@ export function Chat({
   onOpenSettings,
   onSave,
   onLoad,
+  text: uiText,
 }: ChatProps) {
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
@@ -116,6 +119,7 @@ export function Chat({
   }
 
   const activeEngine = engines.find((e) => e.id === engineId) ?? engines[0]
+  const activeEngineLabel = activeEngine ? engineDisplayLabel(uiText, activeEngine.id, activeEngine.label) : uiText.chat.assistant
 
   return (
     <div className="chat">
@@ -128,40 +132,43 @@ export function Chat({
               className="chat-engine-select"
               aria-haspopup="listbox"
               aria-expanded={engineMenuOpen}
-              title="选择画布助手"
+              title={uiText.chat.selectAssistant}
               onClick={() => setEngineMenuOpen((open) => !open)}
             >
-              <span>{activeEngine?.label ?? '画布助手'}</span>
+              <span>{activeEngineLabel}</span>
               <span className="engine-chevron" aria-hidden="true" />
             </button>
             {engineMenuOpen && (
-              <div className="engine-menu-list" role="listbox" aria-label="选择画布助手">
-                {engines.map((e) => (
-                  <button
-                    key={e.id}
-                    type="button"
-                    role="option"
-                    aria-selected={e.id === engineId}
-                    className={`engine-option${e.id === engineId ? ' active' : ''}`}
-                    onClick={() => {
-                      onSelectEngine(e.id)
-                      setEngineMenuOpen(false)
-                    }}
-                  >
-                    {e.label}
-                  </button>
-                ))}
+              <div className="engine-menu-list" role="listbox" aria-label={uiText.chat.selectAssistant}>
+                {engines.map((e) => {
+                  const label = engineDisplayLabel(uiText, e.id, e.label)
+                  return (
+                    <button
+                      key={e.id}
+                      type="button"
+                      role="option"
+                      aria-selected={e.id === engineId}
+                      className={`engine-option${e.id === engineId ? ' active' : ''}`}
+                      onClick={() => {
+                        onSelectEngine(e.id)
+                        setEngineMenuOpen(false)
+                      }}
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
               </div>
             )}
           </div>
         )}
         <span className="spacer" />
-        <button hidden onClick={onSave} title="保存工程">保存</button>
-        <button hidden onClick={onLoad} title="加载工程">加载</button>
+        <button hidden onClick={onSave} title={uiText.chat.saveProject}>{uiText.chat.saveProject}</button>
+        <button hidden onClick={onLoad} title={uiText.chat.loadProject}>{uiText.chat.loadProject}</button>
         <button
           hidden
           onClick={onToggleDebug}
-          title="调试模式：显示每次发送给模型的请求"
+          title={uiText.chat.debugRequest}
           aria-pressed={debug}
         >
           {debug ? 'Debug ✓' : 'Debug'}
@@ -169,8 +176,8 @@ export function Chat({
         <button
           className="chat-settings-btn"
           onClick={onOpenSettings}
-          title="设置（API 与本地Agent）"
-          aria-label="设置"
+          title={uiText.chat.settingsTitle}
+          aria-label={uiText.chat.settings}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
@@ -188,7 +195,7 @@ export function Chat({
       <div className="chat-list" ref={listRef}>
         {messages.length === 0 && (
           <p className="chat-hint">
-            在画布上放置或手绘图形，选中后在这里向大模型描述需求；模型可直接修改画布。
+            {uiText.chat.hint}
           </p>
         )}
         {groupMessages(messages).map((it) => {
@@ -199,22 +206,22 @@ export function Chat({
               const m = it.notes[0]
               return (
                 <div key={m.id} className="msg msg-system">
-                  {m.text}
+                  {localizeSystemNote(uiText, m.text)}
                 </div>
               )
             }
-            const summary = it.notes[it.notes.length - 1].text
+            const summary = localizeSystemNote(uiText, it.notes[it.notes.length - 1].text)
             return (
               <details key={it.id} className="msg msg-sysgroup">
                 <summary>
-                  <span className="sysgroup-count">{it.notes.length} 步</span>
+                  <span className="sysgroup-count">{it.notes.length} {uiText.chat.steps}</span>
                   <span className="sysgroup-summary">{summary}</span>
                 </summary>
                 <div className="sysgroup-body">
                   {/* The last note is already the (always-visible) summary — don't show it twice. */}
                   {it.notes.slice(0, -1).map((n) => (
                     <div key={n.id} className="sysgroup-note">
-                      {n.text}
+                      {localizeSystemNote(uiText, n.text)}
                     </div>
                   ))}
                 </div>
@@ -225,9 +232,9 @@ export function Chat({
           if (m.role === 'debug') {
             return (
               <details key={m.id} className="msg msg-debug">
-                <summary>发送给模型的请求{m.image ? '（含图片）' : ''}</summary>
+                <summary>{m.image ? uiText.chat.debugRequestWithImage : uiText.chat.debugRequest}</summary>
                 <pre>{m.text}</pre>
-                {m.image && <img className="debug-image" src={m.image} alt="发送给模型的画布缩略图" />}
+                {m.image && <img className="debug-image" src={m.image} alt={uiText.chat.debugImageAlt} />}
               </details>
             )
           }
@@ -244,7 +251,7 @@ export function Chat({
           }
           return (
             <div key={m.id} className={`msg msg-${m.role}${m.role === 'system' && isErrorNote(m) ? ' msg-error' : ''}`}>
-              {m.text}
+              {m.role === 'system' ? localizeSystemNote(uiText, m.text) : m.text}
             </div>
           )
         })}
@@ -289,7 +296,7 @@ export function Chat({
           }}
         />
         <button onClick={send} disabled={!canSend || busy || !text.trim()}>
-          {busy ? '…' : '发送'}
+          {busy ? '…' : uiText.chat.send}
         </button>
       </div>
     </div>

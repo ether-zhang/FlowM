@@ -1,9 +1,11 @@
+import type { UiText } from './uiText'
+
 export type ActivityView = 'files' | 'search' | 'git'
 
-export const activityViews: Array<{ id: ActivityView; label: string }> = [
-  { id: 'files', label: '资源管理器' },
-  { id: 'search', label: '搜索' },
-  { id: 'git', label: '源代码管理' },
+export const activityViews: Array<{ id: ActivityView }> = [
+  { id: 'files' },
+  { id: 'search' },
+  { id: 'git' },
 ]
 
 export const isActivityView = (v: string | null): v is ActivityView =>
@@ -41,26 +43,31 @@ export function ActivityBar({
   active,
   panelOpen,
   onSelect,
+  text,
 }: {
   active: ActivityView
   panelOpen: boolean
   onSelect: (view: ActivityView) => void
+  text: UiText
 }) {
   return (
-    <nav className="activity-bar" aria-label="工作区视图">
+    <nav className="activity-bar" aria-label={text.activity.aria}>
       <div className="activity-group">
-        {activityViews.map((view) => (
-          <button
-            key={view.id}
-            className={`activity-btn${active === view.id && panelOpen ? ' active' : ''}`}
-            title={view.label}
-            aria-label={view.label}
-            aria-pressed={active === view.id && panelOpen}
-            onClick={() => onSelect(view.id)}
-          >
-            <ActivityIcon view={view.id} />
-          </button>
-        ))}
+        {activityViews.map((view) => {
+          const label = text.activity.labels[view.id]
+          return (
+            <button
+              key={view.id}
+              className={`activity-btn${active === view.id && panelOpen ? ' active' : ''}`}
+              title={label}
+              aria-label={label}
+              aria-pressed={active === view.id && panelOpen}
+              onClick={() => onSelect(view.id)}
+            >
+              <ActivityIcon view={view.id} />
+            </button>
+          )
+        })}
       </div>
     </nav>
   )

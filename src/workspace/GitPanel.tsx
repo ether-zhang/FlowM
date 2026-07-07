@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { gitDiff, gitGraph, gitStatus, type GitCommit, type GitFile, type GitStatus } from './git'
+import type { UiText } from '../app/uiText'
 
 interface TreeNode {
   name: string
@@ -8,7 +9,7 @@ interface TreeNode {
   file?: GitFile
 }
 
-export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => void }) {
+export function GitPanel({ folder, onHide, text }: { folder: string; onHide?: () => void; text: UiText }) {
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [graph, setGraph] = useState<GitCommit[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -100,19 +101,19 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
   return (
     <div className="git-panel">
       <div className="activity-panel-head">
-        <span className="activity-panel-title">源代码管理</span>
-        <button className="git-icon-btn" onClick={() => setRefreshId((n) => n + 1)} title="刷新">
+        <span className="activity-panel-title">{text.activity.labels.git}</span>
+        <button className="git-icon-btn" onClick={() => setRefreshId((n) => n + 1)} title={text.git.refresh}>
           ↻
         </button>
         {onHide && (
-          <button className="file-hide" onClick={onHide} title="隐藏侧栏">
+          <button className="file-hide" onClick={onHide} title={text.app.hidePanel}>
             «
           </button>
         )}
       </div>
 
       {!folder.trim() ? (
-        <div className="activity-empty">先打开工程后查看 Git 状态。</div>
+        <div className="activity-empty">{text.git.openProjectPrompt}</div>
       ) : error ? (
         <div className="activity-empty">{error}</div>
       ) : (
@@ -121,10 +122,10 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
             <span className="git-branch">{status?.branch ?? '...'}</span>
             <span className="git-head">{status?.head ?? ''}</span>
           </div>
-          <div className="git-section-title">更改 {status ? status.files.length : loading ? '' : 0}</div>
+          <div className="git-section-title">{text.git.changes} {status ? status.files.length : loading ? '' : 0}</div>
           <div className="git-tree">
             {loading ? (
-              <div className="git-note">读取中...</div>
+              <div className="git-note">{text.git.loading}</div>
             ) : tree.length ? (
               <GitTreeRows
                 nodes={tree}
@@ -135,41 +136,43 @@ export function GitPanel({ folder, onHide }: { folder: string; onHide?: () => vo
                 onToggleFolder={toggleFolder}
               />
             ) : (
-              <div className="git-note">没有更改</div>
+              <div className="git-note">{text.git.emptyChanges}</div>
             )}
           </div>
           <GitCollapse
-            title={selectedFile?.path ?? 'Diff'}
+            title={selectedFile?.path ?? text.git.diff}
             meta={selectedFile ? statusLabel(selectedFile) : undefined}
             metaClass={selectedFile ? statusKind(selectedFile) : undefined}
             open={diffOpen}
             onToggle={() => setDiffOpen((open) => !open)}
             className="git-diff-section"
+            text={text}
           >
             <div className="git-diff">
               {diffLoading ? (
-                <div className="git-note">加载 diff...</div>
+                <div className="git-note">{text.git.loadingDiff}</div>
               ) : selected ? (
-                <DiffText text={diff || '没有 diff'} />
+                <DiffText text={diff || text.git.noDiff} />
               ) : (
-                <div className="git-note">选择一个文件查看 diff</div>
+                <div className="git-note">{text.git.selectFile}</div>
               )}
             </div>
           </GitCollapse>
           <GitCollapse
-            title="图表"
+            title={text.git.graph}
             meta={graph.length ? String(graph.length) : undefined}
             open={graphOpen}
             onToggle={() => setGraphOpen((open) => !open)}
             className="git-graph-section"
+            text={text}
           >
             <div className="git-graph">
               {graphLoading ? (
-                <div className="git-note">加载图表...</div>
+                <div className="git-note">{text.git.loadingGraph}</div>
               ) : graph.length ? (
                 <GitGraphRows commits={graph} currentBranch={status?.branch ?? ''} />
               ) : (
-                <div className="git-note">没有提交记录</div>
+                <div className="git-note">{text.git.emptyGraph}</div>
               )}
             </div>
           </GitCollapse>
@@ -186,6 +189,7 @@ function GitCollapse({
   open,
   onToggle,
   className,
+  text,
   children,
 }: {
   title: string
@@ -194,11 +198,12 @@ function GitCollapse({
   open: boolean
   onToggle: () => void
   className?: string
+  text: UiText
   children: ReactNode
 }) {
   return (
     <section className={`git-collapsible${open ? ' open' : ''}${className ? ` ${className}` : ''}`}>
-      <button className="git-collapse-head" onClick={onToggle} title={open ? '折叠' : '展开'}>
+      <button className="git-collapse-head" onClick={onToggle} title={open ? text.common.fold : text.common.expand}>
         <span className="git-collapse-caret">{open ? '▾' : '▸'}</span>
         <span className="git-collapse-title">{title}</span>
         {meta && <span className={`git-collapse-meta ${metaClass ?? ''}`}>{meta}</span>}

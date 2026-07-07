@@ -185,7 +185,7 @@ export function useWorkspace(opts: {
   const newSession = useCallback(async () => {
     if (!metaRef.current) return
     await persistActiveSession()
-    const sm: SessionMeta = { id: crypto.randomUUID().slice(0, 8), name: `对话 ${metaRef.current.sessions.length + 1}` }
+    const sm: SessionMeta = { id: crypto.randomUUID().slice(0, 8), name: `Conversation ${metaRef.current.sessions.length + 1}` }
     metaRef.current.sessions.push(sm)
     syncLists()
     await activateSession(sm)
@@ -195,7 +195,7 @@ export function useWorkspace(opts: {
   const newCanvas = useCallback(async () => {
     if (!metaRef.current) return
     await persistActiveCanvas()
-    const cm: CanvasMeta = { id: crypto.randomUUID().slice(0, 8), name: `画布 ${metaRef.current.canvases.length + 1}` }
+    const cm: CanvasMeta = { id: crypto.randomUUID().slice(0, 8), name: `Canvas ${metaRef.current.canvases.length + 1}` }
     metaRef.current.canvases.push(cm)
     syncLists()
     await activateCanvas(cm)
