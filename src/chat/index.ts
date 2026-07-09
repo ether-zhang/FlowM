@@ -1,2 +1,2 @@
 export { Chat, type ChatProps } from './Chat'
-export type { DisplayMessage, DisplayRole } from './types'
+export type { DisplayMessage, DisplayQuestion, DisplayRole, QuestionChoice } from './types'

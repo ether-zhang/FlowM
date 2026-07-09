@@ -17,4 +17,18 @@ describe('buildCodexOpsSchema', () => {
     walk(schema, '$')
     expect(openObjects).toEqual([])
   })
+
+  it('exposes a nullable question channel for assistant confirmations', () => {
+    const schema = buildCodexOpsSchema([...canvasTools, declareStructureTool]) as {
+      required?: string[]
+      properties?: Record<string, unknown>
+    }
+
+    expect(schema.required).toContain('question')
+    expect(schema.properties?.question).toMatchObject({
+      type: ['object', 'null'],
+      additionalProperties: false,
+    })
+  })
+
 })

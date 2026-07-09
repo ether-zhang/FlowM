@@ -587,6 +587,72 @@
 /* Errors must not blend into the amber progress notes (Excalidraw danger red family). */
 .msg-system.msg-error { background: #fdecec; color: #c0392b; }
 
+.msg-question {
+  align-self: flex-start;
+  background: #f6f6fb;
+  border: 1px solid #deddf2;
+  white-space: normal;
+}
+.msg-question.answered { opacity: 0.82; }
+.question-kicker {
+  margin-bottom: 6px;
+  color: #6b5fb5;
+  font-size: 12px;
+  font-weight: 650;
+}
+.question-context {
+  margin-bottom: 6px;
+  color: #555;
+}
+.question-context > :first-child,
+.question-prompt > :first-child { margin-top: 0; }
+.question-context > :last-child,
+.question-prompt > :last-child { margin-bottom: 0; }
+.question-prompt { color: #1f1f25; }
+.question-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.question-actions button,
+.question-other button {
+  border: 1px solid #c9c6ec;
+  border-radius: 7px;
+  background: #fff;
+  color: #2d2b38;
+  padding: 5px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.question-actions button:hover,
+.question-other button:hover { background: #efedff; }
+.question-actions button:disabled,
+.question-other button:disabled {
+  color: #999;
+  background: #f4f4f6;
+  cursor: default;
+}
+.question-other {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.question-other textarea {
+  min-height: 56px;
+  resize: vertical;
+  border: 1px solid #d4d4d8;
+  border-radius: 7px;
+  padding: 7px 8px;
+  font: inherit;
+}
+.question-other button { justify-self: end; }
+.question-answer {
+  margin-top: 8px;
+  color: #5d5d66;
+  font-size: 12px;
+}
+
 /* Markdown rendered inside the assistant bubble: tighten default block margins
    so it reads like a chat message, and style code/lists/tables. */
 .msg-assistant > :first-child { margin-top: 0; }

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { DisplayMessage } from './types'
-import { engineDisplayLabel, isSystemErrorNote, localizeSystemNote, type UiText } from '../app/uiText'
+import type { DisplayMessage, QuestionChoice } from './types'
+import { engineDisplayLabel, formatUiText, isSystemErrorNote, localizeSystemNote, type UiText } from '../app/uiText'
 
 export interface ChatProps {
   messages: DisplayMessage[]
@@ -18,6 +18,7 @@ export interface ChatProps {
   engineConfig?: React.ReactNode
   placeholder: string
   onSend: (text: string) => void
+  onAnswerQuestion: (messageId: string, choice: QuestionChoice, text?: string) => void
   onToggleDebug: () => void
   onOpenSettings: () => void
   onSave: () => void
@@ -65,6 +66,7 @@ export function Chat({
   engineConfig,
   placeholder,
   onSend,
+  onAnswerQuestion,
   onToggleDebug,
   onOpenSettings,
   onSave,
@@ -75,6 +77,8 @@ export function Chat({
   const listRef = useRef<HTMLDivElement>(null)
   const engineMenuRef = useRef<HTMLDivElement>(null)
   const [engineMenuOpen, setEngineMenuOpen] = useState(false)
+  const [otherQuestionId, setOtherQuestionId] = useState<string | null>(null)
+  const [otherText, setOtherText] = useState('')
   // IME (CJK) guards for Enter-to-send. No single signal is reliable across webviews, so onKeyDown
   // combines them. `composingRef` is true between compositionstart and compositionend.
   const composingRef = useRef(false)
@@ -111,15 +115,28 @@ export function Chat({
     }
   }, [engineMenuOpen])
 
+  const pendingQuestion = messages.find((m) => m.question && !m.question.answer)
+
   const send = () => {
     const t = text.trim()
-    if (!t || busy) return
+    if (!t || busy || pendingQuestion) return
     onSend(t)
     setText('')
   }
 
   const activeEngine = engines.find((e) => e.id === engineId) ?? engines[0]
   const activeEngineLabel = activeEngine ? engineDisplayLabel(uiText, activeEngine.id, activeEngine.label) : uiText.chat.assistant
+  const questionChoiceLabel = (choice: QuestionChoice) =>
+    choice === 'yes' ? uiText.chat.questionYes : choice === 'no' ? uiText.chat.questionNo : uiText.chat.questionOther
+  const submitQuestionAnswer = (messageId: string, choice: QuestionChoice, value = '') => {
+    const answer = value.trim()
+    if (choice === 'other' && !answer) return
+    onAnswerQuestion(messageId, choice, answer)
+    if (otherQuestionId === messageId) {
+      setOtherQuestionId(null)
+      setOtherText('')
+    }
+  }
 
   return (
     <div className="chat">
@@ -229,6 +246,70 @@ export function Chat({
             )
           }
           const m = it.m
+          if (m.question) {
+            const q = m.question
+            const answered = q.answer
+            const otherOpen = otherQuestionId === m.id
+            const answerText = answered
+              ? answered.text || questionChoiceLabel(answered.choice)
+              : ''
+            return (
+              <div key={m.id} className={`msg msg-question${answered ? ' answered' : ''}`}>
+                <div className="question-kicker">{uiText.chat.questionTitle}</div>
+                {m.text && (
+                  <div className="question-context">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                  </div>
+                )}
+                <div className="question-prompt">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{q.prompt}</ReactMarkdown>
+                </div>
+                {answered ? (
+                  <div className="question-answer">
+                    {formatUiText(uiText.chat.questionAnswered, { answer: answerText })}
+                  </div>
+                ) : (
+                  <>
+                    <div className="question-actions">
+                      <button type="button" disabled={busy} onClick={() => submitQuestionAnswer(m.id, 'yes')}>
+                        {uiText.chat.questionYes}
+                      </button>
+                      <button type="button" disabled={busy} onClick={() => submitQuestionAnswer(m.id, 'no')}>
+                        {uiText.chat.questionNo}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          setOtherQuestionId(otherOpen ? null : m.id)
+                          setOtherText('')
+                        }}
+                      >
+                        {uiText.chat.questionOther}
+                      </button>
+                    </div>
+                    {otherOpen && (
+                      <div className="question-other">
+                        <textarea
+                          value={otherText}
+                          placeholder={uiText.chat.questionOtherPlaceholder}
+                          disabled={busy}
+                          onChange={(e) => setOtherText(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          disabled={busy || !otherText.trim()}
+                          onClick={() => submitQuestionAnswer(m.id, 'other', otherText)}
+                        >
+                          {uiText.chat.questionSendOther}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          }
           if (m.role === 'debug') {
             return (
               <details key={m.id} className="msg msg-debug">
@@ -260,8 +341,8 @@ export function Chat({
       <div className="chat-input">
         <textarea
           value={text}
-          placeholder={placeholder}
-          disabled={!canSend || busy}
+          placeholder={pendingQuestion ? uiText.chat.questionInputDisabled : placeholder}
+          disabled={!canSend || busy || !!pendingQuestion}
           onChange={(e) => setText(e.target.value)}
           onCompositionStart={() => {
             composingRef.current = true
@@ -295,7 +376,7 @@ export function Chat({
             send()
           }}
         />
-        <button onClick={send} disabled={!canSend || busy || !text.trim()}>
+        <button onClick={send} disabled={!canSend || busy || !!pendingQuestion || !text.trim()}>
           {busy ? '…' : uiText.chat.send}
         </button>
       </div>

@@ -5,6 +5,7 @@ import { codexRun, writeCodexCanvasGuide } from '../engine/codexCli'
 import { createCodexStderrFilter, interpretCodexLine, extractCodexThreadId } from '../engine/codexStream'
 import { writeDesign } from '../engine/claudeCode'
 import { FLOWM_CODEX_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
+import { normalizeLlmQuestion } from './questions'
 
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
@@ -82,7 +83,7 @@ export class CodexAdapter implements LlmAdapter {
     )
     const structured = parseStructured(last)
     const result = toTurn(structured, this.turn)
-    if (!result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
+    if (!result.question && !result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
 
     if (cb.onDebug) {
       const ops = Array.isArray((structured as { operations?: unknown })?.operations) ? ((structured as { operations: unknown[] }).operations) : []
@@ -157,6 +158,7 @@ function toTurn(structured: unknown, turn: number): LlmTurn {
   const obj = (structured ?? {}) as { reply?: unknown; operations?: unknown }
   const text = typeof obj.reply === 'string' ? obj.reply : ''
   const ops = Array.isArray(obj.operations) ? obj.operations : []
+  const question = normalizeLlmQuestion((obj as { question?: unknown }).question)
   const toolCalls: LlmToolCall[] = []
   ops.forEach((op, i) => {
     if (op && typeof op === 'object' && typeof (op as { op?: unknown }).op === 'string') {
@@ -164,7 +166,7 @@ function toTurn(structured: unknown, turn: number): LlmTurn {
       toolCalls.push({ id: `codex-${turn}-${i}`, name, args })
     }
   })
-  return { text, toolCalls }
+  return question ? { text, toolCalls, question } : { text, toolCalls }
 }
 
 /**
@@ -179,6 +181,15 @@ export function buildCodexOpsSchema(tools: ToolDef[]): Record<string, unknown> {
     additionalProperties: false,
     properties: {
       reply: { type: 'string', description: 'User-facing answer. Use an empty string if there is nothing to say.' },
+      question: {
+        type: ['object', 'null'],
+        additionalProperties: false,
+        description: 'Set to {prompt} only when you need user confirmation or a choice before continuing; otherwise null. If set, keep operations empty.',
+        properties: {
+          prompt: { type: 'string', description: 'The concise yes/no/other question shown to the user.' },
+        },
+        required: ['prompt'],
+      },
       operations: {
         type: 'array',
         description: 'Canvas operations. Use [] for answer-only or no-op turns.',
@@ -225,7 +236,7 @@ export function buildCodexOpsSchema(tools: ToolDef[]): Record<string, unknown> {
         },
       },
     },
-    required: ['reply', 'operations'],
+    required: ['reply', 'question', 'operations'],
   }
 }
 

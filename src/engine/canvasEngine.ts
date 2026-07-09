@@ -39,6 +39,7 @@ export class CanvasEngine implements ChatEngine {
       // it reports the real send via onDebug instead; suppress the logical view to avoid confusion.
       onRequest: this.debugViaAdapter ? undefined : cb.onRequest,
       onDebug: this.debugViaAdapter ? cb.onDebug : undefined,
+      onQuestion: cb.onQuestion,
     })
   }
 }

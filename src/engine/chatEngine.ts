@@ -1,4 +1,5 @@
 import type { RunTurnParams } from '../llm'
+import type { LlmQuestion } from '../llm/types'
 
 /** What an engine reports back while producing a reply, mapped onto chat messages. */
 export interface ChatCallbacks {
@@ -11,6 +12,8 @@ export interface ChatCallbacks {
   /** Debug hook: an engine-specific diagnostic blob (e.g. Claude's raw structured output),
    *  shown only in debug mode. Set when debug is on; engines that have nothing skip it. */
   onDebug?(text: string): void
+  /** The engine needs a user decision before it can continue this same conversation. */
+  onQuestion?(question: LlmQuestion): void
 }
 
 /**

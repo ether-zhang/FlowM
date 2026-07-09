@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type RunTurnParams } from '../llm'
-import { Chat, type DisplayMessage } from '../chat'
+import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type LlmQuestion, type RunTurnParams } from '../llm'
+import { Chat, type DisplayMessage, type QuestionChoice } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
@@ -270,6 +270,20 @@ export function App() {
     return id
   }
 
+  const addQuestionMessage = (question: LlmQuestion, targetEngineId: string) => {
+    const id = crypto.randomUUID()
+    setMessages((m) => [
+      ...m,
+      {
+        id,
+        role: 'assistant',
+        text: '',
+        question: { prompt: question.prompt, engineId: targetEngineId },
+      },
+    ])
+    return id
+  }
+
   const appendToMessage = (id: string, delta: string) =>
     setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, text: msg.text + delta } : msg)))
 
@@ -294,12 +308,19 @@ export function App() {
     setApiKeyInput('')
   }
 
-  const onSend = useCallback(
-    async (text: string) => {
-      const engine = engines.find((e) => e.id === engineId)
+  const formatQuestionAnswer = useCallback((choice: QuestionChoice, detail = '') => {
+    const extra = detail.trim()
+    if (choice === 'yes') return extra ? `${text.chat.questionYes}: ${extra}` : text.chat.questionYes
+    if (choice === 'no') return extra ? `${text.chat.questionNo}: ${extra}` : text.chat.questionNo
+    return extra
+  }, [text])
+
+  const sendToEngine = useCallback(
+    async (targetEngineId: string, text: string) => {
+      const engine = engines.find((e) => e.id === targetEngineId)
       if (!engine) return
       // The API canvas engine needs a live Conversation; create it on first use.
-      if (engineId === 'canvas' && !convRef.current) {
+      if (targetEngineId === 'canvas' && !convRef.current) {
         if (IS_TAURI) ensureConversation()
         else {
           const key = localStorage.getItem(KEY_STORAGE)
@@ -323,6 +344,10 @@ export function App() {
             addMessage('system', note)
             assistantId = null
           },
+          onQuestion: (question) => {
+            addQuestionMessage(question, targetEngineId)
+            assistantId = null
+          },
           onRequest: debug
             ? (params, i) => addMessage('debug', formatRequest(params, i), requestImage(params))
             : undefined,
@@ -337,7 +362,34 @@ export function App() {
         setBusy(false)
       }
     },
-    [engines, engineId, ensureConversation, debug],
+    [engines, ensureConversation, debug],
+  )
+
+  const onSend = useCallback(
+    async (text: string) => {
+      await sendToEngine(engineId, text)
+    },
+    [engineId, sendToEngine],
+  )
+
+  const onAnswerQuestion = useCallback(
+    async (messageId: string, choice: QuestionChoice, detail = '') => {
+      if (busy) return
+      const message = messagesRef.current.find((m) => m.id === messageId)
+      const question = message?.question
+      if (!question || question.answer) return
+      const answer = formatQuestionAnswer(choice, detail)
+      if (!answer.trim()) return
+      setMessages((items) =>
+        items.map((m) =>
+          m.id === messageId && m.question
+            ? { ...m, question: { ...m.question, answer: { choice, text: answer } } }
+            : m,
+        ),
+      )
+      await sendToEngine(question.engineId, answer)
+    },
+    [busy, formatQuestionAnswer, sendToEngine],
   )
 
   const onSave = useCallback(() => {
@@ -452,6 +504,7 @@ export function App() {
           engineConfig={engineConfig}
           placeholder={placeholder}
           onSend={onSend}
+          onAnswerQuestion={onAnswerQuestion}
           onToggleDebug={() => setDebug((d) => !d)}
           onOpenSettings={() => setSettingsOpen(true)}
           onSave={onSave}

@@ -10,6 +10,10 @@ export interface LlmToolCall {
   args: Record<string, unknown>
 }
 
+export interface LlmQuestion {
+  prompt: string
+}
+
 export type LlmMessage =
   | { role: 'user'; content: string; image?: string } // image: a PNG data URL (canvas selection)
   | { role: 'assistant'; content: string; toolCalls?: LlmToolCall[] }
@@ -19,4 +23,5 @@ export type LlmMessage =
 export interface LlmTurn {
   text: string
   toolCalls: LlmToolCall[]
+  question?: LlmQuestion
 }

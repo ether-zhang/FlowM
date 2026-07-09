@@ -13,7 +13,7 @@ import {
   toolCallToOp,
 } from '../protocol'
 import type { LlmAdapter, RunTurnParams } from './adapter'
-import type { LlmMessage, LlmToolCall } from './types'
+import type { LlmMessage, LlmQuestion, LlmToolCall } from './types'
 import { FLOWM_CANVAS_REVIEW_PROMPT, FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 
 const MAX_ITERATIONS = 8
@@ -106,6 +106,8 @@ export interface SendCallbacks {
   onRequest?(params: RunTurnParams, iteration: number): void
   /** Debug: a transforming adapter's REAL outgoing request (forwarded to runTurn's onDebug). */
   onDebug?(text: string): void
+  /** The assistant needs a yes/no/other user decision before continuing. */
+  onQuestion?(question: LlmQuestion): void
 }
 
 /** Holds the provider-neutral message history and runs the tool-use loop for one user turn. */
@@ -189,6 +191,11 @@ export class Conversation {
       const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
       cb.onRequest?.(params, i)
       const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
+      if (turn.question) {
+        this.history.push({ role: 'assistant', content: turn.text || turn.question.prompt })
+        cb.onQuestion?.(turn.question)
+        break
+      }
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.toolCalls.length === 0) break
       const applied = await this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
@@ -220,6 +227,11 @@ export class Conversation {
     const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
     cb.onRequest?.(params, MAX_ITERATIONS)
     const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
+    if (turn.question) {
+      this.history.push({ role: 'assistant', content: turn.text || turn.question.prompt })
+      cb.onQuestion?.(turn.question)
+      return
+    }
     this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
     if (turn.toolCalls.length === 0) return // model judged it already good
 

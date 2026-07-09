@@ -4,6 +4,7 @@ import type { ToolDef } from '../protocol'
 import { claudeRun, writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
 import { interpretClaudeLine, extractStructured, extractSessionId } from '../engine/claudeStream'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
+import { normalizeLlmQuestion } from './questions'
 
 /**
  * Claude Code as an LlmAdapter — the SAME canvas pipeline (Conversation: serialize + marks →
@@ -127,7 +128,7 @@ export class ClaudeAdapter implements LlmAdapter {
     // Answer-mode fallback: the model answered in PROSE and left the structured reply empty, with no
     // operations — surface the prose so the answer isn't swallowed. Guarded on no operations, so a
     // drawing turn's working-notes prose still never reaches the bubble.
-    if (!result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
+    if (!result.question && !result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
     // Debug: the model's RAW structured output — so the panel shows EXACTLY what Claude returned
     // (notably: do its create_geo ops carry x/y, or did it leave layout to the framework?), not
     // just the post-apply canvas (whose list always has coordinates). Coordinate count up front.
@@ -194,6 +195,14 @@ export function buildOpsSchema(tools: ToolDef[]): Record<string, unknown> {
     type: 'object',
     properties: {
       reply: { type: 'string', description: '给用户的简短文字（可选）；只问答时把答案放这里、operations 留空。' },
+      question: {
+        type: 'object',
+        description: 'Set this only when you need the user to confirm or choose before continuing. If set, keep operations empty.',
+        properties: {
+          prompt: { type: 'string', description: 'The concise yes/no/other question shown to the user.' },
+        },
+        required: ['prompt'],
+      },
       operations: {
         type: 'array',
         description: '本轮对画布的动作，规范化；无改动时给空数组。',
@@ -213,6 +222,7 @@ function toTurn(structured: unknown, turn: number): LlmTurn {
   const obj = (structured ?? {}) as { reply?: unknown; operations?: unknown }
   const text = typeof obj.reply === 'string' ? obj.reply : ''
   const ops = Array.isArray(obj.operations) ? obj.operations : []
+  const question = normalizeLlmQuestion((obj as { question?: unknown }).question)
   const toolCalls: LlmToolCall[] = []
   ops.forEach((op, i) => {
     if (op && typeof op === 'object' && typeof (op as { op?: unknown }).op === 'string') {
@@ -220,5 +230,5 @@ function toTurn(structured: unknown, turn: number): LlmTurn {
       toolCalls.push({ id: `claude-${turn}-${i}`, name, args })
     }
   })
-  return { text, toolCalls }
+  return question ? { text, toolCalls, question } : { text, toolCalls }
 }
