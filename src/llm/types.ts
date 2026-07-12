@@ -1,3 +1,5 @@
+import type { AgentQuestion } from '../agentControl'
+
 /**
  * Provider-neutral conversation types. The conversation loop and the rest of the
  * app speak only these; each adapter translates them to/from its provider's wire
@@ -10,9 +12,7 @@ export interface LlmToolCall {
   args: Record<string, unknown>
 }
 
-export interface LlmQuestion {
-  prompt: string
-}
+export type LlmQuestion = AgentQuestion
 
 export type LlmMessage =
   | { role: 'user'; content: string; image?: string } // image: a PNG data URL (canvas selection)

@@ -1,5 +1,6 @@
 import type { CanvasPort } from '../protocol'
 import type { Conversation } from '../llm'
+import type { AgentQuestionAnswer } from '../agentControl'
 import type { ChatEngine, ChatCallbacks } from './chatEngine'
 
 /**
@@ -41,5 +42,11 @@ export class CanvasEngine implements ChatEngine {
       onDebug: this.debugViaAdapter ? cb.onDebug : undefined,
       onQuestion: cb.onQuestion,
     })
+  }
+
+  async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
+    const conv = this.getConv()
+    if (!conv) throw new Error('Canvas conversation is not ready')
+    await conv.answerQuestion(answer)
   }
 }

@@ -13,6 +13,7 @@ import {
   toolCallToOp,
 } from '../protocol'
 import type { LlmAdapter, RunTurnParams } from './adapter'
+import type { AgentQuestionAnswer } from '../agentControl'
 import type { LlmMessage, LlmQuestion, LlmToolCall } from './types'
 import { FLOWM_CANVAS_REVIEW_PROMPT, FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 
@@ -20,6 +21,8 @@ const MAX_ITERATIONS = 8
 
 /** Tools the model may call: the canvas ops plus the structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
+
+const questionText = (question: LlmQuestion) => question.items.map((item) => item.prompt).join('\n')
 
 interface OpCall {
   id: string
@@ -145,6 +148,11 @@ export class Conversation {
     return this.history
   }
 
+  async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
+    if (!this.adapter.answerQuestion) throw new Error('This agent does not support in-flight questions')
+    await this.adapter.answerQuestion(answer)
+  }
+
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn
@@ -190,9 +198,14 @@ export class Conversation {
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
       cb.onRequest?.(params, i)
-      const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
+      const turn = await this.adapter.runTurn(params, {
+        onText: cb.onText,
+        onSystem: cb.onToolsApplied,
+        onDebug: cb.onDebug,
+        onQuestion: cb.onQuestion,
+      })
       if (turn.question) {
-        this.history.push({ role: 'assistant', content: turn.text || turn.question.prompt })
+        this.history.push({ role: 'assistant', content: turn.text || questionText(turn.question) })
         cb.onQuestion?.(turn.question)
         break
       }
@@ -226,9 +239,14 @@ export class Conversation {
 
     const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
     cb.onRequest?.(params, MAX_ITERATIONS)
-    const turn = await this.adapter.runTurn(params, { onText: cb.onText, onSystem: cb.onToolsApplied, onDebug: cb.onDebug })
+    const turn = await this.adapter.runTurn(params, {
+      onText: cb.onText,
+      onSystem: cb.onToolsApplied,
+      onDebug: cb.onDebug,
+      onQuestion: cb.onQuestion,
+    })
     if (turn.question) {
-      this.history.push({ role: 'assistant', content: turn.text || turn.question.prompt })
+      this.history.push({ role: 'assistant', content: turn.text || questionText(turn.question) })
       cb.onQuestion?.(turn.question)
       return
     }

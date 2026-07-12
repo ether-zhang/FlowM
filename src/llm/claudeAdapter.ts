@@ -1,8 +1,8 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn, LlmToolCall } from './types'
+import { ClaudeControlClient, type AgentQuestionAnswer } from '../agentControl'
 import type { ToolDef } from '../protocol'
-import { claudeRun, writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
-import { interpretClaudeLine, extractStructured, extractSessionId } from '../engine/claudeStream'
+import { writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { normalizeLlmQuestion } from './questions'
 
@@ -29,7 +29,9 @@ import { normalizeLlmQuestion } from './questions'
 export class ClaudeAdapter implements LlmAdapter {
   private getCwd: () => string
   /** Claude Code session for this conversation; captured on the first call, `--resume`d after. */
-  private session: string | null = null
+  private initialSession: string | null
+  private client: ClaudeControlClient | null = null
+  private clientKey: string | null = null
   /** How many of Conversation's accumulated messages we've already forwarded. We send only the
    *  tail each turn (+ `--resume`); Claude's own session holds everything before it. */
   private sent = 0
@@ -46,13 +48,18 @@ export class ClaudeAdapter implements LlmAdapter {
   constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
     this.getCwd = getCwd
     this.getBin = getBin
-    this.session = initialSession
+    this.initialSession = initialSession
   }
 
   /** The Claude Code session id captured for this conversation (the `--resume` handle), or null
    *  before the first turn. The workspace persists it per conversation so a reopen can resume. */
   get sessionId(): string | null {
-    return this.session
+    return this.client?.sessionId ?? this.initialSession
+  }
+
+  async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
+    if (!this.client) throw new Error('Claude control client is not running')
+    await this.client.answerQuestion(answer)
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
@@ -77,6 +84,7 @@ export class ClaudeAdapter implements LlmAdapter {
 
     const prompt = await this.composeDelta(fresh, cwd)
     const schema = buildOpsSchema(params.tools)
+    const client = await this.ensureClient(cwd, schema)
     this.turn++
 
     // Debug: report the REAL outgoing request (the Claude engine suppresses Conversation's logical
@@ -85,44 +93,17 @@ export class ClaudeAdapter implements LlmAdapter {
     cb.onDebug?.(
       `▶ 实际发给 Claude · 第 ${this.turn} 轮\n` +
         `system: --append-system-prompt -> ${this.guidePath}\n` +
-        `resume: ${this.session ?? '(新会话)'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
+        `transport: Agent SDK control · session: ${client.sessionId ?? this.initialSession ?? '(新会话)'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
         `本轮增量（${fresh.length} 条 / ${prompt.length} 字）:\n${prompt}`,
     )
 
-    let structured: unknown = null
-    // Accumulate the model's natural-language prose across the turn. Normally the bubble shows only
-    // the structured `reply` (so drawing turns don't dump working-notes into the chat). But on a
-    // pure ANSWER turn the model may put its explanation in prose and leave `reply` empty — we fall
-    // back to this so that answer isn't dropped (see below).
-    let prose = ''
-    await claudeRun(
+    const controlResult = await client.runTurn({
       prompt,
-      cwd,
-      (e) => {
-        if (e.kind !== 'stdout') return
-        // Tool activity (Read/Grep/…) → the system-note channel (the chat's yellow hints), so the
-        // user sees Claude working WITHOUT it cluttering the assistant bubble. Prose text is kept
-        // as the answer-mode fallback; the reply itself comes from the structured output after the run.
-        for (const item of interpretClaudeLine(e.line)) {
-          if (item.kind === 'system') cb.onSystem?.(item.text)
-          else if (item.kind === 'text') prose += item.text
-        }
-        if (!this.session) {
-          const sid = extractSessionId(e.line)
-          if (sid) this.session = sid
-        }
-        const s = extractStructured(e.line)
-        if (s != null) structured = s
-      },
-      this.getBin().trim() || undefined,
-      schema,
-      this.session ?? undefined,
-      // No subagents on the canvas engine: direct Read/Grep reads code fine for a diagram, while a
-      // Task subagent inflates cost and (suspected) perturbs the result stream so the structured
-      // ops fail to land — the "drew nothing" failure. Also kills the review-turn essay.
-      ['Task'],
-      `FlowM canvas mode is active. Read ${this.guidePath} before drawing.`,
-    )
+      onSystem: cb.onSystem,
+      onQuestion: cb.onQuestion,
+    })
+    const structured = controlResult.structured
+    const prose = controlResult.prose
 
     const result = toTurn(structured, this.turn)
     // Answer-mode fallback: the model answered in PROSE and left the structured reply empty, with no
@@ -145,11 +126,28 @@ export class ClaudeAdapter implements LlmAdapter {
     // loudly so a recurrence is diagnosable (capture vs apply) straight from the devtools console.
     if (structured == null) console.warn('[ClaudeAdapter] no structured_output captured — nothing to apply this turn')
     console.info(
-      `[ClaudeAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${this.session ?? '(new)'}`,
+      `[ClaudeAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${client.sessionId ?? '(new)'}`,
     )
     // The model's short reply goes to the bubble; tool progress already showed as system hints.
     if (result.text) cb.onText(result.text)
     return result
+  }
+
+  private async ensureClient(cwd: string, schema: unknown): Promise<ClaudeControlClient> {
+    const bin = this.getBin().trim()
+    const key = `${cwd}\0${bin}`
+    if (this.client && this.clientKey === key) return this.client
+    if (this.client) await this.client.dispose()
+    this.client = new ClaudeControlClient({
+      cwd,
+      bin: bin || undefined,
+      jsonSchema: schema,
+      initialSessionId: this.initialSession ?? undefined,
+      disallowedTools: ['Task'],
+      appendSystemPrompt: `FlowM canvas mode is active. Read ${this.guidePath} before drawing.`,
+    })
+    this.clientKey = key
+    return this.client
   }
 
   /** Turn the new (non-assistant) messages into one prompt; the latest image is written to

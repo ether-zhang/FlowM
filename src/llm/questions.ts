@@ -5,5 +5,9 @@ export function normalizeLlmQuestion(value: unknown): LlmQuestion | undefined {
   const prompt = (value as { prompt?: unknown }).prompt
   if (typeof prompt !== 'string') return undefined
   const trimmed = prompt.trim()
-  return trimmed ? { prompt: trimmed } : undefined
+  return trimmed
+    ? {
+        items: [{ id: 'question', prompt: trimmed, allowOther: true }],
+      }
+    : undefined
 }

@@ -1,11 +1,14 @@
+import type { AgentQuestionItem } from '../agentControl'
+
 export type DisplayRole = 'user' | 'assistant' | 'system' | 'debug'
-export type QuestionChoice = 'yes' | 'no' | 'other'
 
 export interface DisplayQuestion {
-  prompt: string
+  requestId?: string
+  items?: AgentQuestionItem[]
+  /** Compatibility with questions persisted before native agent control. */
+  prompt?: string
   engineId: string
   answer?: {
-    choice: QuestionChoice
     text: string
   }
 }

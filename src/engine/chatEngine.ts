@@ -1,5 +1,5 @@
 import type { RunTurnParams } from '../llm'
-import type { LlmQuestion } from '../llm/types'
+import type { AgentQuestion, AgentQuestionAnswer } from '../agentControl'
 
 /** What an engine reports back while producing a reply, mapped onto chat messages. */
 export interface ChatCallbacks {
@@ -13,7 +13,7 @@ export interface ChatCallbacks {
    *  shown only in debug mode. Set when debug is on; engines that have nothing skip it. */
   onDebug?(text: string): void
   /** The engine needs a user decision before it can continue this same conversation. */
-  onQuestion?(question: LlmQuestion): void
+  onQuestion?(question: AgentQuestion): void
 }
 
 /**
@@ -28,4 +28,6 @@ export interface ChatEngine {
   /** Human label for the engine selector. */
   readonly label: string
   send(text: string, cb: ChatCallbacks): Promise<void>
+  /** Resume an in-flight native agent question without starting a new turn. */
+  answerQuestion?(answer: AgentQuestionAnswer): Promise<void>
 }

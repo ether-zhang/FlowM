@@ -609,6 +609,17 @@
 .question-context > :last-child,
 .question-prompt > :last-child { margin-bottom: 0; }
 .question-prompt { color: #1f1f25; }
+.question-item + .question-item {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #deddf2;
+}
+.question-header {
+  margin-bottom: 3px;
+  color: #6b5fb5;
+  font-size: 12px;
+  font-weight: 650;
+}
 .question-actions {
   display: flex;
   flex-wrap: wrap;
@@ -625,8 +636,15 @@
   font: inherit;
   cursor: pointer;
 }
+.question-actions button {
+  display: grid;
+  gap: 1px;
+  text-align: left;
+}
+.question-actions button small { color: #777383; font-size: 11px; }
 .question-actions button:hover,
 .question-other button:hover { background: #efedff; }
+.question-actions button.selected { background: #dedaff; border-color: #8175ce; }
 .question-actions button:disabled,
 .question-other button:disabled {
   color: #999;
@@ -646,7 +664,26 @@
   padding: 7px 8px;
   font: inherit;
 }
+.question-other input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font: inherit;
+}
 .question-other button { justify-self: end; }
+.question-submit {
+  margin-top: 10px;
+  border: 1px solid #8175ce;
+  border-radius: 7px;
+  background: #6d5fdb;
+  color: #fff;
+  padding: 5px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.question-submit:disabled { opacity: 0.5; cursor: default; }
 .question-answer {
   margin-top: 8px;
   color: #5d5d66;

@@ -4,6 +4,8 @@
 //! the app config dir, and the LLM HTTP call is made here in Rust (so the key
 //! never enters JS, and native HTTP has no browser CORS restriction).
 
+mod agent_control;
+
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,6 +16,11 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
+
+use agent_control::{
+    start_claude_control, start_codex_app_server, stop_agent_control, write_agent_control,
+    AgentControlProcesses,
+};
 
 const DEFAULT_API_BASE_URL: &str = "https://api.poe.com/v1";
 
@@ -873,6 +880,7 @@ fn write_design(cwd: String, data_url: String) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(AgentControlProcesses::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             set_api_key,
@@ -882,6 +890,10 @@ pub fn run() {
             claude_run,
             default_claude_bin,
             codex_run,
+            start_codex_app_server,
+            start_claude_control,
+            write_agent_control,
+            stop_agent_control,
             default_codex_bin,
             write_codex_canvas_guide,
             write_claude_canvas_guide,

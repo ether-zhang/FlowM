@@ -4,7 +4,7 @@ import { normalizeLlmQuestion } from './questions'
 describe('normalizeLlmQuestion', () => {
   it('accepts a non-empty prompt', () => {
     expect(normalizeLlmQuestion({ prompt: ' Continue with this plan? ' })).toEqual({
-      prompt: 'Continue with this plan?',
+      items: [{ id: 'question', prompt: 'Continue with this plan?', allowOther: true }],
     })
   })
 

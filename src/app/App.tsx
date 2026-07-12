@@ -3,7 +3,7 @@ import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type LlmQuestion, type RunTurnParams } from '../llm'
-import { Chat, type DisplayMessage, type QuestionChoice } from '../chat'
+import { Chat, type DisplayMessage, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
@@ -278,7 +278,11 @@ export function App() {
         id,
         role: 'assistant',
         text: '',
-        question: { prompt: question.prompt, engineId: targetEngineId },
+        question: {
+          requestId: question.requestId,
+          items: question.items,
+          engineId: targetEngineId,
+        },
       },
     ])
     return id
@@ -308,12 +312,22 @@ export function App() {
     setApiKeyInput('')
   }
 
-  const formatQuestionAnswer = useCallback((choice: QuestionChoice, detail = '') => {
-    const extra = detail.trim()
-    if (choice === 'yes') return extra ? `${text.chat.questionYes}: ${extra}` : text.chat.questionYes
-    if (choice === 'no') return extra ? `${text.chat.questionNo}: ${extra}` : text.chat.questionNo
-    return extra
-  }, [text])
+  const formatQuestionAnswer = useCallback((question: DisplayQuestion, answers: Record<string, string[]>) => {
+    const items = question.items?.length
+      ? question.items
+      : question.prompt
+        ? [{ id: 'question', prompt: question.prompt }]
+        : []
+    return items
+      .flatMap((item) => {
+        const values = answers[item.id]?.filter(Boolean) ?? []
+        if (!values.length) return []
+        return items.length === 1
+          ? [values.join(', ')]
+          : [`${item.header || item.prompt}: ${values.join(', ')}`]
+      })
+      .join('\n')
+  }, [])
 
   const sendToEngine = useCallback(
     async (targetEngineId: string, text: string) => {
@@ -373,23 +387,42 @@ export function App() {
   )
 
   const onAnswerQuestion = useCallback(
-    async (messageId: string, choice: QuestionChoice, detail = '') => {
-      if (busy) return
+    async (messageId: string, answers: Record<string, string[]>) => {
       const message = messagesRef.current.find((m) => m.id === messageId)
       const question = message?.question
       if (!question || question.answer) return
-      const answer = formatQuestionAnswer(choice, detail)
-      if (!answer.trim()) return
+      const answerText = formatQuestionAnswer(question, answers)
+      if (!answerText.trim()) return
+      const engine = engines.find((item) => item.id === question.engineId)
+      if (!engine) return
       setMessages((items) =>
         items.map((m) =>
           m.id === messageId && m.question
-            ? { ...m, question: { ...m.question, answer: { choice, text: answer } } }
+            ? { ...m, question: { ...m.question, answer: { text: answerText } } }
             : m,
         ),
       )
-      await sendToEngine(question.engineId, answer)
+      try {
+        if (question.requestId) {
+          if (!engine.answerQuestion) throw new Error('This agent cannot resume an in-flight question')
+          await engine.answerQuestion({ requestId: question.requestId, answers })
+        } else {
+          if (busy) throw new Error('Wait for the current request to finish before answering')
+          await sendToEngine(question.engineId, answerText)
+        }
+      } catch (error) {
+        setMessages((items) =>
+          items.map((m) =>
+            m.id === messageId && m.question
+              ? { ...m, question: { ...m.question, answer: undefined } }
+              : m,
+          ),
+        )
+        const detail = error instanceof Error ? error.message : String(error)
+        addMessage('system', `出错：${detail}`)
+      }
     },
-    [busy, formatQuestionAnswer, sendToEngine],
+    [busy, engines, formatQuestionAnswer, sendToEngine],
   )
 
   const onSave = useCallback(() => {

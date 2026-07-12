@@ -1,8 +1,8 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmToolCall, LlmTurn } from './types'
+import { CodexAppServerClient, type AgentQuestionAnswer } from '../agentControl'
 import type { ToolDef } from '../protocol'
-import { codexRun, writeCodexCanvasGuide } from '../engine/codexCli'
-import { createCodexStderrFilter, interpretCodexLine, extractCodexThreadId } from '../engine/codexStream'
+import { writeCodexCanvasGuide } from '../engine/codexCli'
 import { writeDesign } from '../engine/claudeCode'
 import { FLOWM_CODEX_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { normalizeLlmQuestion } from './questions'
@@ -10,7 +10,9 @@ import { normalizeLlmQuestion } from './questions'
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
   private getBin: () => string
-  private session: string | null = null
+  private initialSession: string | null
+  private client: CodexAppServerClient | null = null
+  private clientKey: string | null = null
   private sent = 0
   private turn = 0
   private guideCwd: string | null = null
@@ -19,11 +21,16 @@ export class CodexAdapter implements LlmAdapter {
   constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
     this.getCwd = getCwd
     this.getBin = getBin
-    this.session = initialSession
+    this.initialSession = initialSession
   }
 
   get sessionId(): string | null {
-    return this.session
+    return this.client?.threadId ?? this.initialSession
+  }
+
+  async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
+    if (!this.client) throw new Error('Codex app-server is not running')
+    await this.client.answerQuestion(answer)
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
@@ -43,47 +50,26 @@ export class CodexAdapter implements LlmAdapter {
 
     const { prompt, image } = await this.composeDelta(fresh, cwd)
     const schema = buildCodexOpsSchema(params.tools)
+    const client = await this.ensureClient(cwd)
     this.turn++
 
     cb.onDebug?.(
       `▶ 实际发给 Codex · 第 ${this.turn} 轮\n` +
-        `resume: ${this.session ?? '(新会话)'} · output-schema: { reply, operations[] }\n` +
+        `transport: app-server · thread: ${client.threadId ?? this.initialSession ?? '(新会话)'} · output-schema: { reply, operations[] }\n` +
         `system: invocation-scoped guide -> ${this.guidePath}\n` +
         `cwd: ${cwd} · repo policy: read-only · sandbox: platform default · image: ${image ?? '(无)'}\n` +
         `本轮增量：${fresh.length} 条 / ${prompt.length} 字符\n${prompt}`,
     )
 
-    let prose = ''
-    const stderrFilter = createCodexStderrFilter()
-    const last = await codexRun(
+    const last = await client.runTurn({
       prompt,
-      cwd,
-      (e) => {
-        if (e.kind !== 'stdout') {
-          if (e.kind === 'stderr') {
-            const line = stderrFilter(e.line)
-            if (line) cb.onSystem?.('⚠ ' + line)
-          }
-          return
-        }
-        const sid = extractCodexThreadId(e.line)
-        if (!this.session && sid) this.session = sid
-        for (const item of interpretCodexLine(e.line)) {
-          if (item.kind === 'system') cb.onSystem?.(item.text)
-          else prose += item.text
-        }
-      },
-      {
-        bin: this.getBin().trim() || undefined,
-        outputSchema: schema,
-        resume: this.session ?? undefined,
-        image,
-        readOnly: true,
-      },
-    )
+      image,
+      outputSchema: schema,
+      onSystem: cb.onSystem,
+      onQuestion: cb.onQuestion,
+    })
     const structured = parseStructured(last)
     const result = toTurn(structured, this.turn)
-    if (!result.question && !result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
 
     if (cb.onDebug) {
       const ops = Array.isArray((structured as { operations?: unknown })?.operations) ? ((structured as { operations: unknown[] }).operations) : []
@@ -96,10 +82,25 @@ export class CodexAdapter implements LlmAdapter {
     }
     if (structured == null) console.warn('[CodexAdapter] no structured output captured - nothing to apply this turn')
     console.info(
-      `[CodexAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${this.session ?? '(new)'}`,
+      `[CodexAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${client.threadId ?? '(new)'}`,
     )
     if (result.text) cb.onText(result.text)
     return result
+  }
+
+  private async ensureClient(cwd: string): Promise<CodexAppServerClient> {
+    const bin = this.getBin().trim()
+    const key = `${cwd}\0${bin}`
+    if (this.client && this.clientKey === key) return this.client
+    if (this.client) await this.client.dispose()
+    this.client = new CodexAppServerClient({
+      cwd,
+      bin: bin || undefined,
+      initialThreadId: this.initialSession ?? undefined,
+      readOnly: true,
+    })
+    this.clientKey = key
+    return this.client
   }
 
   private async composeDelta(

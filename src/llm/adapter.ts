@@ -1,4 +1,5 @@
 import type { ToolDef } from '../protocol'
+import type { AgentQuestion, AgentQuestionAnswer } from '../agentControl'
 import type { LlmMessage, LlmTurn } from './types'
 
 /** Callbacks fired while a turn is produced. */
@@ -12,6 +13,8 @@ export interface TurnCallbacks {
   /** Optional debug channel: the adapter reports its REAL outgoing request here, for adapters
    *  (e.g. Claude Code) that transform the request away from Conversation's logical view. */
   onDebug?(text: string): void
+  /** Native agent request emitted while the current turn remains in flight. */
+  onQuestion?(question: AgentQuestion): void
 }
 
 export interface RunTurnParams {
@@ -29,4 +32,6 @@ export interface RunTurnParams {
 export interface LlmAdapter {
   /** Produce one assistant turn; resolve with its text and any tool calls. */
   runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn>
+  /** Answer a native in-flight question. Structured-output fallback adapters omit this. */
+  answerQuestion?(answer: AgentQuestionAnswer): Promise<void>
 }
