@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { codexCompletedTurnText, codexQuestionResult, parseCodexQuestion } from './codexAppServerProtocol'
+import {
+  codexActivityForItem,
+  codexCommentaryEvent,
+  codexCompletedTurnText,
+  codexQuestionResult,
+  codexReasoningText,
+  parseCodexQuestion,
+  parseCodexServerRequest,
+} from './codexAppServerProtocol'
 
 describe('Codex app-server request_user_input mapping', () => {
   it('maps provider fields into the shared question contract', () => {
@@ -43,5 +51,43 @@ describe('Codex app-server request_user_input mapping', () => {
         ],
       },
     })).toBe('{"operations":[{"op":"create_geo"}]}')
+  })
+})
+
+describe('Codex app-server activity and approvals', () => {
+  it('maps command lifecycle items without exposing app-server fields to the UI', () => {
+    expect(codexActivityForItem({
+      id: 'cmd-1', type: 'commandExecution', status: 'completed',
+      command: ['rg', '-n', 'cache', '.'], aggregatedOutput: '3 matches',
+    })).toEqual({
+      type: 'tool', id: 'cmd-1', name: 'Command', toolKind: 'command', status: 'completed',
+      detail: 'rg -n cache .', output: '3 matches',
+    })
+  })
+
+  it('reads only the public summary from a completed reasoning item', () => {
+    expect(codexReasoningText({
+      id: 'reason-1', type: 'reasoning', summary: ['Inspecting the repository'], content: ['hidden'],
+    })).toBe('Inspecting the repository')
+  })
+
+  it('classifies public commentary by the provider phase', () => {
+    expect(codexCommentaryEvent('message-1', 'commentary', 'Inspecting files')).toEqual({
+      type: 'commentary_delta', id: 'message-1', delta: 'Inspecting files',
+    })
+    expect(codexCommentaryEvent(
+      'message-2', 'final_answer', '{"reply":"done","operations":[]}',
+    )).toBeNull()
+  })
+
+  it('maps command approval answers back to the documented decision shape', () => {
+    const pending = parseCodexServerRequest(
+      'approval-1',
+      'item/commandExecution/requestApproval',
+      { command: 'npm test', availableDecisions: ['accept', 'acceptForSession', 'decline'] },
+    )
+    expect(pending?.question.items[0].prompt).toContain('npm test')
+    expect(pending?.result({ requestId: 'approval-1', answers: { decision: ['Always allow'] } }))
+      .toEqual({ decision: 'acceptForSession' })
   })
 })

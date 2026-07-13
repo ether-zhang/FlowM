@@ -65,8 +65,10 @@ export class CodexAdapter implements LlmAdapter {
       prompt,
       image,
       outputSchema: schema,
+      mapCommentaryText: parseCodexCanvasCommentary,
       onSystem: cb.onSystem,
       onQuestion: cb.onQuestion,
+      onActivity: cb.onActivity,
     })
     const structured = parseStructured(last)
     const result = toTurn(structured, this.turn)
@@ -168,6 +170,18 @@ function toTurn(structured: unknown, turn: number): LlmTurn {
     }
   })
   return question ? { text, toolCalls, question } : { text, toolCalls }
+}
+
+/** Project the forced canvas-output envelope into public progress text.
+ * The control client waits for the complete item, so this parser never inspects partial JSON. */
+export function parseCodexCanvasCommentary(raw: string): string | null {
+  try {
+    const value = JSON.parse(raw) as { reply?: unknown; operations?: unknown }
+    if (typeof value.reply !== 'string' || !Array.isArray(value.operations)) return null
+    return value.reply.trim() || null
+  } catch {
+    return null
+  }
 }
 
 /**

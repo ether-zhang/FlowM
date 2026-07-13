@@ -1,8 +1,18 @@
-import type { AgentQuestion, AgentQuestionAnswer } from './types'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from './types'
 import { AgentControlProcess, type AgentControlProcessEvent } from './agentControlProcess'
+import { cleanAgentDiagnostic } from './diagnostics'
 import {
+  claudeAssistantTextRole,
+  claudePermissionResponse,
   claudeQuestionUpdatedInput,
+  claudeToolActivity,
+  claudeToolResultActivity,
+  parseClaudeAssistantContent,
+  parseClaudePartialEvent,
+  parseClaudePermission,
   parseClaudeQuestion,
+  shouldAskClaudeToolPermission,
+  type ClaudePendingPermission,
   type ClaudePendingQuestion,
 } from './claudeControlProtocol'
 
@@ -21,6 +31,7 @@ export interface ClaudeControlTurn {
   onText?(text: string): void
   onSystem?(text: string): void
   onQuestion?(question: AgentQuestion): void
+  onActivity?(event: AgentActivityEvent): void
 }
 
 export interface ClaudeControlTurnResult {
@@ -34,13 +45,29 @@ interface PendingControlRequest {
   reject(error: Error): void
 }
 
+interface PendingAssistantBlock {
+  index: number
+  kind: 'text' | 'thinking' | 'tool'
+  id: string
+  text: string
+  tool?: Extract<AgentActivityEvent, { type: 'tool' }>
+  canonical: boolean
+}
+
 interface ActiveTurn {
   prose: string
+  nextTextId: number
+  messageSequence: number
+  pendingBlocks: PendingAssistantBlock[]
   streamText: boolean
-  callbacks: Pick<ClaudeControlTurn, 'onText' | 'onSystem' | 'onQuestion'>
+  callbacks: Pick<ClaudeControlTurn, 'onText' | 'onSystem' | 'onQuestion' | 'onActivity'>
   resolve(result: ClaudeControlTurnResult): void
   reject(error: Error): void
 }
+
+type PendingInteraction =
+  | { kind: 'question'; value: ClaudePendingQuestion }
+  | { kind: 'permission'; value: ClaudePendingPermission }
 
 /** Minimal host for Claude Code's documented Agent SDK control protocol. */
 export class ClaudeControlClient {
@@ -49,7 +76,7 @@ export class ClaudeControlClient {
   private nextControlId = 1
   private nextQuestionId = 1
   private pendingControl = new Map<string, PendingControlRequest>()
-  private pendingQuestions = new Map<string, ClaudePendingQuestion>()
+  private pendingQuestions = new Map<string, PendingInteraction>()
   private activeTurn: ActiveTurn | null = null
   private session: string | null
   private readonly options: ClaudeControlOptions
@@ -69,12 +96,16 @@ export class ClaudeControlClient {
     const result = new Promise<ClaudeControlTurnResult>((resolve, reject) => {
       this.activeTurn = {
         prose: '',
+        nextTextId: 1,
+        messageSequence: 0,
+        pendingBlocks: [],
         streamText: turn.streamText === true,
         callbacks: turn,
         resolve,
         reject,
       }
     })
+    turn.onActivity?.({ type: 'status', status: 'working' })
     try {
       await this.write({
         type: 'user',
@@ -84,6 +115,7 @@ export class ClaudeControlClient {
       })
       return await result
     } catch (error) {
+      turn.onActivity?.({ type: 'status', status: 'failed' })
       this.activeTurn = null
       throw error
     }
@@ -94,10 +126,17 @@ export class ClaudeControlClient {
     const pending = this.pendingQuestions.get(answer.requestId)
     if (!pending) throw new Error(`Claude question is no longer pending: ${answer.requestId}`)
     this.pendingQuestions.delete(answer.requestId)
-    await this.sendControlSuccess(pending.controlRequestId, {
-      behavior: 'allow',
-      updatedInput: claudeQuestionUpdatedInput(pending, answer),
-    })
+    if (pending.kind === 'question') {
+      await this.sendControlSuccess(pending.value.controlRequestId, {
+        behavior: 'allow',
+        updatedInput: claudeQuestionUpdatedInput(pending.value, answer),
+      })
+    } else {
+      await this.sendControlSuccess(
+        pending.value.controlRequestId,
+        claudePermissionResponse(pending.value, answer),
+      )
+    }
   }
 
   async dispose(): Promise<void> {
@@ -159,7 +198,10 @@ export class ClaudeControlClient {
     if (event.kind === 'stdout') {
       this.onMessage(event.line)
     } else if (event.kind === 'stderr') {
-      this.activeTurn?.callbacks.onSystem?.(`⚠ ${event.line}`)
+      const line = cleanAgentDiagnostic(event.line)
+      if (line) this.activeTurn?.callbacks.onActivity?.({
+        type: 'warning', id: 'claude-stderr', text: 'Claude diagnostics', detail: line,
+      })
     } else {
       this.failAll(new Error(`Claude control process exited${event.code == null ? '' : ` with code ${event.code}`}`))
     }
@@ -180,12 +222,16 @@ export class ClaudeControlClient {
     } else if (type === 'control_cancel_request') {
       const requestId = typeof message.request_id === 'string' ? message.request_id : ''
       for (const [id, pending] of this.pendingQuestions) {
-        if (pending.controlRequestId === requestId) this.pendingQuestions.delete(id)
+        if (pending.value.controlRequestId === requestId) this.pendingQuestions.delete(id)
       }
     } else if (type === 'system' && message.subtype === 'init') {
       if (typeof message.session_id === 'string') this.session = message.session_id
     } else if (type === 'assistant') {
       this.onAssistantMessage(message)
+    } else if (type === 'user') {
+      this.onUserMessage(message)
+    } else if (type === 'stream_event') {
+      this.onPartialEvent(message)
     } else if (type === 'result') {
       this.onResult(message)
     }
@@ -215,13 +261,16 @@ export class ClaudeControlClient {
     const input = data.input && typeof data.input === 'object'
       ? data.input as Record<string, unknown>
       : {}
-    if (data.tool_name !== 'AskUserQuestion') {
+    const toolName = typeof data.tool_name === 'string' ? data.tool_name : ''
+    if (toolName !== 'AskUserQuestion' && !shouldAskClaudeToolPermission(toolName)) {
       void this.sendControlSuccess(controlRequestId, { behavior: 'allow', updatedInput: input })
       return
     }
 
     const requestId = `claude-question-${this.nextQuestionId++}`
-    const pending = parseClaudeQuestion(requestId, controlRequestId, input)
+    const pending = toolName === 'AskUserQuestion'
+      ? parseClaudeQuestion(requestId, controlRequestId, input)
+      : parseClaudePermission(requestId, controlRequestId, toolName || 'Tool', input)
     if (!pending || !this.activeTurn?.callbacks.onQuestion) {
       void this.sendControlSuccess(controlRequestId, {
         behavior: 'deny',
@@ -229,11 +278,57 @@ export class ClaudeControlClient {
       })
       return
     }
-    this.pendingQuestions.set(requestId, pending)
+    this.pendingQuestions.set(requestId, {
+      kind: toolName === 'AskUserQuestion' ? 'question' : 'permission',
+      value: pending,
+    } as PendingInteraction)
     this.activeTurn.callbacks.onQuestion(pending.question)
   }
 
   private onAssistantMessage(message: Record<string, unknown>): void {
+    const active = this.activeTurn
+    if (!active) return
+    const content = parseClaudeAssistantContent(message.message)
+    if (!content) return
+
+    for (const block of content.blocks) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        const pending = this.nextPendingBlock(active, 'text')
+        if (pending) {
+          pending.text = block.text
+          pending.canonical = true
+        }
+        continue
+      }
+      if (block.type === 'thinking') {
+        const pending = this.nextPendingBlock(active, 'thinking')
+        if (pending) {
+          if (typeof block.thinking === 'string' && block.thinking) pending.text = block.thinking
+          pending.canonical = true
+        }
+        continue
+      }
+      const activity = claudeToolActivity(block)
+      if (!activity) continue
+      const pending = active.pendingBlocks.find((item) => item.kind === 'tool' && item.tool?.id === activity.id)
+      if (pending) {
+        pending.tool = activity
+        pending.canonical = true
+      } else {
+        active.pendingBlocks.push({
+          index: this.nextPendingIndex(active),
+          kind: 'tool',
+          id: activity.id,
+          text: '',
+          tool: activity,
+          canonical: true,
+        })
+      }
+    }
+    if (content.stopReason) this.flushAssistantMessage(active, content.stopReason)
+  }
+
+  private onUserMessage(message: Record<string, unknown>): void {
     const active = this.activeTurn
     if (!active) return
     const value = message.message
@@ -241,15 +336,74 @@ export class ClaudeControlClient {
     const content = (value as Record<string, unknown>).content
     if (!Array.isArray(content)) return
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue
-      const item = block as Record<string, unknown>
-      if (item.type === 'text' && typeof item.text === 'string') {
-        active.prose += item.text
-        if (active.streamText) active.callbacks.onText?.(item.text)
-      } else if (item.type === 'tool_use' && typeof item.name === 'string') {
-        active.callbacks.onSystem?.(`🔧 ${item.name}`)
+      const activity = claudeToolResultActivity(block)
+      if (activity) {
+        active.callbacks.onActivity?.(activity)
       }
     }
+  }
+
+  private onPartialEvent(message: Record<string, unknown>): void {
+    const active = this.activeTurn
+    if (!active) return
+    const partial = parseClaudePartialEvent(message)
+    if (!partial) return
+    if (partial.type === 'message_start') {
+      active.messageSequence += 1
+      active.pendingBlocks = []
+      return
+    }
+    if (partial.type === 'block_start') {
+      active.pendingBlocks.push({
+        index: partial.index,
+        kind: partial.blockType,
+        id: partial.tool?.id ?? `claude-message-${active.messageSequence}-block-${partial.index}`,
+        text: '',
+        ...(partial.tool ? { tool: partial.tool } : {}),
+        canonical: false,
+      })
+      return
+    }
+    if (partial.type === 'block_delta') {
+      const pending = active.pendingBlocks.find((item) => item.index === partial.index)
+      if (pending) pending.text += partial.delta
+      return
+    }
+    this.flushAssistantMessage(active, partial.stopReason)
+  }
+
+  private nextPendingBlock(
+    active: ActiveTurn,
+    kind: PendingAssistantBlock['kind'],
+  ): PendingAssistantBlock | undefined {
+    return active.pendingBlocks.find((block) => block.kind === kind && !block.canonical)
+  }
+
+  private nextPendingIndex(active: ActiveTurn): number {
+    return active.pendingBlocks.reduce((max, block) => Math.max(max, block.index), -1) + 1
+  }
+
+  private flushAssistantMessage(active: ActiveTurn, stopReason: string): void {
+    const textRole = claudeAssistantTextRole(stopReason)
+    for (const block of [...active.pendingBlocks].sort((a, b) => a.index - b.index)) {
+      if (block.kind === 'thinking' && block.text) {
+        active.callbacks.onActivity?.({ type: 'thinking_delta', id: block.id, delta: block.text })
+      } else if (block.kind === 'text' && block.text && textRole === 'commentary') {
+        active.callbacks.onActivity?.({
+          type: 'commentary_delta', id: this.nextClaudeTextId(active), delta: block.text,
+        })
+      } else if (block.kind === 'text' && block.text && textRole === 'final') {
+        active.prose += block.text
+        if (active.streamText) active.callbacks.onText?.(block.text)
+      } else if (block.kind === 'tool' && block.tool) {
+        active.callbacks.onActivity?.(block.tool)
+      }
+    }
+    active.pendingBlocks = []
+  }
+
+  private nextClaudeTextId(active: ActiveTurn): string {
+    return `claude-text-${active.nextTextId++}`
   }
 
   private onResult(message: Record<string, unknown>): void {
@@ -258,9 +412,11 @@ export class ClaudeControlClient {
     this.activeTurn = null
     this.pendingQuestions.clear()
     if (message.is_error === true) {
+      active.callbacks.onActivity?.({ type: 'status', status: 'failed' })
       active.reject(new Error(typeof message.result === 'string' ? message.result : 'Claude turn failed'))
       return
     }
+    active.callbacks.onActivity?.({ type: 'status', status: 'completed' })
     active.resolve({
       structured: message.structured_output ?? null,
       prose: active.prose,
@@ -274,6 +430,7 @@ export class ClaudeControlClient {
     this.pendingQuestions.clear()
     const active = this.activeTurn
     this.activeTurn = null
+    active?.callbacks.onActivity?.({ type: 'status', status: 'failed' })
     active?.reject(error)
   }
 }

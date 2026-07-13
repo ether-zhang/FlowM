@@ -1,5 +1,5 @@
 import type { ToolDef } from '../protocol'
-import type { AgentQuestion, AgentQuestionAnswer } from '../agentControl'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agentControl'
 import type { LlmMessage, LlmTurn } from './types'
 
 /** Callbacks fired while a turn is produced. */
@@ -15,6 +15,8 @@ export interface TurnCallbacks {
   onDebug?(text: string): void
   /** Native agent request emitted while the current turn remains in flight. */
   onQuestion?(question: AgentQuestion): void
+  /** Provider-neutral reasoning, tool lifecycle, and processing activity. */
+  onActivity?(event: AgentActivityEvent): void
 }
 
 export interface RunTurnParams {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { canvasTools, declareStructureTool } from '../protocol'
-import { buildCodexOpsSchema } from './codexAdapter'
+import { buildCodexOpsSchema, parseCodexCanvasCommentary } from './codexAdapter'
 
 describe('buildCodexOpsSchema', () => {
   it('marks every object schema as closed for Codex structured outputs', () => {
@@ -31,4 +31,17 @@ describe('buildCodexOpsSchema', () => {
     })
   })
 
+})
+
+describe('parseCodexCanvasCommentary', () => {
+  it('projects only the reply from a complete structured commentary item', () => {
+    expect(parseCodexCanvasCommentary(JSON.stringify({
+      reply: 'Inspecting the scheduler', question: null, operations: [],
+    }))).toBe('Inspecting the scheduler')
+  })
+
+  it('does not infer commentary from unstructured text or partial JSON', () => {
+    expect(parseCodexCanvasCommentary('Inspecting the scheduler')).toBeNull()
+    expect(parseCodexCanvasCommentary('{"reply":"Inspecting"')).toBeNull()
+  })
 })

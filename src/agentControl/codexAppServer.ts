@@ -1,9 +1,12 @@
-import type { AgentQuestion, AgentQuestionAnswer } from './types'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from './types'
 import { AgentControlProcess, type AgentControlProcessEvent } from './agentControlProcess'
+import { cleanAgentDiagnostic } from './diagnostics'
 import {
   codexCompletedTurnText,
-  codexQuestionResult,
-  parseCodexQuestion,
+  codexActivityForItem,
+  codexCommentaryEvent,
+  codexReasoningText,
+  parseCodexServerRequest,
   type JsonRpcId,
   type JsonRpcMessage,
 } from './codexAppServerProtocol'
@@ -19,10 +22,12 @@ export interface CodexAppServerTurn {
   prompt: string
   image?: string
   outputSchema?: unknown
+  mapCommentaryText?(text: string): string | null
   streamText?: boolean
   onText?(text: string): void
   onSystem?(text: string): void
   onQuestion?(question: AgentQuestion): void
+  onActivity?(event: AgentActivityEvent): void
 }
 
 interface PendingRpc {
@@ -33,7 +38,12 @@ interface PendingRpc {
 interface ActiveTurn {
   text: string
   streamText: boolean
-  callbacks: Pick<CodexAppServerTurn, 'onText' | 'onSystem' | 'onQuestion'>
+  mapCommentaryText?: CodexAppServerTurn['mapCommentaryText']
+  messagePhases: Map<string, string>
+  agentMessagesWithDelta: Set<string>
+  pendingMessageDeltas: Map<string, string>
+  reasoningWithDelta: Set<string>
+  callbacks: Pick<CodexAppServerTurn, 'onText' | 'onSystem' | 'onQuestion' | 'onActivity'>
   resolve(text: string): void
   reject(error: Error): void
 }
@@ -45,7 +55,10 @@ export class CodexAppServerClient {
   private nextRpcId = 1
   private nextQuestionId = 1
   private pendingRpc = new Map<JsonRpcId, PendingRpc>()
-  private questionRequests = new Map<string, JsonRpcId>()
+  private questionRequests = new Map<string, {
+    rpcId: JsonRpcId
+    result(answer: AgentQuestionAnswer): unknown
+  }>()
   private activeTurn: ActiveTurn | null = null
   private thread: string | null
   private sandboxMode: string | null = null
@@ -69,11 +82,17 @@ export class CodexAppServerClient {
       this.activeTurn = {
         text: '',
         streamText: turn.streamText === true,
+        mapCommentaryText: turn.mapCommentaryText,
+        messagePhases: new Map(),
+        agentMessagesWithDelta: new Set(),
+        pendingMessageDeltas: new Map(),
+        reasoningWithDelta: new Set(),
         callbacks: turn,
         resolve,
         reject,
       }
     })
+    turn.onActivity?.({ type: 'status', status: 'working' })
     try {
       await this.request('turn/start', {
         threadId: this.thread,
@@ -81,10 +100,12 @@ export class CodexAppServerClient {
           { type: 'text', text: turn.prompt },
           ...(turn.image ? [{ type: 'localImage', path: turn.image }] : []),
         ],
+        summary: 'detailed',
         ...(turn.outputSchema == null ? {} : { outputSchema: turn.outputSchema }),
       })
       return await completed
     } catch (error) {
+      turn.onActivity?.({ type: 'status', status: 'failed' })
       this.activeTurn = null
       throw error
     }
@@ -92,10 +113,10 @@ export class CodexAppServerClient {
 
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
     await this.ensureStarted()
-    const rpcId = this.questionRequests.get(answer.requestId)
-    if (rpcId == null) throw new Error(`Codex question is no longer pending: ${answer.requestId}`)
+    const pending = this.questionRequests.get(answer.requestId)
+    if (!pending) throw new Error(`Codex question is no longer pending: ${answer.requestId}`)
     this.questionRequests.delete(answer.requestId)
-    await this.write({ id: rpcId, result: codexQuestionResult(answer) })
+    await this.write({ id: pending.rpcId, result: pending.result(answer) })
   }
 
   async dispose(): Promise<void> {
@@ -128,7 +149,7 @@ export class CodexAppServerClient {
 
     const threadParams = {
       cwd: this.options.cwd,
-      approvalPolicy: 'never',
+      approvalPolicy: 'on-request',
       sandbox: this.sandboxMode,
       serviceName: 'flowm',
     }
@@ -160,7 +181,10 @@ export class CodexAppServerClient {
     if (event.kind === 'stdout') {
       this.onMessage(event.line)
     } else if (event.kind === 'stderr') {
-      this.activeTurn?.callbacks.onSystem?.(`⚠ ${event.line}`)
+      const line = cleanAgentDiagnostic(event.line)
+      if (line) this.activeTurn?.callbacks.onActivity?.({
+        type: 'warning', id: 'codex-stderr', text: 'Codex diagnostics', detail: line,
+      })
     } else {
       this.failAll(new Error(`Codex app-server exited${event.code == null ? '' : ` with code ${event.code}`}`))
     }
@@ -192,22 +216,21 @@ export class CodexAppServerClient {
 
   private onServerRequest(message: JsonRpcMessage): void {
     if (message.id == null) return
-    if (message.method !== 'item/tool/requestUserInput') {
+    const requestId = `codex-question-${this.nextQuestionId++}`
+    const pending = parseCodexServerRequest(requestId, message.method ?? '', message.params)
+    if (!pending) {
       void this.write({
         id: message.id,
         error: { code: -32601, message: `Unsupported server request: ${message.method ?? '(missing)'}` },
       })
       return
     }
-
-    const requestId = `codex-question-${this.nextQuestionId++}`
-    const question = parseCodexQuestion(requestId, message.params)
-    if (!question || !this.activeTurn?.callbacks.onQuestion) {
+    if (!this.activeTurn?.callbacks.onQuestion) {
       void this.write({ id: message.id, error: { code: -32602, message: 'Question cannot be displayed' } })
       return
     }
-    this.questionRequests.set(requestId, message.id)
-    this.activeTurn.callbacks.onQuestion(question)
+    this.questionRequests.set(requestId, { rpcId: message.id, result: pending.result })
+    this.activeTurn.callbacks.onQuestion(pending.question)
   }
 
   private onNotification(method: string | undefined, params: unknown): void {
@@ -216,20 +239,33 @@ export class CodexAppServerClient {
     const value = params as Record<string, unknown>
 
     if (method === 'item/agentMessage/delta' && typeof value.delta === 'string') {
-      active.text += value.delta
-      if (active.streamText) active.callbacks.onText?.(value.delta)
+      const itemId = typeof value.itemId === 'string' ? value.itemId : 'agent-message'
+      const phase = active.messagePhases.get(itemId)
+      active.agentMessagesWithDelta.add(itemId)
+      this.onAgentMessageDelta(active, itemId, phase, value.delta)
+      return
+    }
+    if ((method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta')
+      && typeof value.delta === 'string') {
+      const itemId = typeof value.itemId === 'string' ? value.itemId : 'reasoning'
+      active.reasoningWithDelta.add(itemId)
+      active.callbacks.onActivity?.({
+        type: 'thinking_delta',
+        id: itemId,
+        delta: value.delta,
+      })
       return
     }
     if (method === 'item/started') {
       const item = value.item
       if (item && typeof item === 'object') {
         const record = item as Record<string, unknown>
-        if (record.type === 'commandExecution') {
-          const command = Array.isArray(record.command) ? record.command.join(' ') : String(record.command ?? '')
-          active.callbacks.onSystem?.(`🔧 ${command}`)
-        } else if (record.type === 'mcpToolCall') {
-          active.callbacks.onSystem?.(`🔧 ${String(record.tool ?? 'MCP tool')}`)
+        if (record.type === 'agentMessage' && typeof record.id === 'string' && typeof record.phase === 'string') {
+          active.messagePhases.set(record.id, record.phase)
+          this.flushPendingAgentMessage(active, record.id, record.phase)
         }
+        const activity = codexActivityForItem(item)
+        if (activity) active.callbacks.onActivity?.(activity)
       }
       return
     }
@@ -237,11 +273,31 @@ export class CodexAppServerClient {
       const item = value.item
       if (item && typeof item === 'object') {
         const record = item as Record<string, unknown>
-        if (record.type === 'agentMessage' && typeof record.text === 'string') {
-          const hadText = !!active.text
-          if (record.phase === 'final_answer' || !active.text) active.text = record.text
-          if (active.streamText && !hadText) active.callbacks.onText?.(record.text)
+        if (record.type === 'agentMessage' && typeof record.id === 'string' && typeof record.text === 'string') {
+          const phase = typeof record.phase === 'string'
+            ? record.phase
+            : active.messagePhases.get(record.id)
+          if (phase) active.messagePhases.set(record.id, phase)
+          this.flushPendingAgentMessage(active, record.id, phase)
+          if (phase === 'commentary' && active.mapCommentaryText) {
+            const commentary = active.mapCommentaryText(record.text)
+            if (commentary) active.callbacks.onActivity?.({
+              type: 'commentary_delta', id: record.id, delta: commentary,
+            })
+          } else if (!active.agentMessagesWithDelta.has(record.id)) {
+            this.onAgentMessageDelta(active, record.id, phase, record.text)
+          }
+          if (phase === 'final_answer') active.text = record.text
         }
+        if (record.type === 'reasoning' && typeof record.id === 'string'
+          && !active.reasoningWithDelta.has(record.id)) {
+          const summary = codexReasoningText(item)
+          if (summary) active.callbacks.onActivity?.({
+            type: 'thinking_delta', id: record.id, delta: summary,
+          })
+        }
+        const activity = codexActivityForItem(item)
+        if (activity) active.callbacks.onActivity?.(activity)
       }
       return
     }
@@ -252,9 +308,48 @@ export class CodexAppServerClient {
       if (completedText != null) active.text = completedText
       this.activeTurn = null
       this.questionRequests.clear()
-      if (error) active.reject(new Error(errorMessage(error)))
-      else active.resolve(active.text)
+      if (error) {
+        active.callbacks.onActivity?.({ type: 'status', status: 'failed' })
+        active.reject(new Error(errorMessage(error)))
+      } else {
+        active.callbacks.onActivity?.({ type: 'status', status: 'completed' })
+        active.resolve(active.text)
+      }
     }
+  }
+
+  private onAgentMessageDelta(
+    active: ActiveTurn,
+    itemId: string,
+    phase: string | undefined,
+    delta: string,
+  ): void {
+    if (phase === 'commentary') {
+      if (active.mapCommentaryText) return
+      const activity = codexCommentaryEvent(itemId, phase, delta)
+      if (activity) active.callbacks.onActivity?.(activity)
+      return
+    }
+    if (phase === 'final_answer') {
+      active.text += delta
+      if (active.streamText) active.callbacks.onText?.(delta)
+      return
+    }
+    active.pendingMessageDeltas.set(
+      itemId,
+      (active.pendingMessageDeltas.get(itemId) ?? '') + delta,
+    )
+  }
+
+  private flushPendingAgentMessage(
+    active: ActiveTurn,
+    itemId: string,
+    phase: string | undefined,
+  ): void {
+    const pending = active.pendingMessageDeltas.get(itemId)
+    if (!pending || !phase) return
+    active.pendingMessageDeltas.delete(itemId)
+    this.onAgentMessageDelta(active, itemId, phase, pending)
   }
 
   private failAll(error: Error): void {
@@ -263,6 +358,7 @@ export class CodexAppServerClient {
     this.questionRequests.clear()
     const active = this.activeTurn
     this.activeTurn = null
+    active?.callbacks.onActivity?.({ type: 'status', status: 'failed' })
     active?.reject(error)
   }
 }

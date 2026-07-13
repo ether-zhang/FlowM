@@ -101,6 +101,7 @@ export class ClaudeAdapter implements LlmAdapter {
       prompt,
       onSystem: cb.onSystem,
       onQuestion: cb.onQuestion,
+      onActivity: cb.onActivity,
     })
     const structured = controlResult.structured
     const prose = controlResult.prose

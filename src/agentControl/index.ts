@@ -3,6 +3,8 @@ export type {
   AgentQuestionAnswer,
   AgentQuestionItem,
   AgentQuestionOption,
+  AgentActivityEvent,
+  AgentToolStatus,
 } from './types'
 export { ClaudeControlClient } from './claudeControl'
 export { CodexAppServerClient } from './codexAppServer'

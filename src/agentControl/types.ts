@@ -29,3 +29,22 @@ export interface AgentQuestionAnswer {
   requestId: string
   answers: Record<string, string[]>
 }
+
+export type AgentToolStatus = 'running' | 'completed' | 'failed' | 'declined'
+
+/** Provider-neutral events emitted while an agent turn is in flight. */
+export type AgentActivityEvent =
+  | { type: 'status'; status: 'working' | 'completed' | 'failed'; label?: string }
+  | { type: 'thinking_delta'; id: string; delta: string }
+  | { type: 'commentary_delta'; id: string; delta: string }
+  | {
+      type: 'tool'
+      id: string
+      name: string
+      toolKind?: 'command'
+      status: AgentToolStatus
+      detail?: string
+      output?: string
+    }
+  | { type: 'tool_status'; id: string; status: AgentToolStatus; output?: string }
+  | { type: 'warning'; id: string; text: string; detail?: string }

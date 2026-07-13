@@ -164,6 +164,7 @@ pub async fn start_claude_control(
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
+        .arg("--include-partial-messages")
         .arg("--permission-mode")
         .arg("manual")
         .arg("--input-format")
