@@ -43,6 +43,9 @@ Windows、macOS、iPad。
 - [x] **左侧文件栏改成 VSCode activity bar 样式**：不要只有窄箭头；做成可扩展侧栏，左边竖向图标入口，右侧 panel 可展开/收起/切换，后续可承载文件、搜索、Git、运行等视图。
 - [x] **Git 栏整合进左侧栏**：基于 activity bar 增加 Source Control panel，基础功能至少包含 changed files 树状列表、diff 查看、刷新、分支/HEAD 信息；后续再补 stage/unstage、commit message、commit 按钮、历史图谱/简易 log。
 - [ ] **右侧对话栏支持模型主动询问**：不只是被动接收日志；当本地 agent 需要确认时，UI 能呈现 yes / no / other 格式问题，并把用户选择/补充发回同一会话，行为参考 VSCode Codex/Claude 插件。
+- [ ] **复核阶段文本分层显示**：当前建图与复核前后的 commentary 按真实时序保留在同一个 activity 中，信息完整但阶段边界不够明显。后续评估增加“建图 / 复核”子阶段标题、分隔或独立折叠，不拆分底层 agent session，也不改变模型返回内容。
+- [ ] **丰富 Claude Code 思考过程**：当前 control stream 中原生 `thinking` block 可能为空，只能展示 Claude 主动返回的公开工作说明。后续调查 Claude Agent SDK / control protocol 的模型与配置能力，在不伪造推理、不把正文误标为思考的前提下展示更完整的公开 thinking summary。
+- [ ] **思考期间展示正文**：模型工作时按 provider 的真实事件边界及时展示公开 commentary，并与可折叠 thinking、工具调用及最终正文保持明确分层；不能等整轮完成后再移动或猜测文本角色。
 - [ ] **画布布局观感优化**：当前自动摆放间距偏保守、箭头路由容易乱拐。需要调节点间距策略、group margin、arrow routing/label 避让，让图更紧凑但不重叠，优先解决大图空旷和长箭头折返问题。
 
 - UI相关
