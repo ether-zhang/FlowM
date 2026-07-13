@@ -3,6 +3,8 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DisplayMessage } from './types'
 import { QuestionCard } from './QuestionCard'
+import { ActivityCard } from './ActivityCard'
+import { groupMessages } from './messageGrouping'
 import { engineDisplayLabel, isSystemErrorNote, localizeSystemNote, type UiText } from '../app/uiText'
 
 export interface ChatProps {
@@ -27,34 +29,9 @@ export interface ChatProps {
   text: UiText
 }
 
-type RenderItem =
-  | { type: 'msg'; m: DisplayMessage }
-  | { type: 'sysgroup'; id: string; notes: DisplayMessage[] }
-
-/**
- * Fold each maximal run of consecutive `system` notes (tool progress: Read/Grep/tool done/result…)
- * into one group — mirroring the Claude Code VSCode extension, which collapses tool activity into a
- * single expandable row. A real reply (assistant/user/debug) breaks the run, so notes only collapse
- * when there's no actual reply between them.
- */
 /** Error notes must stay visible, never folded away. */
 const isErrorNote = (m: DisplayMessage) => isSystemErrorNote(m.text)
-
-function groupMessages(messages: DisplayMessage[]): RenderItem[] {
-  const items: RenderItem[] = []
-  for (const m of messages) {
-    // Errors break the run and render standalone: folded into the collapsed success-styled
-    // progress group they'd read as normal completed activity (and hide behind its summary).
-    if (m.role === 'system' && !isErrorNote(m)) {
-      const last = items[items.length - 1]
-      if (last && last.type === 'sysgroup') last.notes.push(m)
-      else items.push({ type: 'sysgroup', id: m.id, notes: [m] })
-    } else {
-      items.push({ type: 'msg', m })
-    }
-  }
-  return items
-}
+const AUTO_SCROLL_THRESHOLD = 48
 
 export function Chat({
   messages,
@@ -93,9 +70,12 @@ export function Chat({
   // swallowing it) the armed flag would linger and eat one later Enter. Expire it after a window far
   // longer than the ~ms compositionend→keydown gap yet shorter than a hand moving mouse→keyboard.
   const compositionEndAtRef = useRef(0)
+  const stickToBottomRef = useRef(true)
 
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
+    if (!stickToBottomRef.current) return
+    const list = listRef.current
+    list?.scrollTo({ top: list.scrollHeight })
   }, [messages])
 
   useEffect(() => {
@@ -119,8 +99,15 @@ export function Chat({
   const send = () => {
     const t = text.trim()
     if (!t || busy || pendingQuestion) return
+    stickToBottomRef.current = true
     onSend(t)
     setText('')
+  }
+
+  const onListScroll = () => {
+    const list = listRef.current
+    if (!list) return
+    stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight <= AUTO_SCROLL_THRESHOLD
   }
 
   const activeEngine = engines.find((e) => e.id === engineId) ?? engines[0]
@@ -196,7 +183,7 @@ export function Chat({
         </div>
       )}
 
-      <div className="chat-list" ref={listRef}>
+      <div className="chat-list" ref={listRef} onScroll={onListScroll}>
         {messages.length === 0 && (
           <p className="chat-hint">
             {uiText.chat.hint}
@@ -233,6 +220,7 @@ export function Chat({
             )
           }
           const m = it.m
+          if (m.activity) return <ActivityCard key={m.id} activity={m.activity} text={uiText} />
           if (m.question) {
             return (
               <QuestionCard
@@ -271,6 +259,12 @@ export function Chat({
             </div>
           )
         })}
+        {busy && !messages.some((message) => message.activity?.status === 'working') && (
+          <div className="chat-processing" role="status">
+            <span aria-hidden="true" />
+            {uiText.chat.activityWorking}
+          </div>
+        )}
       </div>
 
       <div className="chat-input">

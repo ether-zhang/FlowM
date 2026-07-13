@@ -1,5 +1,5 @@
 import type { RunTurnParams } from '../llm'
-import type { AgentQuestion, AgentQuestionAnswer } from '../agentControl'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agentControl'
 
 /** What an engine reports back while producing a reply, mapped onto chat messages. */
 export interface ChatCallbacks {
@@ -14,6 +14,8 @@ export interface ChatCallbacks {
   onDebug?(text: string): void
   /** The engine needs a user decision before it can continue this same conversation. */
   onQuestion?(question: AgentQuestion): void
+  /** Provider-neutral activity suitable for a VSCode-style progress surface. */
+  onActivity?(event: AgentActivityEvent): void
 }
 
 /**

@@ -587,6 +587,154 @@
 /* Errors must not blend into the amber progress notes (Excalidraw danger red family). */
 .msg-system.msg-error { background: #fdecec; color: #c0392b; }
 
+.msg-activity {
+  align-self: stretch;
+  max-width: 100%;
+  padding: 0;
+  border: 1px solid #e2e1e7;
+  border-radius: 7px;
+  background: #fafafa;
+  color: #383740;
+  white-space: normal;
+}
+.msg-activity > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.msg-activity > summary::-webkit-details-marker,
+.activity-section > summary::-webkit-details-marker,
+.activity-tool > summary::-webkit-details-marker { display: none; }
+.activity-state,
+.chat-processing > span,
+.activity-status {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.activity-working .activity-state,
+.chat-processing > span,
+.activity-status-running {
+  border: 2px solid #b9b6c7;
+  border-top-color: var(--fm-accent);
+  animation: activity-spin 0.8s linear infinite;
+}
+.activity-completed .activity-state,
+.activity-status-completed { background: #2f9e44; }
+.activity-failed .activity-state,
+.activity-status-failed { background: #e03131; }
+.activity-status-declined { background: #868e96; }
+.activity-title { min-width: 0; flex: 1; font-weight: 600; }
+.activity-count {
+  flex: none;
+  color: #77737f;
+  font-size: 12px;
+}
+.activity-body {
+  border-top: 1px solid #e8e7eb;
+  padding: 6px 10px 9px;
+}
+.activity-commentary {
+  margin-bottom: 7px;
+  color: #5c5964;
+  white-space: pre-wrap;
+}
+.activity-section > summary,
+.activity-tool > summary,
+.activity-tool-group > summary,
+.activity-command > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.activity-section > summary {
+  padding: 4px 0;
+  color: #77737f;
+  font-size: 12px;
+  font-weight: 600;
+}
+.activity-section > summary::before,
+.activity-tool > summary::before,
+.activity-tool-group > summary::before,
+.activity-command > summary::before { content: '›'; display: inline-block; margin-right: 6px; }
+.activity-section[open] > summary::before,
+.activity-tool[open] > summary::before,
+.activity-tool-group[open] > summary::before,
+.activity-command[open] > summary::before { transform: rotate(90deg); }
+.activity-thinking > div {
+  padding: 2px 0 6px 17px;
+  color: #706d77;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.activity-tools { display: grid; gap: 2px; }
+.activity-tool > summary,
+.activity-tool-plain,
+.activity-tool-group > summary,
+.activity-command > summary,
+.activity-command-plain {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 27px;
+  font-size: 13px;
+}
+.activity-tool > summary::before,
+.activity-tool-group > summary::before,
+.activity-command > summary::before { order: -2; color: #8a8792; }
+.activity-tool > summary .activity-status,
+.activity-tool-group > summary .activity-status,
+.activity-command > summary .activity-status { order: -1; }
+.activity-tool-list {
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  margin: 2px 0 7px 17px;
+  padding: 3px 7px;
+  border-left: 2px solid #dedce5;
+}
+.activity-command code {
+  min-width: 0;
+  overflow: hidden;
+  color: #514e58;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-tool pre,
+.activity-command pre,
+.activity-warnings pre {
+  max-height: 180px;
+  max-width: calc(100% - 23px);
+  box-sizing: border-box;
+  overflow: auto;
+  margin: 2px 0 7px 23px;
+  padding: 7px 8px;
+  border-left: 2px solid #dedce5;
+  background: #f3f3f5;
+  color: #55525c;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.activity-warnings { color: #a66100; }
+.activity-warnings strong { display: block; padding-left: 17px; font-size: 12px; }
+.chat-processing {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: #77737f;
+  font-size: 13px;
+}
+@keyframes activity-spin { to { transform: rotate(360deg); } }
+
 .msg-question {
   align-self: flex-start;
   background: #f6f6fb;

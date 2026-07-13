@@ -1,4 +1,5 @@
 import type { AgentQuestionItem } from '../agentControl'
+import type { DisplayActivity } from './activityReducer'
 
 export type DisplayRole = 'user' | 'assistant' | 'system' | 'debug'
 
@@ -22,4 +23,6 @@ export interface DisplayMessage {
   image?: string
   /** Optional active-agent question; rendered as yes/no/other controls in the chat panel. */
   question?: DisplayQuestion
+  /** One provider-neutral activity group for an in-flight agent turn. */
+  activity?: DisplayActivity
 }

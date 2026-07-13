@@ -3,7 +3,7 @@ import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type LlmQuestion, type RunTurnParams } from '../llm'
-import { Chat, type DisplayMessage, type DisplayQuestion } from '../chat'
+import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
@@ -183,8 +183,8 @@ export function App() {
     enginesRef.current = IS_TAURI
       ? [
           poe,
-          new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手·Claude', debugViaAdapter: true }),
-          new CanvasEngine(() => ws.activeConv('codex') ?? codexConvRef.current, () => portRef.current, { id: 'canvas-codex', label: '画布助手·Codex', debugViaAdapter: true }),
+          new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手·Claude', debugViaAdapter: true, structuredActivity: true }),
+          new CanvasEngine(() => ws.activeConv('codex') ?? codexConvRef.current, () => portRef.current, { id: 'canvas-codex', label: '画布助手·Codex', debugViaAdapter: true, structuredActivity: true }),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
           new CodexEngine(() => cwdRef.current, () => portRef.current, () => codexBinRef.current),
         ]
@@ -348,6 +348,7 @@ export function App() {
       // Lazily open an assistant bubble on the first text; a system note closes it so the next
       // text starts a fresh bubble below — keeps Claude's "progress then prose" ordering readable.
       let assistantId: string | null = null
+      let activityId: string | null = null
       try {
         await engine.send(text, {
           onText: (delta) => {
@@ -362,12 +363,39 @@ export function App() {
             addQuestionMessage(question, targetEngineId)
             assistantId = null
           },
+          onActivity: (event) => {
+            if (!activityId) {
+              activityId = crypto.randomUUID()
+              const id = activityId
+              setMessages((items) => [...items, {
+                id,
+                role: 'system',
+                text: '',
+                activity: reduceActivity(createDisplayActivity(), event),
+              }])
+              return
+            }
+            const id = activityId
+            setMessages((items) => items.map((message) =>
+              message.id === id && message.activity
+                ? { ...message, activity: reduceActivity(message.activity, event) }
+                : message,
+            ))
+          },
           onRequest: debug
             ? (params, i) => addMessage('debug', formatRequest(params, i), requestImage(params))
             : undefined,
           onDebug: debug ? (t) => addMessage('debug', t) : undefined,
         })
       } catch (e) {
+        if (activityId) {
+          const id = activityId
+          setMessages((items) => items.map((message) =>
+            message.id === id && message.activity
+              ? { ...message, activity: reduceActivity(message.activity, { type: 'status', status: 'failed' }) }
+              : message,
+          ))
+        }
         // Not every throw is an Error: a Tauri command rejects with its Rust Err string, which
         // has no `.message` (it showed as "undefined"). Surface whatever it actually is.
         const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e)
