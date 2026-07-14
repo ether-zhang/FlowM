@@ -4,6 +4,8 @@
 
 FlowM is an AI-native canvas for understanding code, drawing technical diagrams, and turning sketches into project work. It combines an Excalidraw-style infinite canvas with local/code-aware assistants, so you can ask the model to read a repository, explain how something works, draw or refine the diagram directly, and continue from that visual context. FlowM can connect to Claude Code and Codex agents for project-aware local workflows.
 
+The demos below show one continuous workflow: FlowM starts by reading code and generating a diagram, then progressively expands it, understands free-form sketches, and finally uses the canvas context for real project development.
+
 ## Demos
 
 ### 1. Code-Aware Flowchart
