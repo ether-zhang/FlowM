@@ -106,11 +106,7 @@ export class ClaudeAdapter implements LlmAdapter {
     const structured = controlResult.structured
     const prose = controlResult.prose
 
-    const result = toTurn(structured, this.turn)
-    // Answer-mode fallback: the model answered in PROSE and left the structured reply empty, with no
-    // operations — surface the prose so the answer isn't swallowed. Guarded on no operations, so a
-    // drawing turn's working-notes prose still never reaches the bubble.
-    if (!result.question && !result.text && result.toolCalls.length === 0 && prose.trim()) result.text = prose.trim()
+    const result = projectClaudeTurn(structured, prose, this.turn)
     // Debug: the model's RAW structured output — so the panel shows EXACTLY what Claude returned
     // (notably: do its create_geo ops carry x/y, or did it leave layout to the framework?), not
     // just the post-apply canvas (whose list always has coordinates). Coordinate count up front.
@@ -129,7 +125,7 @@ export class ClaudeAdapter implements LlmAdapter {
     console.info(
       `[ClaudeAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${client.sessionId ?? '(new)'}`,
     )
-    // The model's short reply goes to the bubble; tool progress already showed as system hints.
+    // The native final reply goes to the bubble; tool progress already showed as activity.
     if (result.text) cb.onText(result.text)
     return result
   }
@@ -213,13 +209,17 @@ export function buildOpsSchema(tools: ToolDef[]): Record<string, unknown> {
 }
 
 /**
- * Map the structured `{reply, operations}` into a provider-neutral turn. Each operation becomes
- * a tool call (name = its `op`); Conversation routes create/connect/… to parseOp and
- * declare_structure to parseStructure, exactly as it does for a Poe tool call.
+ * Project Claude's two output channels into a provider-neutral turn. Structured output remains
+ * authoritative for operations and questions; native `end_turn` prose is the visible answer,
+ * with `reply` as the fallback for runtimes that only return structured output. Each operation
+ * becomes a tool call that Conversation validates through its existing canvas protocol.
  */
-function toTurn(structured: unknown, turn: number): LlmTurn {
+export function projectClaudeTurn(structured: unknown, finalProse: string, turn: number): LlmTurn {
   const obj = (structured ?? {}) as { reply?: unknown; operations?: unknown }
-  const text = typeof obj.reply === 'string' ? obj.reply : ''
+  const structuredReply = typeof obj.reply === 'string' ? obj.reply : ''
+  // The control protocol already separates native end_turn prose from tool-use commentary.
+  // Structured output owns operations/questions; native final prose owns the visible answer.
+  const text = finalProse.trim() || structuredReply
   const ops = Array.isArray(obj.operations) ? obj.operations : []
   const question = normalizeLlmQuestion((obj as { question?: unknown }).question)
   const toolCalls: LlmToolCall[] = []
