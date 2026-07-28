@@ -1,10 +1,11 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn, LlmToolCall } from './types'
-import { ClaudeControlClient, type AgentQuestionAnswer } from '../agentControl'
+import type { AgentQuestionAnswer } from '../agentControl'
 import type { ToolDef } from '../protocol'
 import { writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { normalizeLlmQuestion } from './questions'
+import { CompatibleClaudeTransport } from './claudeTransport'
 
 /**
  * Claude Code as an LlmAdapter — the SAME canvas pipeline (Conversation: serialize + marks →
@@ -30,8 +31,8 @@ export class ClaudeAdapter implements LlmAdapter {
   private getCwd: () => string
   /** Claude Code session for this conversation; captured on the first call, `--resume`d after. */
   private initialSession: string | null
-  private client: ClaudeControlClient | null = null
-  private clientKey: string | null = null
+  private transport: CompatibleClaudeTransport | null = null
+  private transportKey: string | null = null
   /** How many of Conversation's accumulated messages we've already forwarded. We send only the
    *  tail each turn (+ `--resume`); Claude's own session holds everything before it. */
   private sent = 0
@@ -54,12 +55,12 @@ export class ClaudeAdapter implements LlmAdapter {
   /** The Claude Code session id captured for this conversation (the `--resume` handle), or null
    *  before the first turn. The workspace persists it per conversation so a reopen can resume. */
   get sessionId(): string | null {
-    return this.client?.sessionId ?? this.initialSession
+    return this.transport?.sessionId ?? this.initialSession
   }
 
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
-    if (!this.client) throw new Error('Claude control client is not running')
-    await this.client.answerQuestion(answer)
+    if (!this.transport) throw new Error('Claude transport is not running')
+    await this.transport.answerQuestion(answer)
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
@@ -84,7 +85,7 @@ export class ClaudeAdapter implements LlmAdapter {
 
     const prompt = await this.composeDelta(fresh, cwd)
     const schema = buildOpsSchema(params.tools)
-    const client = await this.ensureClient(cwd, schema)
+    const transport = await this.ensureTransport(cwd, schema)
     this.turn++
 
     // Debug: report the REAL outgoing request (the Claude engine suppresses Conversation's logical
@@ -93,12 +94,11 @@ export class ClaudeAdapter implements LlmAdapter {
     cb.onDebug?.(
       `▶ 实际发给 Claude · 第 ${this.turn} 轮\n` +
         `system: --append-system-prompt -> ${this.guidePath}\n` +
-        `transport: Agent SDK control · session: ${client.sessionId ?? this.initialSession ?? '(新会话)'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
+        `transport: ${transport.kind} · session: ${transport.sessionId ?? this.initialSession ?? '(新会话)'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
         `本轮增量（${fresh.length} 条 / ${prompt.length} 字）:\n${prompt}`,
     )
 
-    const controlResult = await client.runTurn({
-      prompt,
+    const controlResult = await transport.runTurn(prompt, {
       onSystem: cb.onSystem,
       onQuestion: cb.onQuestion,
       onActivity: cb.onActivity,
@@ -123,19 +123,22 @@ export class ClaudeAdapter implements LlmAdapter {
     // loudly so a recurrence is diagnosable (capture vs apply) straight from the devtools console.
     if (structured == null) console.warn('[ClaudeAdapter] no structured_output captured — nothing to apply this turn')
     console.info(
-      `[ClaudeAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${client.sessionId ?? '(new)'}`,
+      `[ClaudeAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${transport.sessionId ?? '(new)'}`,
     )
     // The native final reply goes to the bubble; tool progress already showed as activity.
     if (result.text) cb.onText(result.text)
     return result
   }
 
-  private async ensureClient(cwd: string, schema: unknown): Promise<ClaudeControlClient> {
+  private async ensureTransport(
+    cwd: string,
+    schema: unknown,
+  ): Promise<CompatibleClaudeTransport> {
     const bin = this.getBin().trim()
     const key = `${cwd}\0${bin}`
-    if (this.client && this.clientKey === key) return this.client
-    if (this.client) await this.client.dispose()
-    this.client = new ClaudeControlClient({
+    if (this.transport && this.transportKey === key) return this.transport
+    if (this.transport) await this.transport.dispose()
+    this.transport = new CompatibleClaudeTransport({
       cwd,
       bin: bin || undefined,
       jsonSchema: schema,
@@ -143,8 +146,8 @@ export class ClaudeAdapter implements LlmAdapter {
       disallowedTools: ['Task'],
       appendSystemPrompt: `FlowM canvas mode is active. Read ${this.guidePath} before drawing.`,
     })
-    this.clientKey = key
-    return this.client
+    this.transportKey = key
+    return this.transport
   }
 
   /** Turn the new (non-assistant) messages into one prompt; the latest image is written to

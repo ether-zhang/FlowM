@@ -6,5 +6,9 @@ export type {
   AgentActivityEvent,
   AgentToolStatus,
 } from './types'
-export { ClaudeControlClient } from './claudeControl'
+export {
+  ClaudeControlClient,
+  ClaudeControlUnavailableError,
+  isClaudeControlUnavailableError,
+} from './claudeControl'
 export { CodexAppServerClient } from './codexAppServer'

@@ -45,6 +45,26 @@ interface PendingControlRequest {
   reject(error: Error): void
 }
 
+const CLAUDE_CONTROL_INITIALIZE_TIMEOUT_MS = 10_000
+const MAX_STARTUP_DIAGNOSTICS = 20
+
+/**
+ * The configured command started, but did not complete Claude's Agent SDK control handshake.
+ * Callers may use a non-interactive CLI transport for commands that only implement `claude -p`.
+ */
+export class ClaudeControlUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'ClaudeControlUnavailableError'
+  }
+}
+
+export function isClaudeControlUnavailableError(
+  value: unknown,
+): value is ClaudeControlUnavailableError {
+  return value instanceof ClaudeControlUnavailableError
+}
+
 interface PendingAssistantBlock {
   index: number
   kind: 'text' | 'thinking' | 'tool'
@@ -79,6 +99,7 @@ export class ClaudeControlClient {
   private pendingQuestions = new Map<string, PendingInteraction>()
   private activeTurn: ActiveTurn | null = null
   private session: string | null
+  private startupDiagnostics: string[] = []
   private readonly options: ClaudeControlOptions
 
   constructor(options: ClaudeControlOptions) {
@@ -153,6 +174,7 @@ export class ClaudeControlClient {
   }
 
   private async start(): Promise<void> {
+    this.startupDiagnostics = []
     this.process = await AgentControlProcess.startClaude({
       bin: this.options.bin,
       cwd: this.options.cwd,
@@ -161,16 +183,61 @@ export class ClaudeControlClient {
       disallowedTools: this.options.disallowedTools,
       appendSystemPrompt: this.options.appendSystemPrompt,
     }, (event) => this.onProcessEvent(event))
-    await this.sendControlRequest({ subtype: 'initialize', hooks: null })
+    try {
+      await this.sendControlRequest(
+        { subtype: 'initialize', hooks: null },
+        CLAUDE_CONTROL_INITIALIZE_TIMEOUT_MS,
+      )
+      this.startupDiagnostics = []
+    } catch (error) {
+      const process = this.process
+      this.process = null
+      if (process) {
+        try {
+          await process.stop()
+        } catch {
+          // The process may already have exited after rejecting the handshake.
+        }
+      }
+      const detail = this.startupDiagnostics.join('\n')
+      const suffix = detail ? `\n${detail}` : ''
+      throw new ClaudeControlUnavailableError(
+        `Claude Agent SDK control initialization failed.${suffix}`,
+        { cause: asError(error) },
+      )
+    }
   }
 
-  private sendControlRequest(request: Record<string, unknown>): Promise<unknown> {
+  private sendControlRequest(
+    request: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<unknown> {
     const requestId = `flowm-${this.nextControlId++}`
     return new Promise((resolve, reject) => {
-      this.pendingControl.set(requestId, { resolve, reject })
-      void this.write({ type: 'control_request', request_id: requestId, request }).catch((error) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      const clearPending = () => {
+        if (timeout) clearTimeout(timeout)
         this.pendingControl.delete(requestId)
-        reject(asError(error))
+      }
+      this.pendingControl.set(requestId, {
+        resolve: (value) => {
+          clearPending()
+          resolve(value)
+        },
+        reject: (error) => {
+          clearPending()
+          reject(error)
+        },
+      })
+      if (timeoutMs != null) {
+        timeout = setTimeout(() => {
+          const pending = this.pendingControl.get(requestId)
+          if (pending) pending.reject(new Error(`Claude control request timed out after ${timeoutMs} ms`))
+        }, timeoutMs)
+      }
+      void this.write({ type: 'control_request', request_id: requestId, request }).catch((error) => {
+        const pending = this.pendingControl.get(requestId)
+        if (pending) pending.reject(asError(error))
       })
     })
   }
@@ -199,9 +266,13 @@ export class ClaudeControlClient {
       this.onMessage(event.line)
     } else if (event.kind === 'stderr') {
       const line = cleanAgentDiagnostic(event.line)
-      if (line) this.activeTurn?.callbacks.onActivity?.({
-        type: 'warning', id: 'claude-stderr', text: 'Claude diagnostics', detail: line,
-      })
+      if (line && this.activeTurn) {
+        this.activeTurn.callbacks.onActivity?.({
+          type: 'warning', id: 'claude-stderr', text: 'Claude diagnostics', detail: line,
+        })
+      } else if (line) {
+        this.rememberStartupDiagnostic(line)
+      }
     } else {
       this.failAll(new Error(`Claude control process exited${event.code == null ? '' : ` with code ${event.code}`}`))
     }
@@ -212,6 +283,9 @@ export class ClaudeControlClient {
     try {
       message = JSON.parse(line) as Record<string, unknown>
     } catch {
+      if (!this.activeTurn && this.pendingControl.size > 0) {
+        this.rememberStartupDiagnostic(line)
+      }
       return
     }
     const type = message.type
@@ -432,6 +506,12 @@ export class ClaudeControlClient {
     this.activeTurn = null
     active?.callbacks.onActivity?.({ type: 'status', status: 'failed' })
     active?.reject(error)
+  }
+
+  private rememberStartupDiagnostic(line: string): void {
+    if (this.startupDiagnostics.length < MAX_STARTUP_DIAGNOSTICS) {
+      this.startupDiagnostics.push(line)
+    }
   }
 }
 
