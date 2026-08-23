@@ -25,6 +25,8 @@ const MAX_ITERATIONS = 8
 
 /** Tools the model may call: the canvas ops plus the structure declaration. */
 const ALL_TOOLS = [...canvasTools, declareStructureTool]
+const REVIEW_TOOL_NAMES = new Set(['move_shape', 'place_region', 'declare_structure'])
+const REVIEW_TOOLS = ALL_TOOLS.filter((tool) => REVIEW_TOOL_NAMES.has(tool.name))
 
 const questionText = (question: LlmQuestion) => question.items.map((item) => item.prompt).join('\n')
 
@@ -35,7 +37,8 @@ interface OpCall {
 }
 interface DeclareCall {
   id: string
-  args: Record<string, unknown>
+  args?: Record<string, unknown>
+  error?: string
 }
 
 interface BuildResult {
@@ -49,22 +52,61 @@ interface PhaseResult {
   interrupted: boolean
 }
 
+interface ToolAccess {
+  allowedNames: ReadonlySet<string>
+  editableIds: ReadonlySet<string>
+}
+
+interface ReviewScope {
+  reviewTargetIds: Set<string>
+  contextIds: Set<string>
+  editableIds: Set<string>
+}
+
 /** Split a turn's tool calls into canvas ops (validated) and structure declarations. */
-function splitTools(toolCalls: LlmToolCall[]): { opCalls: OpCall[]; declareCalls: DeclareCall[] } {
+function splitTools(
+  toolCalls: LlmToolCall[],
+  access?: ToolAccess,
+): { opCalls: OpCall[]; declareCalls: DeclareCall[] } {
   const opCalls: OpCall[] = []
   const declareCalls: DeclareCall[] = []
   for (const tc of toolCalls) {
+    if (access && !access.allowedNames.has(tc.name)) {
+      const error = `${tc.name} is not allowed during review`
+      if (tc.name === 'declare_structure') declareCalls.push({ id: tc.id, error })
+      else opCalls.push({ id: tc.id, error })
+      continue
+    }
     if (tc.name === 'declare_structure') {
       declareCalls.push({ id: tc.id, args: tc.args })
       continue
     }
     try {
-      opCalls.push({ id: tc.id, op: parseOp(toolCallToOp(tc.name, tc.args)) })
+      const op = parseOp(toolCallToOp(tc.name, tc.args))
+      const error = access ? operationAccessError(op, access.editableIds) : undefined
+      opCalls.push(error ? { id: tc.id, error } : { id: tc.id, op })
     } catch (e) {
       opCalls.push({ id: tc.id, error: (e as Error).message })
     }
   }
   return { opCalls, declareCalls }
+}
+
+function operationAccessError(op: CanvasOp, editableIds: ReadonlySet<string>): string | undefined {
+  if (op.op === 'move_shape' && !editableIds.has(op.id)) {
+    return `review cannot move context-only shape ${op.id}`
+  }
+  if (op.op === 'place_region') {
+    const denied = op.ids.filter((id) => !editableIds.has(id))
+    if (denied.length) return `review cannot place context-only shapes: ${denied.join(', ')}`
+  }
+  return undefined
+}
+
+function relationIds(relation: StructureRelation): string[] {
+  return relation.kind === 'contain'
+    ? [relation.parent, ...relation.children]
+    : relation.nodes
 }
 
 /** Ops whose ok result id is a shape the model created/moved this turn — the review
@@ -108,6 +150,30 @@ function withConnectedContext(port: CanvasPort, changed: ReadonlySet<string>): S
     }
   }
   return out
+}
+
+function createReviewScope(
+  port: CanvasPort,
+  changed: ReadonlySet<string>,
+  selection: ReadonlySet<string> | null,
+): ReviewScope {
+  const reviewTargetIds = new Set(changed)
+  const editableIds = new Set(changed)
+  const contextIds = port.regionOf(withConnectedContext(port, reviewTargetIds))
+  if (selection) for (const id of selection) contextIds.add(id)
+  return { reviewTargetIds, contextIds, editableIds }
+}
+
+function reviewScopeText(scope: ReviewScope): string {
+  const ids = (values: ReadonlySet<string>) => [...values].sort().join(', ') || '(none)'
+  const contextOnlyIds = new Set(
+    [...scope.contextIds].filter((id) => !scope.editableIds.has(id)),
+  )
+  return [
+    `Review target ids: ${ids(scope.reviewTargetIds)}`,
+    `Editable ids: ${ids(scope.editableIds)}`,
+    `Context-only ids (do not modify): ${ids(contextOnlyIds)}`,
+  ].join('\n')
 }
 
 export interface SendCallbacks {
@@ -198,14 +264,8 @@ export class Conversation {
     // image shows the new work stitched to what was selected, while still not dumping the
     // whole canvas (which would drown a complex board) when nothing was selected.
     if (build.changed.size > 0) {
-      const reviewIds = withConnectedContext(port, build.changed)
-      if (selection) for (const id of selection) reviewIds.add(id)
-      // The user's hand-drawn sketch is the reference the model is completing/annotating —
-      // always stitch it into the review so the new work is judged against it, not in
-      // isolation. (selectionScope can be null when nothing was explicitly selected and the
-      // context came from the whole-canvas fallback, which dropped the sketch from review.)
-      for (const s of port.snapshot('all')) if (s.type === 'draw') reviewIds.add(s.id)
-      const review = await this.reviewGate(port, cb, reviewIds)
+      const reviewScope = createReviewScope(port, build.changed, selection)
+      const review = await this.reviewGate(port, cb, reviewScope)
       if (review.interrupted) return
       await this.finalize(cb, review.text || build.text)
     } else if (build.text) {
@@ -253,17 +313,18 @@ export class Conversation {
    *  shapes: an overlap or crowding against an EXISTING neighbour is invisible in a cutout that
    *  omits that neighbour. A far-off untouched board still stays out of the way (it's outside the
    *  region), so the model keeps reasoning mostly about its own work, now against real surroundings. */
-  private async reviewGate(port: CanvasPort, cb: SendCallbacks, ids: ReadonlySet<string>): Promise<PhaseResult> {
-    const regionIds = port.regionOf(ids)
-    const shapes = port.snapshot('all', regionIds)
+  private async reviewGate(port: CanvasPort, cb: SendCallbacks, scope: ReviewScope): Promise<PhaseResult> {
+    const shapes = port.snapshot('all', scope.contextIds)
     const marks = nodeMarks(shapes)
-    const image = await port.exportImage('all', marks, regionIds)
+    const image = await port.exportImage('all', marks, scope.contextIds)
     if (!image) return { text: '', interrupted: false }
 
     for (const m of this.history) if (m.role === 'user') delete m.image
     this.history.push({
       role: 'user',
-      content: `${FLOWM_CANVAS_REVIEW_PROMPT}\n\nRendered canvas:\n${formatCanvas(shapes, marks)}`,
+      content:
+        `${FLOWM_CANVAS_REVIEW_PROMPT}\n\n${reviewScopeText(scope)}` +
+        `\n\nRendered canvas:\n${formatCanvas(shapes, marks)}`,
       image,
     })
 
@@ -271,7 +332,7 @@ export class Conversation {
       phase: 'review',
       system: FLOWM_CANVAS_SYSTEM_PROMPT,
       messages: this.history,
-      tools: ALL_TOOLS,
+      tools: REVIEW_TOOLS,
     }
     cb.onRequest?.(params, MAX_ITERATIONS)
     const turn = await this.adapter.runTurn(params, {
@@ -293,7 +354,10 @@ export class Conversation {
     // build scope. Otherwise a move_shape correcting a flow node would be immediately
     // re-flowed (clobbered) by the build's still-active straighten. The build already
     // straightened; review is for manual fixes + any newly-spotted structure.
-    const applied = await this.processToolCalls(port, turn.toolCalls, { persistScope: false })
+    const applied = await this.processToolCalls(port, turn.toolCalls, {
+      persistScope: false,
+      access: { allowedNames: REVIEW_TOOL_NAMES, editableIds: scope.editableIds },
+    })
     cb.onToolsApplied(`复核：执行 ${applied} 项调整`)
     return { text: turn.text, interrupted: false }
   }
@@ -344,12 +408,27 @@ export class Conversation {
   private async processToolCalls(
     port: CanvasPort,
     toolCalls: LlmToolCall[],
-    opts: { changed?: Set<string>; persistScope: boolean },
+    opts: { changed?: Set<string>; persistScope: boolean; access?: ToolAccess },
   ): Promise<number> {
-    const { opCalls, declareCalls } = splitTools(toolCalls)
+    const { opCalls, declareCalls } = splitTools(toolCalls, opts.access)
     const relations: StructureRelation[] = []
     for (const d of declareCalls) {
-      const parsed = parseStructure(d.args)
+      if (d.error) {
+        this.history.push({ role: 'tool', toolCallId: d.id, content: `error: ${d.error}` })
+        continue
+      }
+      const parsed = parseStructure(d.args ?? {})
+      const denied = opts.access
+        ? parsed.relations.flatMap(relationIds).filter((id) => !opts.access?.editableIds.has(id))
+        : []
+      if (denied.length) {
+        this.history.push({
+          role: 'tool',
+          toolCallId: d.id,
+          content: `error: review cannot declare structure over context-only shapes: ${[...new Set(denied)].join(', ')}`,
+        })
+        continue
+      }
       relations.push(...parsed.relations)
       this.history.push({
         role: 'tool',

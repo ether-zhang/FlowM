@@ -206,4 +206,51 @@ describe('Conversation turn contract', () => {
     expect(apply).not.toHaveBeenCalled()
     expect(regionOf).not.toHaveBeenCalled()
   })
+
+  it('shows neighboring context during review but rejects edits outside editable ids', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [{
+          id: 'create',
+          name: 'create_geo',
+          args: { shape: 'rectangle', x: 0, y: 0, text: 'New node' },
+        }],
+      },
+      { text: 'Build complete.', toolCalls: [] },
+      {
+        text: 'Moving the neighbor.',
+        toolCalls: [{ id: 'move-existing', name: 'move_shape', args: { id: 'existing', x: 300, y: 0 } }],
+      },
+      { text: 'Final explanation.', toolCalls: [] },
+    ])
+    const { port, apply, regionOf } = createPort([
+      { id: 'existing', type: 'rectangle', x: 120, y: 0, w: 100, h: 60, text: 'Existing' },
+      { id: 'far-sketch', type: 'draw', x: 2_000, y: 2_000, w: 100, h: 100 },
+    ])
+    regionOf.mockImplementation((ids) => new Set([...ids, 'existing']))
+    const cb = callbacks()
+
+    await new Conversation(adapter).send('Add a node.', port, cb)
+
+    expect(adapter.requests[2]?.tools.map((tool) => tool.name)).toEqual([
+      'move_shape',
+      'place_region',
+      'declare_structure',
+    ])
+    const reviewMessage = adapter.requests[2]?.messages.at(-1)
+    expect(reviewMessage).toMatchObject({ role: 'user' })
+    expect((reviewMessage as { content: string }).content).toContain('Editable ids: created-1')
+    expect((reviewMessage as { content: string }).content).toContain(
+      'Context-only ids (do not modify): existing',
+    )
+    expect((reviewMessage as { content: string }).content).not.toContain('#far-sketch')
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(adapter.requests[3]?.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'move-existing',
+      content: 'error: review cannot move context-only shape existing',
+    })
+    expect(cb.onText).toHaveBeenCalledWith('Final explanation.')
+  })
 })
