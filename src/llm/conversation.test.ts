@@ -85,13 +85,19 @@ describe('Conversation turn contract', () => {
       },
       { text: 'Build complete.', toolCalls: [] },
       { text: 'Review complete.', toolCalls: [] },
+      { text: 'Final explanation.', toolCalls: [] },
     ])
     const { port, apply, regionOf, exportImage } = createPort()
     const cb = callbacks()
 
     await new Conversation(adapter).send('Draw a scheduler.', port, cb)
 
-    expect(adapter.requests).toHaveLength(3)
+    expect(adapter.requests.map((request) => request.phase)).toEqual([
+      'build',
+      'build',
+      'review',
+      'finalize',
+    ])
     expect(apply).toHaveBeenCalledTimes(1)
     expect(apply.mock.calls[0]?.[0]).toEqual([
       {
@@ -114,6 +120,9 @@ describe('Conversation turn contract', () => {
       new Set(['created-1']),
     )
     expect(adapter.requests[2]?.messages.at(-1)).toMatchObject({ role: 'user' })
+    expect(adapter.requests[3]?.tools).toEqual([])
+    expect(cb.onText).toHaveBeenCalledTimes(1)
+    expect(cb.onText).toHaveBeenCalledWith('Final explanation.')
     expect(cb.onToolsApplied).toHaveBeenCalledWith('已对画布执行 1/1 个操作')
   })
 
@@ -126,8 +135,9 @@ describe('Conversation turn contract', () => {
       { text: 'Stopped after seeing the validation error.', toolCalls: [] },
     ])
     const { port, apply, regionOf } = createPort()
+    const cb = callbacks()
 
-    await new Conversation(adapter).send('Move it.', port, callbacks())
+    await new Conversation(adapter).send('Move it.', port, cb)
 
     expect(adapter.requests).toHaveLength(2)
     expect(apply).not.toHaveBeenCalled()
@@ -137,6 +147,8 @@ describe('Conversation turn contract', () => {
     })
     expect((adapter.requests[1]?.messages.at(-1) as { content: string }).content).toMatch(/^error:/)
     expect(regionOf).not.toHaveBeenCalled()
+    expect(cb.onText).toHaveBeenCalledTimes(1)
+    expect(cb.onText).toHaveBeenCalledWith('Stopped after seeing the validation error.')
   })
 
   it('resolves create refs used by a later operation batch', async () => {
@@ -154,6 +166,7 @@ describe('Conversation turn contract', () => {
       },
       { text: 'Done.', toolCalls: [] },
       { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Final explanation.', toolCalls: [] },
     ])
     const { port, apply } = createPort()
 
@@ -162,6 +175,13 @@ describe('Conversation turn contract', () => {
     expect(apply).toHaveBeenCalledTimes(2)
     expect(apply.mock.calls[1]?.[0]).toEqual([
       { op: 'connect_shapes', from: 'created-1', to: 'created-2' },
+    ])
+    expect(adapter.requests.map((request) => request.phase)).toEqual([
+      'build',
+      'build',
+      'build',
+      'review',
+      'finalize',
     ])
   })
 

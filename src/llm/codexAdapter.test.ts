@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { canvasTools, declareStructureTool } from '../protocol'
-import { parseCodexCanvasCommentary } from './codexAdapter'
 import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
 describe('strict canvas turn output schema', () => {
@@ -65,17 +64,13 @@ describe('strict canvas turn output schema', () => {
     }])
   })
 
-})
+  it('represents a no-tools phase without an invalid empty operation enum', () => {
+    const schema = buildCanvasTurnOutputSchema([], 'strict') as {
+      properties: { operations: { maxItems?: number; items?: unknown } }
+    }
 
-describe('parseCodexCanvasCommentary', () => {
-  it('projects only the reply from a complete structured commentary item', () => {
-    expect(parseCodexCanvasCommentary(JSON.stringify({
-      reply: 'Inspecting the scheduler', question: null, operations: [],
-    }))).toBe('Inspecting the scheduler')
+    expect(schema.properties.operations.maxItems).toBe(0)
+    expect(JSON.stringify(schema)).not.toContain('"enum":[]')
   })
 
-  it('does not infer commentary from unstructured text or partial JSON', () => {
-    expect(parseCodexCanvasCommentary('Inspecting the scheduler')).toBeNull()
-    expect(parseCodexCanvasCommentary('{"reply":"Inspecting"')).toBeNull()
-  })
 })

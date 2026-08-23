@@ -4,7 +4,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions'
-import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
+import type { LlmAdapter, RunTurnParams } from './adapter'
 import type { LlmMessage, LlmTurn } from './types'
 
 /** Poe's OpenAI-compatible endpoint (direct). */
@@ -81,8 +81,7 @@ export function buildChatBody(params: RunTurnParams): ChatCompletionCreateParams
   return {
     model: MODEL,
     messages: toOpenAiMessages(params.system, params.messages),
-    tools,
-    tool_choice: 'auto',
+    ...(tools.length ? { tools, tool_choice: 'auto' as const } : {}),
   }
 }
 
@@ -105,10 +104,9 @@ export interface ChatResponseLike {
  * Works for both the SDK's typed response and the raw JSON returned by the Rust
  * proxy (same wire shape).
  */
-export function parseTurn(res: ChatResponseLike, cb: TurnCallbacks): LlmTurn {
+export function parseTurn(res: ChatResponseLike): LlmTurn {
   const msg = res.choices?.[0]?.message
   const text = msg?.content ?? ''
-  if (text) cb.onText(text)
 
   const toolCalls = (msg?.tool_calls ?? []).flatMap((tc) => {
     if (tc.type && tc.type !== 'function') return []
@@ -147,13 +145,13 @@ export class PoeAdapter implements LlmAdapter {
     this.getBaseUrl = getBaseUrl
   }
 
-  async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
+  async runTurn(params: RunTurnParams): Promise<LlmTurn> {
     const client = new OpenAI({
       apiKey: this.apiKey,
       baseURL: resolveBaseUrl(this.getBaseUrl()),
       dangerouslyAllowBrowser: true,
     })
     const res = await client.chat.completions.create(buildChatBody(params))
-    return parseTurn(res as ChatResponseLike, cb)
+    return parseTurn(res as ChatResponseLike)
   }
 }

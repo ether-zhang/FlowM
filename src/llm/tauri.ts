@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
+import type { LlmAdapter, RunTurnParams } from './adapter'
 import type { LlmTurn } from './types'
 import { buildChatBody, normalizeApiBaseUrl, parseTurn, POE_BASE_URL, type ChatResponseLike } from './poe'
 
@@ -16,13 +16,13 @@ export class TauriAdapter implements LlmAdapter {
     this.getBaseUrl = getBaseUrl
   }
 
-  async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {
+  async runTurn(params: RunTurnParams): Promise<LlmTurn> {
     const body = buildChatBody(params)
     const res = await invoke<ChatResponseLike>('poe_chat', {
       body,
       baseUrl: normalizeApiBaseUrl(this.getBaseUrl()),
     })
-    return parseTurn(res, cb)
+    return parseTurn(res)
   }
 }
 

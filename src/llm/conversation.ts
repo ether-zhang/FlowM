@@ -15,7 +15,11 @@ import {
 import type { LlmAdapter, RunTurnParams } from './adapter'
 import type { AgentActivityEvent, AgentQuestionAnswer } from '../agentControl'
 import type { LlmMessage, LlmQuestion, LlmToolCall } from './types'
-import { FLOWM_CANVAS_REVIEW_PROMPT, FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
+import {
+  FLOWM_CANVAS_FINALIZE_PROMPT,
+  FLOWM_CANVAS_REVIEW_PROMPT,
+  FLOWM_CANVAS_SYSTEM_PROMPT,
+} from './canvasPrompt'
 
 const MAX_ITERATIONS = 8
 
@@ -32,6 +36,17 @@ interface OpCall {
 interface DeclareCall {
   id: string
   args: Record<string, unknown>
+}
+
+interface BuildResult {
+  changed: Set<string>
+  text: string
+  interrupted: boolean
+}
+
+interface PhaseResult {
+  text: string
+  interrupted: boolean
 }
 
 /** Split a turn's tool calls into canvas ops (validated) and structure declarations. */
@@ -176,32 +191,42 @@ export class Conversation {
       ...(image ? { image } : {}),
     })
 
-    const changed = await this.runBuildLoop(port, cb)
+    const build = await this.runBuildLoop(port, cb)
+    if (build.interrupted) return
     // One visual-review round over what the model created/changed this turn (plus the shapes
     // its new arrows attach to) UNION the user's original selection region — so the review
     // image shows the new work stitched to what was selected, while still not dumping the
     // whole canvas (which would drown a complex board) when nothing was selected.
-    if (changed.size > 0) {
-      const reviewIds = withConnectedContext(port, changed)
+    if (build.changed.size > 0) {
+      const reviewIds = withConnectedContext(port, build.changed)
       if (selection) for (const id of selection) reviewIds.add(id)
       // The user's hand-drawn sketch is the reference the model is completing/annotating —
       // always stitch it into the review so the new work is judged against it, not in
       // isolation. (selectionScope can be null when nothing was explicitly selected and the
       // context came from the whole-canvas fallback, which dropped the sketch from review.)
       for (const s of port.snapshot('all')) if (s.type === 'draw') reviewIds.add(s.id)
-      await this.reviewGate(port, cb, reviewIds)
+      const review = await this.reviewGate(port, cb, reviewIds)
+      if (review.interrupted) return
+      await this.finalize(cb, review.text || build.text)
+    } else if (build.text) {
+      cb.onText(build.text)
     }
   }
 
   /** Build phase: let the model create/connect/move/declare until it stops calling tools.
    *  Returns the ids of shapes it created/moved this turn (what the review will inspect). */
-  private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<Set<string>> {
+  private async runBuildLoop(port: CanvasPort, cb: SendCallbacks): Promise<BuildResult> {
     const changed = new Set<string>()
+    let text = ''
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
+      const params: RunTurnParams = {
+        phase: 'build',
+        system: FLOWM_CANVAS_SYSTEM_PROMPT,
+        messages: this.history,
+        tools: ALL_TOOLS,
+      }
       cb.onRequest?.(params, i)
       const turn = await this.adapter.runTurn(params, {
-        onText: cb.onText,
         onSystem: cb.onToolsApplied,
         onDebug: cb.onDebug,
         onQuestion: cb.onQuestion,
@@ -210,14 +235,16 @@ export class Conversation {
       if (turn.question) {
         this.history.push({ role: 'assistant', content: turn.text || questionText(turn.question) })
         cb.onQuestion?.(turn.question)
-        break
+        return { changed, text, interrupted: true }
       }
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
+      if (turn.text) text = turn.text
       if (turn.toolCalls.length === 0) break
+      this.emitCommentary(cb, 'build', i, turn.text)
       const applied = await this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
     }
-    return changed
+    return { changed, text, interrupted: false }
   }
 
   /** Show the model its fresh work IN CONTEXT and let it fix misplacements (and declare any
@@ -226,12 +253,12 @@ export class Conversation {
    *  shapes: an overlap or crowding against an EXISTING neighbour is invisible in a cutout that
    *  omits that neighbour. A far-off untouched board still stays out of the way (it's outside the
    *  region), so the model keeps reasoning mostly about its own work, now against real surroundings. */
-  private async reviewGate(port: CanvasPort, cb: SendCallbacks, ids: ReadonlySet<string>): Promise<void> {
+  private async reviewGate(port: CanvasPort, cb: SendCallbacks, ids: ReadonlySet<string>): Promise<PhaseResult> {
     const regionIds = port.regionOf(ids)
     const shapes = port.snapshot('all', regionIds)
     const marks = nodeMarks(shapes)
     const image = await port.exportImage('all', marks, regionIds)
-    if (!image) return
+    if (!image) return { text: '', interrupted: false }
 
     for (const m of this.history) if (m.role === 'user') delete m.image
     this.history.push({
@@ -240,10 +267,48 @@ export class Conversation {
       image,
     })
 
-    const params: RunTurnParams = { system: FLOWM_CANVAS_SYSTEM_PROMPT, messages: this.history, tools: ALL_TOOLS }
+    const params: RunTurnParams = {
+      phase: 'review',
+      system: FLOWM_CANVAS_SYSTEM_PROMPT,
+      messages: this.history,
+      tools: ALL_TOOLS,
+    }
     cb.onRequest?.(params, MAX_ITERATIONS)
     const turn = await this.adapter.runTurn(params, {
-      onText: cb.onText,
+      onSystem: cb.onToolsApplied,
+      onDebug: cb.onDebug,
+      onQuestion: cb.onQuestion,
+      onActivity: cb.onActivity,
+    })
+    if (turn.question) {
+      this.history.push({ role: 'assistant', content: turn.text || questionText(turn.question) })
+      cb.onQuestion?.(turn.question)
+      return { text: turn.text, interrupted: true }
+    }
+    this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
+    if (turn.toolCalls.length === 0) return { text: turn.text, interrupted: false }
+
+    this.emitCommentary(cb, 'review', 0, turn.text)
+    // Review uses ONLY a scope freshly declared in this review turn — never the persisted
+    // build scope. Otherwise a move_shape correcting a flow node would be immediately
+    // re-flowed (clobbered) by the build's still-active straighten. The build already
+    // straightened; review is for manual fixes + any newly-spotted structure.
+    const applied = await this.processToolCalls(port, turn.toolCalls, { persistScope: false })
+    cb.onToolsApplied(`复核：执行 ${applied} 项调整`)
+    return { text: turn.text, interrupted: false }
+  }
+
+  /** Final explanation is a separate no-tools phase, emitted to chat exactly once. */
+  private async finalize(cb: SendCallbacks, fallbackText: string): Promise<void> {
+    this.history.push({ role: 'user', content: FLOWM_CANVAS_FINALIZE_PROMPT })
+    const params: RunTurnParams = {
+      phase: 'finalize',
+      system: FLOWM_CANVAS_SYSTEM_PROMPT,
+      messages: this.history,
+      tools: [],
+    }
+    cb.onRequest?.(params, MAX_ITERATIONS + 1)
+    const turn = await this.adapter.runTurn(params, {
       onSystem: cb.onToolsApplied,
       onDebug: cb.onDebug,
       onQuestion: cb.onQuestion,
@@ -255,14 +320,22 @@ export class Conversation {
       return
     }
     this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
-    if (turn.toolCalls.length === 0) return // model judged it already good
+    const text = turn.text || fallbackText
+    if (text) cb.onText(text)
+  }
 
-    // Review uses ONLY a scope freshly declared in this review turn — never the persisted
-    // build scope. Otherwise a move_shape correcting a flow node would be immediately
-    // re-flowed (clobbered) by the build's still-active straighten. The build already
-    // straightened; review is for manual fixes + any newly-spotted structure.
-    const applied = await this.processToolCalls(port, turn.toolCalls, { persistScope: false })
-    cb.onToolsApplied(`复核：执行 ${applied} 项调整`)
+  private emitCommentary(
+    cb: SendCallbacks,
+    phase: 'build' | 'review',
+    iteration: number,
+    text: string,
+  ): void {
+    if (!text.trim()) return
+    cb.onActivity?.({
+      type: 'commentary_delta',
+      id: `flowm-${phase}-${iteration}`,
+      delta: text,
+    })
   }
 
   /** Process one turn's tool calls: parse any structure declarations into a B-pass scope,

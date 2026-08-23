@@ -4,8 +4,8 @@ import type { LlmMessage, LlmTurn } from './types'
 
 /** Callbacks fired while a turn is produced. */
 export interface TurnCallbacks {
-  /** Assistant text for this turn (full text on non-streaming adapters). */
-  onText(text: string): void
+  /** Provider-native streamed prose, when the transport exposes it separately. */
+  onText?(text: string): void
   /** Optional system-note channel (tool / progress activity → the chat's yellow hints, not the
    *  assistant bubble). The Poe adapter has none; the Claude Code adapter uses it to surface its
    *  Read/Grep progress while it works. */
@@ -20,6 +20,7 @@ export interface TurnCallbacks {
 }
 
 export interface RunTurnParams {
+  phase: 'build' | 'review' | 'finalize'
   system: string
   messages: LlmMessage[]
   tools: ToolDef[]

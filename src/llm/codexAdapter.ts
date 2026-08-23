@@ -43,10 +43,6 @@ export class CodexAdapter implements LlmAdapter {
 
     const fresh = params.messages.slice(this.sent)
     this.sent = params.messages.length
-    const hasUser = fresh.some((m) => m.role === 'user')
-    const hasError = fresh.some((m) => m.role === 'tool' && /"ok"\s*:\s*false|^error/i.test(m.content))
-    if (!hasUser && !hasError) return { text: '', toolCalls: [] }
-
     const { prompt, image } = await this.composeDelta(fresh, cwd)
     const schema = buildCanvasTurnOutputSchema(params.tools, 'strict')
     const client = await this.ensureClient(cwd)
@@ -64,7 +60,6 @@ export class CodexAdapter implements LlmAdapter {
       prompt,
       image,
       outputSchema: schema,
-      mapCommentaryText: parseCodexCanvasCommentary,
       onSystem: cb.onSystem,
       onQuestion: cb.onQuestion,
       onActivity: cb.onActivity,
@@ -85,7 +80,6 @@ export class CodexAdapter implements LlmAdapter {
     console.info(
       `[CodexAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${client.threadId ?? '(new)'}`,
     )
-    if (result.text) cb.onText(result.text)
     return result
   }
 
@@ -154,16 +148,4 @@ function extractObject(text: string): string | null {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   return start >= 0 && end > start ? text.slice(start, end + 1) : null
-}
-
-/** Project the forced canvas-output envelope into public progress text.
- * The control client waits for the complete item, so this parser never inspects partial JSON. */
-export function parseCodexCanvasCommentary(raw: string): string | null {
-  try {
-    const value = JSON.parse(raw) as { reply?: unknown; operations?: unknown }
-    if (typeof value.reply !== 'string' || !Array.isArray(value.operations)) return null
-    return value.reply.trim() || null
-  } catch {
-    return null
-  }
 }

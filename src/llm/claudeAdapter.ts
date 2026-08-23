@@ -78,10 +78,6 @@ export class ClaudeAdapter implements LlmAdapter {
     // The build loop's "are you done?" round arrives as tool-results only (no new user message).
     // If every op applied cleanly there's nothing for Claude to add — end the loop WITHOUT a
     // (slow) Claude call. Errors are NOT short-circuited: send them so Claude can self-correct.
-    const hasUser = fresh.some((m) => m.role === 'user')
-    const hasError = fresh.some((m) => m.role === 'tool' && /"ok"\s*:\s*false|^error/i.test(m.content))
-    if (!hasUser && !hasError) return { text: '', toolCalls: [] }
-
     const prompt = await this.composeDelta(fresh, cwd)
     const schema = buildCanvasTurnOutputSchema(params.tools, 'portable')
     const transport = await this.ensureTransport(cwd, schema)
@@ -128,7 +124,6 @@ export class ClaudeAdapter implements LlmAdapter {
       `[ClaudeAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${transport.sessionId ?? '(new)'}`,
     )
     // The native final reply goes to the bubble; tool progress already showed as activity.
-    if (result.text) cb.onText(result.text)
     return result
   }
 

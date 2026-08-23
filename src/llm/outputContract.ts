@@ -21,7 +21,7 @@ export function buildCanvasTurnOutputSchema(
   tools: ToolDef[],
   profile: OutputSchemaProfile,
 ): JsonSchema {
-  const operation = mergedOperationSchema(tools)
+  const operations = operationListSchema(tools, profile)
   const question: JsonSchema = {
     type: 'object',
     description:
@@ -44,11 +44,7 @@ export function buildCanvasTurnOutputSchema(
           description: 'User-facing answer. Omit or use an empty string when there is nothing to say.',
         },
         question,
-        operations: {
-          type: 'array',
-          description: 'Canvas operations. Use [] for answer-only or no-op turns.',
-          items: operation,
-        },
+        operations,
       },
       required: ['operations'],
     }
@@ -63,13 +59,28 @@ export function buildCanvasTurnOutputSchema(
         description: 'User-facing answer. Use an empty string if there is nothing to say.',
       },
       question: strictSchema(question, true),
-      operations: {
-        type: 'array',
-        description: 'Canvas operations. Use [] for answer-only or no-op turns.',
-        items: strictSchema(operation),
-      },
+      operations,
     },
     required: ['reply', 'question', 'operations'],
+  }
+}
+
+function operationListSchema(tools: ToolDef[], profile: OutputSchemaProfile): JsonSchema {
+  if (tools.length === 0) {
+    return {
+      type: 'array',
+      description: 'No canvas operations are allowed in this phase. Return [].',
+      maxItems: 0,
+      items: profile === 'strict'
+        ? { type: 'object', properties: {}, required: [], additionalProperties: false }
+        : { type: 'object', properties: {} },
+    }
+  }
+  const operation = mergedOperationSchema(tools)
+  return {
+    type: 'array',
+    description: 'Canvas operations. Use [] for answer-only or no-op turns.',
+    items: profile === 'strict' ? strictSchema(operation) : operation,
   }
 }
 
