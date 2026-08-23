@@ -1,5 +1,6 @@
-import { claudeRun, writeDesign, type ClaudeEvent } from './claudeCode'
-import { interpretClaudeLine } from './claudeStream'
+import { writeDesign } from '../agent/projectFiles'
+import { claudeRun, type ClaudeEvent } from '../agentControl/claudeCli'
+import { interpretClaudeLine } from '../agentControl/claudeStream'
 import { buildBuildPrompt } from './prompt'
 import { formatCanvas, type CanvasPort } from '../protocol'
 import type { ChatEngine, ChatCallbacks } from './chatEngine'

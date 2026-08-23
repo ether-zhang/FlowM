@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { AgentQuestionItem } from '../agentControl'
+import type { AgentQuestionItem } from '../agent'
 import { formatUiText, type UiText } from '../app/uiText'
 import type { DisplayQuestion } from './types'
 

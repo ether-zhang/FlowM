@@ -4,12 +4,12 @@ import {
   type AgentQuestionAnswer,
 } from '../agentControl'
 import { cleanAgentDiagnostic } from '../agentControl/diagnostics'
-import { claudeRun } from '../engine/claudeCode'
+import { claudeRun } from '../agentControl/claudeCli'
 import {
   extractSessionId,
   extractStructured,
   interpretClaudeLine,
-} from '../engine/claudeStream'
+} from '../agentControl/claudeStream'
 import type { TurnCallbacks } from './adapter'
 
 export interface ClaudeTransportOptions {

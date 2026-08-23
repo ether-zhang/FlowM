@@ -1,4 +1,4 @@
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer, AgentToolStatus } from './types'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer, AgentToolStatus } from '../agent'
 
 export type JsonRpcId = string | number
 

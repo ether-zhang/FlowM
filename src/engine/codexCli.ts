@@ -1,5 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 
+export { writeCodexCanvasGuide } from '../agent/projectFiles'
+
 export type CodexEvent =
   | { kind: 'stdout'; line: string }
   | { kind: 'stderr'; line: string }
@@ -33,8 +35,4 @@ export async function codexRun(
 
 export async function defaultCodexBin(): Promise<string> {
   return invoke<string>('default_codex_bin')
-}
-
-export async function writeCodexCanvasGuide(cwd: string, content: string): Promise<string> {
-  return invoke<string>('write_codex_canvas_guide', { cwd, content })
 }

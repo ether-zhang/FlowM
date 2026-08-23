@@ -1,6 +1,6 @@
 import type { CanvasPort } from '../protocol'
 import type { Conversation } from '../llm'
-import type { AgentQuestionAnswer } from '../agentControl'
+import type { AgentQuestionAnswer } from '../agent'
 import type { ChatEngine, ChatCallbacks } from './chatEngine'
 
 /**

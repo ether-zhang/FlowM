@@ -1,8 +1,8 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn } from './types'
-import { CodexAppServerClient, type AgentQuestionAnswer } from '../agentControl'
-import { writeCodexCanvasGuide } from '../engine/codexCli'
-import { writeDesign } from '../engine/claudeCode'
+import type { AgentQuestionAnswer } from '../agent'
+import { writeCodexCanvasGuide, writeDesign } from '../agent/projectFiles'
+import { CodexAppServerClient } from '../agentControl'
 import { FLOWM_CODEX_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
@@ -30,6 +30,13 @@ export class CodexAdapter implements LlmAdapter {
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
     if (!this.client) throw new Error('Codex app-server is not running')
     await this.client.answerQuestion(answer)
+  }
+
+  async dispose(): Promise<void> {
+    const client = this.client
+    this.client = null
+    this.clientKey = null
+    if (client) await client.dispose()
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {

@@ -1,5 +1,5 @@
 import type { ToolDef } from '../protocol'
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agentControl'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agent'
 import type { LlmMessage, LlmTurn } from './types'
 
 /** Callbacks fired while a turn is produced. */
@@ -33,8 +33,12 @@ export interface RunTurnParams {
  * the conversation loop and the rest of the app never change.
  */
 export interface LlmAdapter {
+  /** Provider session handle persisted by the workspace, when this adapter owns one. */
+  readonly sessionId?: string | null
   /** Produce one assistant turn; resolve with its text and any tool calls. */
   runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn>
   /** Answer a native in-flight question. Structured-output fallback adapters omit this. */
   answerQuestion?(answer: AgentQuestionAnswer): Promise<void>
+  /** Release any long-lived local transport owned by this adapter. */
+  dispose?(): Promise<void>
 }

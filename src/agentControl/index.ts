@@ -5,7 +5,7 @@ export type {
   AgentQuestionOption,
   AgentActivityEvent,
   AgentToolStatus,
-} from './types'
+} from '../agent'
 export {
   ClaudeControlClient,
   ClaudeControlUnavailableError,

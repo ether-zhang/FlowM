@@ -1,5 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 
+export { writeClaudeCanvasGuide, writeDesign } from '../agent/projectFiles'
+
 /**
  * Bridge to the local Claude Code engine. FlowM spawns the user's installed `claude`
  * CLI (Tauri/Rust `claude_run`) in a project directory and streams its output back -
@@ -55,14 +57,4 @@ export async function claudeRun(
  *  inherit the shell PATH, so an absolute path here is what lets `claude` spawn. */
 export async function defaultClaudeBin(): Promise<string> {
   return invoke<string>('default_claude_bin')
-}
-
-/** Write the canvas PNG (data URL) to `<cwd>/.flowm/design.png` so the spawned `claude`
- *  can Read it. Returns the relative path to reference in the prompt. */
-export async function writeDesign(cwd: string, dataUrl: string): Promise<string> {
-  return invoke<string>('write_design', { cwd, dataUrl })
-}
-
-export async function writeClaudeCanvasGuide(cwd: string, content: string): Promise<string> {
-  return invoke<string>('write_claude_canvas_guide', { cwd, content })
 }

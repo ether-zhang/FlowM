@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CanvasPort } from '../protocol'
 import { ClaudeAdapter, CodexAdapter, Conversation } from '../llm'
 import type { DisplayMessage } from '../chat/types'
@@ -18,16 +18,15 @@ import type { CanvasMeta, ProjectMeta, SessionMeta } from './types'
 
 export type AgentKind = 'claude' | 'codex'
 
-/** One local agent runtime for a FlowM session. Kept alive across switches so the adapter's
- *  resume/delta continuity holds. */
-interface AgentRuntime {
-  conv: Conversation
-  adapter: ClaudeAdapter | CodexAdapter
+interface Runtime {
+  /** One long-lived local agent per provider and FlowM session. */
+  claude?: Conversation
+  codex?: Conversation
 }
 
-interface Runtime {
-  claude?: AgentRuntime
-  codex?: AgentRuntime
+async function disposeRuntime(runtime: Runtime | undefined): Promise<void> {
+  if (!runtime) return
+  await Promise.allSettled([runtime.claude?.dispose(), runtime.codex?.dispose()])
 }
 
 export interface WorkspaceApi {
@@ -56,8 +55,8 @@ export interface WorkspaceApi {
 
 /**
  * The project layer for the shell. Sits ABOVE the engines and is active only once a folder is opened;
- * until then `activeConv()` is null and App falls back to its legacy single conversation, so nothing
- * about the pre-project flow breaks.
+ * until then `activeConv()` is null. Local canvas agents are project-scoped and are created only
+ * for a concrete FlowM session.
  *
  * Canvases and sessions are DECOUPLED: a session is a Claude chat thread (每对话一条 session), a canvas
  * is a drawing surface, and they are separate lists. The active session drives whatever the active
@@ -89,7 +88,7 @@ export function useWorkspace(opts: {
   const activeCanvasRef = useRef<string | null>(null)
 
   const ensureRuntime = useCallback(
-    (sm: SessionMeta, agent: AgentKind): AgentRuntime => {
+    (sm: SessionMeta, agent: AgentKind): Conversation => {
       let rt = runtimes.current.get(sm.id)
       if (!rt) {
         rt = {}
@@ -100,7 +99,7 @@ export function useWorkspace(opts: {
           agent === 'claude'
             ? new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null)
             : new CodexAdapter(opts.getCwd, opts.getCodexBin, sm.codexSessionId ?? null)
-        rt[agent] = { conv: new Conversation(adapter), adapter }
+        rt[agent] = new Conversation(adapter)
       }
       return rt[agent]
     },
@@ -117,8 +116,8 @@ export function useWorkspace(opts: {
     if (!projIdRef.current || !metaRef.current) return
     for (const sm of metaRef.current.sessions) {
       const rt = runtimes.current.get(sm.id)
-      const claudeSid = rt?.claude?.adapter.sessionId
-      const codexSid = rt?.codex?.adapter.sessionId
+      const claudeSid = rt?.claude?.sessionId
+      const codexSid = rt?.codex?.sessionId
       if (claudeSid) sm.sessionId = claudeSid
       if (codexSid) sm.codexSessionId = codexSid
     }
@@ -149,7 +148,7 @@ export function useWorkspace(opts: {
       activeSessRef.current = sm.id
       setActiveSessionId(sm.id)
     },
-    [ensureRuntime, opts],
+    [opts],
   )
 
   const activateCanvas = useCallback(
@@ -221,6 +220,7 @@ export function useWorkspace(opts: {
       const idx = meta.sessions.findIndex((s) => s.id === id)
       if (idx < 0) return
       meta.sessions.splice(idx, 1)
+      await disposeRuntime(runtimes.current.get(id))
       runtimes.current.delete(id)
       if (activeSessRef.current === id) {
         activeSessRef.current = null // don't re-save the deleted session on the next activate
@@ -286,6 +286,7 @@ export function useWorkspace(opts: {
     const folder = await pickFolder()
     if (!folder) return
     await persistActive() // flush the previous project
+    await Promise.all([...runtimes.current.values()].map(disposeRuntime))
     runtimes.current.clear()
     const { id, meta } = await openProject(folder)
     projIdRef.current = id
@@ -302,11 +303,17 @@ export function useWorkspace(opts: {
     else await activateCanvas(meta.canvases[0])
   }, [persistActive, opts, syncLists, newSession, newCanvas, activateSession, activateCanvas])
 
+  useEffect(() => () => {
+    const live = [...runtimes.current.values()]
+    runtimes.current.clear()
+    void Promise.all(live.map(disposeRuntime))
+  }, [])
+
   // Stable (reads refs), so the engine's getConv closure captured once stays live across switches.
   const activeConv = useCallback((agent: AgentKind = 'claude') => {
     const id = activeSessRef.current
     const sm = metaRef.current?.sessions.find((s) => s.id === id)
-    return sm ? ensureRuntime(sm, agent).conv : null
+    return sm ? ensureRuntime(sm, agent) : null
   }, [ensureRuntime])
 
   return {

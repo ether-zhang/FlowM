@@ -1,4 +1,4 @@
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from './types'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agent'
 
 interface ClaudeQuestionOption {
   label?: unknown

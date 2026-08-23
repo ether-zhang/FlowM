@@ -1,4 +1,4 @@
-import type { AgentQuestion } from '../agentControl'
+import type { AgentQuestion } from '../agent'
 
 /**
  * Provider-neutral conversation types. The conversation loop and the rest of the

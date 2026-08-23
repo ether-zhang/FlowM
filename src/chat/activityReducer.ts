@@ -1,4 +1,4 @@
-import type { AgentActivityEvent, AgentToolStatus } from '../agentControl'
+import type { AgentActivityEvent, AgentToolStatus } from '../agent'
 
 export interface DisplayToolActivity {
   id: string

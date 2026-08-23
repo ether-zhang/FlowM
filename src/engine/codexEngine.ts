@@ -1,6 +1,6 @@
 import { codexRun } from './codexCli'
 import { createCodexStderrFilter, interpretCodexLine } from './codexStream'
-import { writeDesign } from './claudeCode'
+import { writeDesign } from '../agent/projectFiles'
 import { buildBuildPrompt } from './prompt'
 import { formatCanvas, type CanvasPort } from '../protocol'
 import type { ChatCallbacks, ChatEngine } from './chatEngine'

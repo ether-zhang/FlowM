@@ -5,7 +5,9 @@ import { Conversation } from './conversation'
 import type { LlmMessage, LlmTurn } from './types'
 
 class ScriptedAdapter implements LlmAdapter {
+  readonly sessionId = 'scripted-session'
   readonly requests: Array<RunTurnParams & { messages: LlmMessage[] }> = []
+  readonly dispose = vi.fn(async () => undefined)
   private readonly turns: LlmTurn[]
 
   constructor(turns: LlmTurn[]) {
@@ -73,6 +75,16 @@ const callbacks = () => ({
 })
 
 describe('Conversation turn contract', () => {
+  it('exposes and disposes the adapter-owned session lifecycle', async () => {
+    const adapter = new ScriptedAdapter([])
+    const conversation = new Conversation(adapter)
+
+    expect(conversation.sessionId).toBe('scripted-session')
+    await conversation.dispose()
+
+    expect(adapter.dispose).toHaveBeenCalledOnce()
+  })
+
   it('continues after successful operations, then reviews the changed region', async () => {
     const adapter = new ScriptedAdapter([
       {

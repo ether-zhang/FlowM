@@ -1,5 +1,5 @@
 import type { RunTurnParams } from '../llm'
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agentControl'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agent'
 
 /** What an engine reports back while producing a reply, mapped onto chat messages. */
 export interface ChatCallbacks {

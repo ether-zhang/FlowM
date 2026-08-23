@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { interpretClaudeLine, extractStructured } from './claudeStream'
+import { interpretClaudeLine, extractStructured } from '../agentControl/claudeStream'
 
 describe('interpretClaudeLine', () => {
   it('maps an init event to a system note with model + cwd', () => {

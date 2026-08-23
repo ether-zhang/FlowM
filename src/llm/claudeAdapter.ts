@@ -1,7 +1,7 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn } from './types'
-import type { AgentQuestionAnswer } from '../agentControl'
-import { writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
+import type { AgentQuestionAnswer } from '../agent'
+import { writeClaudeCanvasGuide, writeDesign } from '../agent/projectFiles'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { CompatibleClaudeTransport } from './claudeTransport'
 import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
@@ -60,6 +60,13 @@ export class ClaudeAdapter implements LlmAdapter {
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
     if (!this.transport) throw new Error('Claude transport is not running')
     await this.transport.answerQuestion(answer)
+  }
+
+  async dispose(): Promise<void> {
+    const transport = this.transport
+    this.transport = null
+    this.transportKey = null
+    if (transport) await transport.dispose()
   }
 
   async runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn> {

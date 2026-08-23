@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { PoeAdapter, TauriAdapter, ClaudeAdapter, CodexAdapter, POE_BASE_URL, tauriKey, Conversation, type LlmQuestion, type RunTurnParams } from '../llm'
+import { defaultClaudeBin } from '../agentControl/claudeCli'
+import { PoeAdapter, TauriAdapter, POE_BASE_URL, tauriKey, Conversation, type LlmQuestion, type RunTurnParams } from '../llm'
 import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { CanvasEngine, ClaudeEngine, CodexEngine, defaultClaudeBin, defaultCodexBin, type ChatEngine } from '../engine'
+import { CanvasEngine, ClaudeEngine, CodexEngine, defaultCodexBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
 import { ActivityBar, isActivityView, type ActivityView } from './ActivityBar'
 import { formatUiText, parseUiLanguage, UI_LANGUAGE_STORAGE, uiLanguageOptions, uiText, type UiLanguage } from './uiText'
@@ -137,17 +138,6 @@ export function App() {
     toggleFiles(activeActivity === view ? !filesShown : true)
   }
 
-  // A second Conversation driven by Claude Code (same pipeline, different LlmAdapter). Needs no
-  // API key — Claude auth is the user's own `claude auth login`. Desktop only.
-  const claudeConvRef = useRef<Conversation | null>(null)
-  if (IS_TAURI && !claudeConvRef.current) {
-    claudeConvRef.current = new Conversation(new ClaudeAdapter(() => cwdRef.current, () => binRef.current))
-  }
-  const codexConvRef = useRef<Conversation | null>(null)
-  if (IS_TAURI && !codexConvRef.current) {
-    codexConvRef.current = new Conversation(new CodexAdapter(() => cwdRef.current, () => codexBinRef.current))
-  }
-
   // A live mirror of `messages` so the workspace's async save/switch reads the latest bubbles
   // (a state closure would be stale). Kept in sync by the effect below.
   const messagesRef = useRef<DisplayMessage[]>([])
@@ -157,10 +147,8 @@ export function App() {
     setCwd(folder)
   }, [])
 
-  // The project / multi-conversation layer (desktop). Sits ABOVE the engines: when a project is
-  // open, `ws.activeConv()` is the current conversation and the Claude canvas engine uses it; when
-  // it's null (no project yet) the engine falls back to the legacy single conversation — so opening
-  // a project is purely additive and the pre-project flow is untouched.
+  // The project / multi-conversation layer owns local canvas-agent conversations. Without an open
+  // project `ws.activeConv()` is null, so local agents cannot accidentally run outside a project.
   const ws = useWorkspace({
     getPort: () => portRef.current,
     getMessages: () => messagesRef.current,
@@ -183,8 +171,8 @@ export function App() {
     enginesRef.current = IS_TAURI
       ? [
           poe,
-          new CanvasEngine(() => ws.activeConv() ?? claudeConvRef.current, () => portRef.current, { id: 'canvas-claude', label: '画布助手·Claude', debugViaAdapter: true, structuredActivity: true }),
-          new CanvasEngine(() => ws.activeConv('codex') ?? codexConvRef.current, () => portRef.current, { id: 'canvas-codex', label: '画布助手·Codex', debugViaAdapter: true, structuredActivity: true }),
+          new CanvasEngine(() => ws.activeConv(), () => portRef.current, { id: 'canvas-claude', label: '画布助手·Claude', debugViaAdapter: true, structuredActivity: true }),
+          new CanvasEngine(() => ws.activeConv('codex'), () => portRef.current, { id: 'canvas-codex', label: '画布助手·Codex', debugViaAdapter: true, structuredActivity: true }),
           new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
           new CodexEngine(() => cwdRef.current, () => portRef.current, () => codexBinRef.current),
         ]

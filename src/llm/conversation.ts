@@ -13,7 +13,7 @@ import {
   toolCallToOp,
 } from '../protocol'
 import type { LlmAdapter, RunTurnParams } from './adapter'
-import type { AgentActivityEvent, AgentQuestionAnswer } from '../agentControl'
+import type { AgentActivityEvent, AgentQuestionAnswer } from '../agent'
 import type { LlmMessage, LlmQuestion, LlmToolCall } from './types'
 import {
   FLOWM_CANVAS_FINALIZE_PROMPT,
@@ -229,6 +229,14 @@ export class Conversation {
 
   get messages(): LlmMessage[] {
     return this.history
+  }
+
+  get sessionId(): string | null {
+    return this.adapter.sessionId ?? null
+  }
+
+  async dispose(): Promise<void> {
+    await this.adapter.dispose?.()
   }
 
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {

@@ -1,4 +1,4 @@
-import type { AgentQuestionItem } from '../agentControl'
+import type { AgentQuestionItem } from '../agent'
 import type { DisplayActivity } from './activityReducer'
 
 export type DisplayRole = 'user' | 'assistant' | 'system' | 'debug'

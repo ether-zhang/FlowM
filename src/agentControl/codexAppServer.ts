@@ -1,4 +1,4 @@
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from './types'
+import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agent'
 import { AgentControlProcess, type AgentControlProcessEvent } from './agentControlProcess'
 import { cleanAgentDiagnostic } from './diagnostics'
 import {
