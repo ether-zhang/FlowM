@@ -36,17 +36,26 @@ Windows、macOS、iPad。
 
 ### 待办（TODO）
 
-#### 近期路线图（2026-07-07）
+#### 近期路线图（更新于 2026-08-23）
 
-- [ ] **本地 Agent Runtime 收口**：Claude/Codex 都不要把大段 guide 放进 CLI 参数；统一放到项目 `.flowm` 下，由短 `--append-system-prompt` / prompt 触发读取。当前优先把 Claude 改成 `.flowm/claude-canvas.md`，Codex 已走 `.flowm/codex-canvas.md`。
+- [x] **本地 Agent Runtime 收口**：Claude/Codex guide 统一写到项目 `.flowm` 下，由短 invocation-scoped 指令触发读取；本地画布 agent 只由 workspace 会话创建，删除会话、切换项目和卸载时释放 transport。无工程时不创建本地 fallback，API 模式仍可独立使用。
 - [ ] **Codex 侧画布 prompt 继续迭代**：当前已改为独立 Codex prompt，但仍需实测结构图/流程图判别、详略、布局倾向。先按 prompt + 框架后处理继续调；模型能力差异单独记录，不把“等 GPT-5.6”作为当前阻塞项。
 - [x] **左侧文件栏改成 VSCode activity bar 样式**：不要只有窄箭头；做成可扩展侧栏，左边竖向图标入口，右侧 panel 可展开/收起/切换，后续可承载文件、搜索、Git、运行等视图。
 - [x] **Git 栏整合进左侧栏**：基于 activity bar 增加 Source Control panel，基础功能至少包含 changed files 树状列表、diff 查看、刷新、分支/HEAD 信息；后续再补 stage/unstage、commit message、commit 按钮、历史图谱/简易 log。
-- [ ] **右侧对话栏支持模型主动询问**：不只是被动接收日志；当本地 agent 需要确认时，UI 能呈现 yes / no / other 格式问题，并把用户选择/补充发回同一会话，行为参考 VSCode Codex/Claude 插件。
+- [x] **右侧对话栏支持模型主动询问**：本地 agent 的原生 question/permission request 映射为 provider-neutral `AgentQuestion`，UI 呈现选项与 other 输入，并把答案发回同一条 control 会话；无原生能力的 API 路径保留结构化问题 fallback。
 - [ ] **复核阶段文本分层显示**：当前建图与复核前后的 commentary 按真实时序保留在同一个 activity 中，信息完整但阶段边界不够明显。后续评估增加“建图 / 复核”子阶段标题、分隔或独立折叠，不拆分底层 agent session，也不改变模型返回内容。
 - [ ] **丰富 Claude Code 思考过程**：当前 control stream 中原生 `thinking` block 可能为空，只能展示 Claude 主动返回的公开工作说明。后续调查 Claude Agent SDK / control protocol 的模型与配置能力，在不伪造推理、不把正文误标为思考的前提下展示更完整的公开 thinking summary。
 - [ ] **思考期间展示正文**：模型工作时按 provider 的真实事件边界及时展示公开 commentary，并与可折叠 thinking、工具调用及最终正文保持明确分层；不能等整轮完成后再移动或猜测文本角色。
 - [ ] **画布布局观感优化**：当前自动摆放间距偏保守、箭头路由容易乱拐。需要调节点间距策略、group margin、arrow routing/label 避让，让图更紧凑但不重叠，优先解决大图空旷和长箭头折返问题。
+
+#### Agent / 画布链路收敛（2026-08-23）
+
+- [x] **统一输出契约**：从同一组 `ToolDef` 编译 portable/strict 两种 schema；Claude/API 与 Codex 的结构化 envelope 均投影为同一个 `LlmTurn`，不再由 adapter 各自维护字段表。
+- [x] **统一执行状态机**：`Conversation` 独占 `build → review → finalize` 编排；adapter 只负责 transport 与 provider 输出转换，最终正文只在 no-tools finalize 阶段发送一次。
+- [x] **复核权限显式化**：分离 `reviewTargetIds`、`contextIds`、`editableIds`；上下文只用于观察，context-only shape 的移动/结构声明在 `CanvasPort` 前被拒绝。
+- [x] **中立类型与依赖方向**：question/activity 类型移入 `agent/`；项目 artifact I/O 归一；Claude legacy CLI transport 移出 `engine/`；增加源码 import 方向测试防止 `llm → engine/UI/workspace` 回归。
+- [x] **运行时生命周期**：`LlmAdapter`/`Conversation` 提供 session 与 dispose 契约，workspace 持有每个 FlowM session/provider 的唯一 runtime，并负责释放。
+- [ ] **聚焦讲解功能重新设计**：旧实验分支继续保留，但不合入本轮收敛。后续必须建立在稳定的画布-对话绑定和“模型显式打标、框架确定性渲染”契约上，不能把链接解析、高亮状态或 provider 特例塞入通用消息渲染。
 
 - UI相关
    - [x] ~~右侧对话框增长影响画布移动逻辑~~ —— 已修复：整壳锁定视口，对话框内部独立滚动
@@ -103,11 +112,11 @@ Windows、macOS、iPad。
    - [ ] 项目功能 5：项目开发能力（流程图 → 工程开发，接已有 agent），step模式，图片与流程图双向并行？
    - [ ] 工程持久记忆能力？
 
-- Claude Code 引擎（画布侧，v0.7-dev；见记忆 `claude-code-is-an-llmadapter`）
-    - [x] **Claude Code 作为 `LlmAdapter`**：同一条 Conversation 管线（序列化+marks → operations → apply → 复核），只把 Poe 换成用户本地的 `claude`。`protocol/`、`conversation.ts`、`canvas/` 不变，`ClaudeAdapter` 是唯一接缝。桌面（Tauri）专属——它 spawn 本地 `claude`
+- 本地 Agent 引擎（画布侧）
+    - [x] **Claude Code / Codex 作为 `LlmAdapter`**：共用 Conversation 状态机、输出契约、`protocol/` 与 `CanvasPort`；adapter 只负责 provider transport、会话恢复和中立事件转换。桌面（Tauri）专属。
         - [x] **强制结构化输出**：canvas 工具编成 `--json-schema {reply, operations[]}`；Claude 用原生 Read/Grep 读代码后吐 operations，映射成 `LlmToolCall[]`，交现有 `parseOp`/`parseStructure` 校验（错误回灌自纠）
         - [x] **`.flowm/claude-canvas.md` + 短 system 触发**：FlowM 自己的 Claude guide 写到项目 `<cwd>/.flowm/claude-canvas.md`（`.flowm` gitignored、不污染 repo）；每次 FlowM 调用只通过 `--append-system-prompt` 传短句 `Read .flowm/claude-canvas.md before drawing`，避免 `CLAUDE.local.md` 共享记忆污染，也避免大段 guide 进入 CLI 参数
-        - [x] **只发增量**：每轮只发上次以来的新消息（+ `--resume`），历史在 Claude 自己的 session JSON 里。build-loop 的"确认轮"（纯 tool-result、无错）短路，不触发 Claude 调用省钱
+        - [x] **只发增量**：每轮只发上次以来的新消息（+ `--resume`），历史在 Claude/Codex 自己的 session 中；所有阶段是否继续由 Conversation 显式决定，adapter 不再私自短路工具结果轮。
         - [x] **`--disallowedTools Task`**：禁子代理（子代理抬成本 + 扰动结果流致 ops 落不了地 + 引发复核轮小作文）
         - [x] **坐标可选 + 框架自动分层**：`create_geo`/`create_text` 的 x/y/w/h 全可选；缺坐标节点 → 框架分层布局（纯库无关 `canvas/autoLayout.ts`：最长路分层 + 连通分量分区，含单测），有坐标 → 模型定位。模型自选：结构图省坐标交框架、自由/编辑给坐标。few-shot 无坐标样例是让模型真正省坐标的关键（纯指令 3 次失败）
         - [x] **内容优先 + 双层 guide**：先理解代码，再**综合宏观架构层 + 调用链/数据流层**画；用真实类/函数/数据结构名，并说清每个节点在宏观结构里的角色；**节点数不是关键**——严格遵循用户指令、把结构讲清楚才是；有序关系自上而下读、必要时引侧支；**按需动态**决定画调用链还是宏观图，不确定就都画并建立对应
@@ -119,7 +128,7 @@ Windows、macOS、iPad。
     - **UI 工程化重构（VSCode 插件式外壳，进行中）**——选文件夹 → 工程放 `~/.flowm`、每对话一条 Claude session、可开新画布/新对话、文件栏
         - [x] **P1 地基**：`~/.flowm` 存储 + `list_dir`/`pick_folder`/`read_file`/`write_file` 后端 + `workspace/` 模块（types + store，纯库无关；唯一契约仍是 `CanvasPort.serialize/deserialize`，不与 `persistence` 互依）
         - [x] **P2·A 外壳**：三栏 **文件左 · 画布中 · 对话右**；两侧栏可拖拽调宽 + 文件栏可隐藏（`Resizer` + 持久化）；点文件 → 可拖拽**悬浮编辑器**（read/write，Ctrl/Cmd-S 存，2MB 上限）。默认宽度留足中栏（>~730px）避免 Excalidraw 进移动端页脚
-        - [x] **P2·B 多会话核心**：`useWorkspace` hook——选文件夹（`pick_folder`）打开工程、`convId → {Conversation + 各自 ClaudeAdapter}` 运行时表（**每对话一条 Claude session**，`--resume` 种子 + `sessionId` 持久化）、切换时存/取画布+气泡（`~/.flowm`）；`ConversationList` 折叠条（工程头 + 新画布/新对话 + 行）。**非破坏**：无工程时 `activeConv()` 为空、画布引擎回落到旧的单会话，旧流程原样
+        - [x] **P2·B 多会话核心**：`useWorkspace` hook——选文件夹（`pick_folder`）打开工程、`sessionId → {Claude Conversation?, Codex Conversation?}` 运行时表（每个 FlowM 对话、每个 provider 独立恢复句柄），切换时存/取画布+气泡（`~/.flowm`）。无工程时 `activeConv()` 为空且本地画布 agent 不运行；API 模式不受影响。
         - [x] **P2·C 画布⊥session 解耦 + UI 归位**：把「一条 conversation 绑一个画布」拆成**两个独立列表**——`sessions`（聊天线程 = 各自 Claude session）与 `canvases`（画布，各存 scene）；活跃 session 驱动活跃 canvas，**新画布不再新建对话**、互不牵连（store 拆 `sess-<id>.json`/`canvas-<id>.json`）。UI：`打开工程` 移到**文件栏顶部**；`新画布 + 切换` 浮在**画布右上角**（`CanvasBar`，Excalidraw Library 按钮下方）；删掉「工程目录绝对路径」输入框（cwd 由打开工程设置）；聊天栏加 **⚙ 设置弹窗**，`claude` 可执行文件路径挪进去；`ConversationList` 收窄为纯 session 切换（工程头 + 新对话 + 行）
         - [x] **P2·D UI 打磨（贴 Excalidraw + 管理操作 + 折叠进度）**：① **风格贴 Excalidraw**——从其打包 CSS 提取真实 design tokens（`--fm-accent #6965db` 紫、surface/hover、island 阴影、圆角、Assistant 字体）作 `--fm-*` 变量层套到聊天/文件/弹窗/画布控件；② **session/canvas 重命名 + 删除**——行内 ✎/🗑（`ConversationList` 行、`CanvasBar` 活跃画布），删除弹**确认框**（危险红），rename 弹输入框；hook 加 `rename/delete{Session,Canvas}`，删除保底各留一个、删活跃项自动切邻居；③ **黄色进度折叠**——连续 system 提示（🔧 工具/工具完成/✓ 完成）折成一条可展开 `<details>`（`N 步` + 最新一条作 summary），真实回复（assistant/user）打断折叠——仿 Claude Code VSCode 插件。**评审修正**（多代理对抗复核 8 项确认后修）：错误提示（出错：）不折叠、独立红样式显示；展开组不重复末条；删除同时清 `sess-/canvas-*.json`（新 `flowm_delete` 后端命令）；删活跃项列表与高亮同帧提交（不闪烁）；确认框键盘支持（Esc 关、焦点落取消）；空名 rename 禁用确定而非静默关闭
         - [x] **P2·E 下拉式 picker + 工具栏统一 + 冷启动修复**：① **session/canvas 改 Claude-Code 式下拉**——统一 `PickerBar`（当前名 + 🕘历史下拉 + ＋新建；**双击名称行内改名**；下拉含搜索 + 每行 ✎/🗑）替换 `ConversationList`/`CanvasBar`（二者删除）；rename 改行内直接提交（去掉 rename 弹窗，只留删除确认框）；圆角、outside-click 关闭；② **工具栏视觉统一**——聊天/文件/画布控件同一按钮语言（白底 + `--fm-border` + `--fm-radius` + nowrap），聊天栏 `flex-wrap` 整颗按钮换行（治 `保存/加载` 竖排断字）；原生 `<select>` 去 OS chrome、渐变自绘 chevron 做成圆角 pill；③ **CanvasBar 不再压 Library**（top:64/right:12，z-index 10）；④ **冷启动 bug**：`cwd` 不再从 localStorage 恢复——新启动没打开工程时文件栏为空（原来残留上次工程夹、与「没打开工程」矛盾），工程目录只由 `打开工程` 当次设置

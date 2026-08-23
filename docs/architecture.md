@@ -1,140 +1,221 @@
-# FlowM 架构与代码回顾（按功能）
+# FlowM Architecture
 
-> 截至 **v0.5**。本文按功能纵向走查代码，配合 [structured-refine.md](structured-refine.md)（精修门控设计）与 [structure-schema.md](structure-schema.md)（结构声明 schema）。
-> **按模块逐文件、代码×commit 的详解见 [modules/index.md](modules/index.md)**（protocol / llm / canvas / ui-persistence / desktop-build）。
-> 演进细节与历史 bug 见根目录 [FlowM.md](../FlowM.md) 的进度清单。
+> Updated on 2026-08-23. Historical decisions and experiments remain in
+> [FlowM.md](../FlowM.md); geometry-specific details live in
+> [structured-refine.md](structured-refine.md),
+> [structure-schema.md](structure-schema.md), and
+> [freedraw-and-extensions.md](freedraw-and-extensions.md).
 
-## 1. 一句话与分层
+## 1. System boundary
 
-FlowM 是一个**和大模型双向交互的画布软件**：用户在无限画布上放置/手绘单元发给模型，模型既能文字回复、又能通过工具直接改画布。核心是一条**库无关、provider 无关**的图形交互协议。
+FlowM combines an Excalidraw canvas with project-aware local agents and an
+OpenAI-compatible API path. The stable product contract is not a provider's
+wire format. It is:
 
-三层解耦，依赖**单向向内**（`canvas`/`llm` → `protocol`，protocol 不反向依赖）：
+1. serialize the current canvas and user intent;
+2. let an agent return provider-neutral canvas operations;
+3. validate and apply those operations through `CanvasPort`;
+4. review only the affected region under explicit edit permissions;
+5. produce one final explanation.
 
+Dependencies point toward neutral contracts:
+
+```text
+app/ + workspace/                         composition and persistence ownership
+        |                    |
+        v                    v
+     engine/              llm/            chat facade and turn orchestration
+                              | \
+                              |  +-------> agentControl/   local transports
+                              v
+                           protocol/       canvas operation contract
+
+canvas/ --------------------> protocol/    Excalidraw implementation of CanvasPort
+llm/ + agentControl/ -------> agent/       neutral question/activity contracts
 ```
-┌─────────────┐   tool-use 循环、门控编排      ┌──────────────┐
-│   llm/      │ ─────────────────────────────▶ │  protocol/   │  纯类型 + 纯函数
-│ Conversation│   (CanvasPort 抽象、CanvasOp)   │  (核心协议)   │  无 Excalidraw / 无 LLM
-└─────┬───────┘                                └──────▲───────┘
-      │ CanvasPort 接口                                │ 实现 CanvasPort
-      ▼                                                │
-┌─────────────┐   Excalidraw 胶水 + 纯几何/布局算法   │
-│   canvas/   │ ──────────────────────────────────────┘
-│excalidrawPort│  bindingGeometry / layout / layoutPasses（均纯函数、可 headless 测）
-└─────────────┘
-```
 
-**贯穿原则 —— 模型给设计，框架给实现**（区分轴是「谁拥有这个决定」：设计 vs 实现，**非**调整幅度大小）：
-- **宏观（设计）信模型**：存在什么形状、大致位置、整体排布（网格/嵌套）、尺度、方向、**尺寸**——都是模型的设计，框架默认**冻结、不夺权**（自由图无声明 → `scope=null` → B 类全不跑 → 原坐标原样落地，CUDA 即靠此）。
-- **微观（实现）靠框架**，两类：
-  - **不变式几何**（端点贴合、绕障路由、端口分配）：给定节点位置就有**唯一正确解、与意图无关** → 框架**恒算**（A 类 `arrowPass`）。「**算而不信**」字面成立**仅在此**——它出生于箭头端点，**不作整体布局的总纲**。
-  - **意图一致性**（匀缝、轴对齐、消重叠、字号适配）：模型**说得出意图**（"这是一列"/"别重叠"）却**做不到像素级** → 框架替它精确兑现，但**只在模型声明授权（scope）的范围内**（B 类 `spacingPass`/`avoidPass`）。框架重匀流程图也是在兑现模型声明的"成列"意图，设计权仍归模型。
-- **不做完整布局引擎**：框架不收走全部坐标（过激，已否决）；改善排版优先走**杠杆1（set-of-mark 增强模型感知）**而非下游硬补。
-- **三层纯度**：纯算法（`layout.ts`/`bindingGeometry.ts`）/ 纯编排（`layoutPasses.ts`）/ 库胶水（`excalidrawPort.ts`）分离，前两者 headless 单测。
+The enforced rules are:
 
----
+- `protocol/` imports no outer FlowM layer.
+- `agent/` owns provider-neutral question/activity types and project artifacts.
+- `agentControl/` owns Claude/Codex process protocols and imports neither `llm`
+  nor UI/engine modules.
+- `llm/` may depend on `protocol`, `agent`, and `agentControl`, but not on
+  `engine`, UI, or workspace implementations.
+- `canvas/` is the only layer that knows Excalidraw element details.
 
-## 2. 协议层 `src/protocol/`
+`src/architecture.test.ts` checks these directions automatically.
 
-provider/库都无关，是「画布 ↔ 模型」的契约。
+## 2. Neutral contracts
 
-| 文件 | 职责 |
+### `src/protocol/`
+
+This is the canvas boundary shared by every provider and canvas implementation.
+
+| File | Responsibility |
 |---|---|
-| `schema.ts` | `CanvasShape`（读回给模型的形状）、`CanvasOp`（模型发的操作原语，zod 判别联合）、`OpResult`、`parseOp`。`create_geo` 的 `w/h` **可选**（省略=模型没定尺寸，port 补默认；给了=intent 冻结）。 |
-| `tools.ts` | provider 中立的工具定义（每个 op 一个 + `declare_structure`），JSON Schema。适配器转成各家 wire 格式。 |
-| `structure.ts` | 结构声明：`StructureRelation`（flow/align/grid/contain/nonOverlap/freeze，**按 shape id**）、`parseStructure`（坏的丢弃并回报）、`resolveScope`（→ 哪些 NODE 准被 spacing/overlap pass 移动）。 |
-| `serialize.ts` | `formatCanvas`：把形状列表压成给模型的文本，带 `[n]` set-of-mark 前缀。 |
-| `port.ts` | **`CanvasPort` 接口**——协议/LLM 层只认它，不认 Excalidraw。`snapshot`/`selectionScope`/`apply`/`exportImage`/`serialize`/`deserialize`。`apply` 返回 `Promise`（字体子集需 await）。 |
+| `schema.ts` | `CanvasShape`, validated `CanvasOp`, and `OpResult`. |
+| `tools.ts` | Provider-neutral operation definitions and JSON Schema. |
+| `structure.ts` | Structural declarations and their authorized layout scope. |
+| `serialize.ts` | Compact shape text with set-of-mark identifiers. |
+| `port.ts` | `CanvasPort`: snapshot, selection, region, apply, image export, persistence. |
 
----
+Model output is never applied directly. `Conversation` converts tool calls into
+`CanvasOp`; `parseOp`/`parseStructure` validate them; only then may `CanvasPort`
+change the canvas.
 
-## 3. LLM 层 `src/llm/`
+### `src/agent/`
 
-| 文件 | 职责 |
-|---|---|
-| `conversation.ts` | **核心编排**：`Conversation.send` 跑一轮用户交互的 tool-use 循环 + 精修门控。 |
-| `adapter.ts` / `poe.ts` / `tauriAdapter.ts` | provider 中立适配器接口 + Poe（OpenAI 兼容）实现 + Tauri（Key 走 Rust 后端）。 |
-| `types.ts` | `LlmMessage` / `LlmToolCall` 等中立类型（含多模态 `image`）。 |
+`types.ts` defines provider-neutral user questions, answers, activity events,
+and tool statuses. UI, engines, LLM orchestration, and both local transports all
+consume these types without depending on a specific control protocol.
 
-### 一次 `send` 的全过程（门控）
+`projectFiles.ts` is the single owner of the Tauri commands that write
+`.flowm/claude-canvas.md`, `.flowm/codex-canvas.md`, and `.flowm/design.png`.
+This keeps project artifact I/O out of provider adapters and chat engines.
 
-```
-send(userText, port):
-  turnScope=null; refMap.clear()                    # 回合状态归零
-  selection = port.selectionScope()                 # 记下用户选区（供复核拼图）
-  context = formatCanvas(snapshot('selection'))      # 文本 + 选区 PNG
-  ── 建图循环 runBuildLoop ──────────────────────────
-    while 模型还在调工具:
-      processToolCalls(persistScope=true):
-        拆出 opCalls / declareCalls
-        declareCalls → parseStructure → 累积进 turnScope（按整回合）
-        resolveCrossBatchRefs(opCalls)               # 跨批次 ref → 真 id（durable refs）
-        port.apply(ops, turnScope)                   # A 恒跑；有 scope 才跑 B
-  ── 复核一轮 reviewGate ────────────────────────────
-    渲染「本轮新建/改动 + 一跳相连 ∪ 用户选区」带 marks 的图，喂回模型
-    模型只 move_shape 纠位 / 补 declare_structure
-    processToolCalls(persistScope=false)             # 复核只认当轮新声明，不冲掉手动修正
-```
+## 3. Conversation state machine
 
-关键状态（均**限本回合**，`send` 开头清空）：
-- **`turnScope`**：累积的结构作用域。一条 flow 的声明与它的边常落在不同批次，授权必须活过单次 `apply`——但**只在建图阶段**生效，复核的 `move_shape` 不被重排覆盖。
-- **`refMap`**：create-ref → 真 id。模型跨回合用 `ref` 连线时重写成 id，根治 `unresolved`。同批新建的 ref 由 port 本地解析、不被重写。
+`src/llm/conversation.ts` owns the complete canvas turn. Adapters do not decide
+when to review, finalize, emit the final chat message, or apply tools.
 
-### Set-of-Mark（视觉锚点）
-`nodeMarks` 给每个 NODE（非箭头）连续编号；`serialize` 加 `[n]` 文本前缀；`exportImage` 叠橙色编号徽标。模型据此把图像区域 ground 到真实 id。
-
----
-
-## 4. 画布层 `src/canvas/`
-
-唯一认识 Excalidraw 的地方。
-
-### 4.1 `excalidrawPort.ts`（库胶水）
-实现 `CanvasPort`。要点：
-- **`apply(ops, scope)`**（async）：解析 ops → 建 skeleton/连接 → **convert 前 `await` 字体子集**（见 §5 字体）→ `convertToExcalidrawElements`（`regenerateIds:false` 固定 id）→ 建箭头（绑定/非绑定）→ 跑后处理 pass（有 scope 跑 B、A 恒跑）→ 一次 `updateScene`。
-- **`snapshot` / `selectionScope` / `exportImage`**：选区按**区域**（选中形状包围盒内全部，`selectionRegion`）而非仅选中形状；导出可叠 marks。
-- **箭头几何**：`computeBoundArrow` / `reflowArrow` / `routeArrowElement` 调纯函数算端点与路由，`normalizeArrow` 保证 `points[0]=[0,0]`（否则 Excalidraw 运行时报错不可编辑）。
-
-### 4.2 `bindingGeometry.ts`（纯几何，移植自 Excalidraw MIT）
-`updateScene` 不触发原生绑定管线，故把原生端点几何**重写成纯函数**：`solveEndpoint`（rect/diamond 轮廓按 gap 外扩逐边求交、ellipse 解析解、射线从另一端穿 focus 取最近交点）、`solveArrowEndpoints`（两端绑定定点迭代）。同套数学=同等保真，可单测、不背 fork 负担。
-
-### 4.3 `layout.ts`（纯布局算法）
-- `resolveOverlaps`：仅修真重叠、最小穿透轴推开、只动 movable。
-- `normalizeSpacing`：逐边沿箭头方向把边到边缝归一（默认取模型中位缝）、近轴吸附、DFS 排回边。
-- `labelBoxSize` / **`fitFontSize`**：前者按文本估盒；后者是其**逆运算**——给定框反解能塞下的最大字号（下限 9），实现「尺寸=intent、缩字适配」。
-- `assignPortFocus` / `assignParallelOffsets` / `bowedEdges` / `routeBoundArrow`：多端口分配、同对/反向边分离、绕障单弓。
-
-### 4.4 `layoutPasses.ts`（纯编排）
-`LayoutPass` 接口 + `PassContext`（port 提供 Excalidraw 实现）。**`PassKind`**：
-- **`invariant`（A）**：只动箭头几何（`arrowPass`）——给定拓扑是唯一解，**恒跑**。
-- **`intent`（B）**：移动/缩放 NODE（`spacingPass`/`avoidPass`）——须模型声明授权、限定 scope，否则冻结。
-新增后处理（如上色）只实现接口并入列表，不动编排。
-
----
-
-## 5. 横切关键点
-
-- **字体加载竞态**：文字宽度/换行在 `convertToExcalidrawElements` **内部**测；字体未载完→fallback 测量→真字体更宽→裁，且 Excalidraw 按子集懒加载、只在字体跃迁时自动重测。**修复**：convert **之前** `await FontFaceSet.load('20px "Excalifont"', 本批文字)`（+Xiaolai），精确载入该串字符子集，首帧即正确。（试错与回滚史见 FlowM.md BUG 区）
-- **三层纯度即可测**：`protocol.test.ts` / `layout.test.ts` / `layoutPasses.test.ts` / `bindingGeometry.test.ts`，当前 **67 例**，`npm test`（vitest）。算法/编排不碰 DOM。
-- **持久化**：`CanvasPort.serialize/deserialize` 把画布存取做成不透明值，持久层（`persistence/`）只round-trip，不绑某画布库。
-- **桌面壳**：Tauri，Key 存 Rust 后端、HTTP 由 Rust 发起，渲染层不见明文 Key。
-
----
-
-## 6. 模块速查
-
-```
-src/
-  protocol/   schema · tools · structure · serialize · port   (纯, 库/LLM 无关)
-  llm/        conversation(门控) · adapter · poe · tauriAdapter · types
-  canvas/     excalidrawPort(胶水) · bindingGeometry · layout · layoutPasses · Canvas.tsx
-  persistence/ project (工程存取)
-  app/        App.tsx (装配)
-docs/         architecture(本文) · structured-refine · structure-schema
+```text
+send(userText)
+  |
+  +-- build (0..8 turns, all canvas tools)
+  |     agent operation -> validate -> apply -> return exact result
+  |     repeat while the agent emits operations
+  |
+  +-- review (one turn, only when shapes changed)
+  |     render affected region + explicit scope metadata
+  |     allowed tools: move_shape, place_region, declare_structure
+  |
+  +-- finalize (one turn, no tools)
+        emit exactly one final explanation
 ```
 
-## 7. 已知边界 / 下一步
+Each `RunTurnParams` carries an explicit `phase: build | review | finalize`.
+The no-tools finalize schema requires `operations: []`, so a provider cannot
+silently continue editing while explaining the result.
 
-- 结构声明 `align`/`grid`/`contain` 暂解析即冻结，无实现器。
-- 箭头几何（focus/offset/路由）仍按整画布重算（O(N²)、跨区可互扰，远距未显形）——待限定 region。
-- 长回边标签与宽节点避让、多障碍/全局寻路未做（本期单中点单障碍）。
-- 项目功能 5（流程图 → 工程开发，接 agent）、step 模式、provider 切换 UI、iPad/PWA 收尾。
+### Output envelope
+
+`src/llm/outputContract.ts` compiles one logical output envelope from the active
+`ToolDef[]`:
+
+- `portable`: ordinary optional JSON Schema for Claude/API-compatible paths;
+- `strict`: closed objects with nullable placeholders for Codex Structured
+  Outputs.
+
+`projectCanvasTurn` removes strict null placeholders and projects both forms to
+the same `LlmTurn`. `outputContract.conformance.test.ts` verifies equivalent
+operation and question turns across the two profiles.
+
+### Review scope
+
+Review has three separate sets:
+
+- `reviewTargetIds`: shapes changed during the build phase;
+- `contextIds`: nearby/connected shapes needed to judge placement;
+- `editableIds`: shapes the review is authorized to modify.
+
+Context is visibility, not permission. A review operation targeting a
+context-only shape is rejected before it reaches `CanvasPort`. Unrelated distant
+content and freehand strokes are not included globally.
+
+## 4. Provider adapters and transports
+
+`LlmAdapter` exposes `runTurn`, optional in-flight question answering, an
+optional provider session ID, and optional disposal. The implementations share
+the Conversation state machine and output projection:
+
+- `PoeAdapter` / `TauriAdapter`: OpenAI-compatible stateless requests;
+- `ClaudeAdapter`: Claude Agent SDK control protocol, with a one-shot CLI
+  compatibility transport for wrappers that cannot complete the handshake;
+- `CodexAdapter`: Codex app-server JSON-RPC and resumable threads.
+
+`agentControl/` translates native process events into neutral activity,
+questions, tool lifecycle events, and final provider output. It does not apply
+canvas operations and does not classify build/review/finalize phases.
+
+Local adapters send only the new Conversation delta and resume the provider's
+own stored session. The canvas guide stays under the active project's `.flowm`
+directory and is referenced by a short invocation-scoped instruction.
+
+## 5. Runtime ownership
+
+`useWorkspace` is the owner of project-scoped local canvas-agent runtimes:
+
+```text
+project -> FlowM session -> { Claude Conversation?, Codex Conversation? }
+```
+
+One runtime is created lazily per provider and FlowM session. Its provider
+session ID is persisted into project metadata. The runtime is disposed when the
+session is deleted, another project is opened, or the workspace unmounts.
+
+There is no projectless Claude/Codex canvas fallback. Without an open project,
+`activeConv()` returns `null`; this prevents a local agent from running with an
+ambiguous working directory or writing `.flowm` artifacts outside the selected
+project.
+
+API mode remains independent and may operate without a local project.
+
+## 6. Canvas implementation
+
+`src/canvas/excalidrawPort.ts` implements `CanvasPort`. It converts validated
+operations into Excalidraw elements, resolves refs, loads font subsets before
+text measurement, applies layout passes, repairs bindings, and updates the
+scene once per batch.
+
+The geometry pipeline is split by responsibility:
+
+- `bindingGeometry.ts`: pure bound-arrow endpoint geometry;
+- `layout.ts`: pure spacing, overlap, port, and route algorithms;
+- `layoutPasses.ts`: provider/library-neutral pass orchestration;
+- `excalidrawPort.ts`: Excalidraw-specific data conversion and mutation.
+
+The governing rule is **the model chooses the design; the framework implements
+declared geometric intent**. Invariant arrow geometry always runs. Node-moving
+passes run only inside an explicitly declared structure scope.
+
+## 7. UI and activity
+
+`engine/` presents provider implementations through `ChatEngine`.
+`CanvasEngine` delegates canvas turns to `Conversation`; legacy build engines
+compose project-development prompts without participating in canvas orchestration.
+
+`chat/` renders neutral messages, questions, reasoning/commentary activity,
+tool lifecycle, diagnostics, and final text. It consumes `agent/` types and does
+not parse provider wire events.
+
+`app/App.tsx` is the composition root. It selects engines, connects workspace
+state to the shell, and maps callbacks into chat display state. Provider parsing,
+prompt construction, and canvas operation validation do not belong in App.
+
+## 8. Verification
+
+The required checks for changes to the canvas-agent path are:
+
+```powershell
+npm.cmd test -- --run
+npm.cmd run build
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Targeted lint should pass for newly added or isolated modules. The repository
+still has pre-existing React Compiler lint debt in `App.tsx` and workspace state
+mutation patterns; that debt must be fixed as its own scoped change rather than
+mixed into provider or canvas behavior work.
+
+## 9. Known boundaries
+
+- Claude and Codex expose different public reasoning/commentary event detail;
+  FlowM preserves real provider events but does not fabricate hidden reasoning.
+- Build and review commentary share one activity timeline; clearer phase labels
+  remain a presentation task and must not alter model output roles.
+- Review is deliberately limited to changed IDs. Moving a larger existing user
+  region requires an explicit authorization design rather than widening review
+  implicitly.
+- Layout quality and arrow routing still need independent geometry work; they
+  must not be corrected by provider-specific prompt or UI patches.
