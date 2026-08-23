@@ -1,11 +1,10 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
-import type { LlmMessage, LlmToolCall, LlmTurn } from './types'
+import type { LlmMessage, LlmTurn } from './types'
 import { CodexAppServerClient, type AgentQuestionAnswer } from '../agentControl'
-import type { ToolDef } from '../protocol'
 import { writeCodexCanvasGuide } from '../engine/codexCli'
 import { writeDesign } from '../engine/claudeCode'
 import { FLOWM_CODEX_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
-import { normalizeLlmQuestion } from './questions'
+import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
@@ -49,7 +48,7 @@ export class CodexAdapter implements LlmAdapter {
     if (!hasUser && !hasError) return { text: '', toolCalls: [] }
 
     const { prompt, image } = await this.composeDelta(fresh, cwd)
-    const schema = buildCodexOpsSchema(params.tools)
+    const schema = buildCanvasTurnOutputSchema(params.tools, 'strict')
     const client = await this.ensureClient(cwd)
     this.turn++
 
@@ -71,7 +70,7 @@ export class CodexAdapter implements LlmAdapter {
       onActivity: cb.onActivity,
     })
     const structured = parseStructured(last)
-    const result = toTurn(structured, this.turn)
+    const result = projectCanvasTurn(structured, { callIdPrefix: `codex-${this.turn}` })
 
     if (cb.onDebug) {
       const ops = Array.isArray((structured as { operations?: unknown })?.operations) ? ((structured as { operations: unknown[] }).operations) : []
@@ -157,21 +156,6 @@ function extractObject(text: string): string | null {
   return start >= 0 && end > start ? text.slice(start, end + 1) : null
 }
 
-function toTurn(structured: unknown, turn: number): LlmTurn {
-  const obj = (structured ?? {}) as { reply?: unknown; operations?: unknown }
-  const text = typeof obj.reply === 'string' ? obj.reply : ''
-  const ops = Array.isArray(obj.operations) ? obj.operations : []
-  const question = normalizeLlmQuestion((obj as { question?: unknown }).question)
-  const toolCalls: LlmToolCall[] = []
-  ops.forEach((op, i) => {
-    if (op && typeof op === 'object' && typeof (op as { op?: unknown }).op === 'string') {
-      const { op: name, ...args } = stripNulls(op) as { op: string } & Record<string, unknown>
-      toolCalls.push({ id: `codex-${turn}-${i}`, name, args })
-    }
-  })
-  return question ? { text, toolCalls, question } : { text, toolCalls }
-}
-
 /** Project the forced canvas-output envelope into public progress text.
  * The control client waits for the complete item, so this parser never inspects partial JSON. */
 export function parseCodexCanvasCommentary(raw: string): string | null {
@@ -182,86 +166,4 @@ export function parseCodexCanvasCommentary(raw: string): string | null {
   } catch {
     return null
   }
-}
-
-/**
- * Codex uses OpenAI Structured Outputs, whose JSON Schema subset requires every object to set
- * `additionalProperties:false`. It also behaves best when all properties are required, so optional
- * operation fields are represented as nullable and stripped before FlowM validates the op.
- */
-export function buildCodexOpsSchema(tools: ToolDef[]): Record<string, unknown> {
-  const toolNames = tools.map((t) => t.name)
-  return {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      reply: { type: 'string', description: 'User-facing answer. Use an empty string if there is nothing to say.' },
-      question: {
-        type: ['object', 'null'],
-        additionalProperties: false,
-        description: 'Set to {prompt} only when you need user confirmation or a choice before continuing; otherwise null. If set, keep operations empty.',
-        properties: {
-          prompt: { type: 'string', description: 'The concise yes/no/other question shown to the user.' },
-        },
-        required: ['prompt'],
-      },
-      operations: {
-        type: 'array',
-        description: 'Canvas operations. Use [] for answer-only or no-op turns.',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            op: { type: 'string', enum: toolNames },
-            shape: { type: ['string', 'null'], enum: ['rectangle', 'ellipse', 'diamond', 'triangle', null] },
-            x: { type: ['number', 'null'] },
-            y: { type: ['number', 'null'] },
-            w: { type: ['number', 'null'] },
-            h: { type: ['number', 'null'] },
-            text: { type: ['string', 'null'] },
-            ref: { type: ['string', 'null'] },
-            id: { type: ['string', 'null'] },
-            ids: { type: ['array', 'null'], items: { type: 'string' } },
-            prefer: { type: ['string', 'null'], enum: ['right', 'below', 'left', 'above', 'nearest', null] },
-            anchorId: { type: ['string', 'null'] },
-            margin: { type: ['number', 'null'] },
-            from: { type: ['string', 'null'] },
-            to: { type: ['string', 'null'] },
-            relations: {
-              type: ['array', 'null'],
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: { type: ['string', 'null'], enum: ['flow', 'align', 'grid', 'contain', 'nonOverlap', 'freeze', null] },
-                  nodes: { type: ['array', 'null'], items: { type: 'string' } },
-                  parent: { type: ['string', 'null'] },
-                  children: { type: ['array', 'null'], items: { type: 'string' } },
-                  dir: { type: ['string', 'null'], enum: ['down', 'right', null] },
-                  axis: { type: ['string', 'null'], enum: ['col', 'row', null] },
-                  at: { type: ['string', 'null'], enum: ['min', 'center', 'max', null] },
-                  cols: { type: ['integer', 'null'] },
-                  gap: { type: ['number', 'null'] },
-                },
-                required: ['kind', 'nodes', 'parent', 'children', 'dir', 'axis', 'at', 'cols', 'gap'],
-              },
-            },
-          },
-          required: ['op', 'shape', 'x', 'y', 'w', 'h', 'text', 'ref', 'id', 'ids', 'prefer', 'anchorId', 'margin', 'from', 'to', 'relations'],
-        },
-      },
-    },
-    required: ['reply', 'question', 'operations'],
-  }
-}
-
-function stripNulls(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripNulls).filter((v) => v !== null)
-  if (!value || typeof value !== 'object') return value
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(value)) {
-    if (v === null) continue
-    out[k] = stripNulls(v)
-  }
-  return out
 }

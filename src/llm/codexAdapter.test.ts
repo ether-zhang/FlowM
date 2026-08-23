@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { canvasTools, declareStructureTool } from '../protocol'
-import { buildCodexOpsSchema, parseCodexCanvasCommentary } from './codexAdapter'
+import { parseCodexCanvasCommentary } from './codexAdapter'
+import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
-describe('buildCodexOpsSchema', () => {
+describe('strict canvas turn output schema', () => {
   it('marks every object schema as closed for Codex structured outputs', () => {
-    const schema = buildCodexOpsSchema([...canvasTools, declareStructureTool])
+    const schema = buildCanvasTurnOutputSchema([...canvasTools, declareStructureTool], 'strict')
     const openObjects: string[] = []
 
     const walk = (value: unknown, path: string) => {
@@ -19,7 +20,7 @@ describe('buildCodexOpsSchema', () => {
   })
 
   it('exposes a nullable question channel for assistant confirmations', () => {
-    const schema = buildCodexOpsSchema([...canvasTools, declareStructureTool]) as {
+    const schema = buildCanvasTurnOutputSchema([...canvasTools, declareStructureTool], 'strict') as {
       required?: string[]
       properties?: Record<string, unknown>
     }
@@ -29,6 +30,39 @@ describe('buildCodexOpsSchema', () => {
       type: ['object', 'null'],
       additionalProperties: false,
     })
+  })
+
+  it('derives operation properties from ToolDef instead of a hard-coded field list', () => {
+    const schema = buildCanvasTurnOutputSchema([
+      {
+        name: 'custom_op',
+        description: 'test',
+        parameters: {
+          type: 'object',
+          properties: { customField: { type: 'string' } },
+          required: ['customField'],
+        },
+      },
+    ], 'strict') as {
+      properties: { operations: { items: { properties: Record<string, unknown>; required: string[] } } }
+    }
+
+    expect(schema.properties.operations.items.properties).toHaveProperty('customField')
+    expect(schema.properties.operations.items.required).toContain('customField')
+  })
+
+  it('strips strict-schema null placeholders before projecting operations', () => {
+    const turn = projectCanvasTurn({
+      reply: '',
+      question: null,
+      operations: [{ op: 'create_geo', shape: 'rectangle', x: null, y: null, text: 'A' }],
+    }, { callIdPrefix: 'codex-2' })
+
+    expect(turn.toolCalls).toEqual([{
+      id: 'codex-2-0',
+      name: 'create_geo',
+      args: { shape: 'rectangle', text: 'A' },
+    }])
   })
 
 })

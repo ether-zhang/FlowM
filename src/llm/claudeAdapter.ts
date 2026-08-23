@@ -1,11 +1,10 @@
 import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
-import type { LlmMessage, LlmTurn, LlmToolCall } from './types'
+import type { LlmMessage, LlmTurn } from './types'
 import type { AgentQuestionAnswer } from '../agentControl'
-import type { ToolDef } from '../protocol'
 import { writeClaudeCanvasGuide, writeDesign } from '../engine/claudeCode'
 import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
-import { normalizeLlmQuestion } from './questions'
 import { CompatibleClaudeTransport } from './claudeTransport'
+import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
 /**
  * Claude Code as an LlmAdapter — the SAME canvas pipeline (Conversation: serialize + marks →
@@ -84,7 +83,7 @@ export class ClaudeAdapter implements LlmAdapter {
     if (!hasUser && !hasError) return { text: '', toolCalls: [] }
 
     const prompt = await this.composeDelta(fresh, cwd)
-    const schema = buildOpsSchema(params.tools)
+    const schema = buildCanvasTurnOutputSchema(params.tools, 'portable')
     const transport = await this.ensureTransport(cwd, schema)
     this.turn++
 
@@ -106,7 +105,10 @@ export class ClaudeAdapter implements LlmAdapter {
     const structured = controlResult.structured
     const prose = controlResult.prose
 
-    const result = projectClaudeTurn(structured, prose, this.turn)
+    const result = projectCanvasTurn(structured, {
+      callIdPrefix: `claude-${this.turn}`,
+      visibleText: prose,
+    })
     // Debug: the model's RAW structured output — so the panel shows EXACTLY what Claude returned
     // (notably: do its create_geo ops carry x/y, or did it leave layout to the framework?), not
     // just the post-apply canvas (whose list always has coordinates). Coordinate count up front.
@@ -171,66 +173,4 @@ export class ClaudeAdapter implements LlmAdapter {
     }
     return prompt
   }
-}
-
-/**
- * Build the forced-output JSON Schema from the canvas tools: `{reply?, operations[]}`. The
- * operations item is ONE permissive object (every tool field, only `op` required) — the same
- * "list all fields, validate per-op downstream" trick the tools themselves use; Conversation's
- * parseOp / parseStructure then validate each op and report errors back for self-correction.
- * `operations` is required but may be empty, so the model can judge: empty = just answering /
- * nothing to add.
- */
-export function buildOpsSchema(tools: ToolDef[]): Record<string, unknown> {
-  const props: Record<string, unknown> = {
-    op: { type: 'string', enum: tools.map((t) => t.name), description: '操作类型' },
-  }
-  for (const t of tools) {
-    const tprops = (t.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    for (const [k, v] of Object.entries(tprops)) if (!(k in props)) props[k] = v
-  }
-  return {
-    type: 'object',
-    properties: {
-      reply: { type: 'string', description: '给用户的简短文字（可选）；只问答时把答案放这里、operations 留空。' },
-      question: {
-        type: 'object',
-        description: 'Set this only when you need the user to confirm or choose before continuing. If set, keep operations empty.',
-        properties: {
-          prompt: { type: 'string', description: 'The concise yes/no/other question shown to the user.' },
-        },
-        required: ['prompt'],
-      },
-      operations: {
-        type: 'array',
-        description: '本轮对画布的动作，规范化；无改动时给空数组。',
-        items: { type: 'object', properties: props, required: ['op'] },
-      },
-    },
-    required: ['operations'],
-  }
-}
-
-/**
- * Project Claude's two output channels into a provider-neutral turn. Structured output remains
- * authoritative for operations and questions; native `end_turn` prose is the visible answer,
- * with `reply` as the fallback for runtimes that only return structured output. Each operation
- * becomes a tool call that Conversation validates through its existing canvas protocol.
- */
-export function projectClaudeTurn(structured: unknown, finalProse: string, turn: number): LlmTurn {
-  const obj = (structured ?? {}) as { reply?: unknown; operations?: unknown }
-  const structuredReply = typeof obj.reply === 'string' ? obj.reply : ''
-  // The control protocol already separates native end_turn prose from tool-use commentary.
-  // Structured output owns operations/questions; native final prose owns the visible answer.
-  const text = finalProse.trim() || structuredReply
-  const ops = Array.isArray(obj.operations) ? obj.operations : []
-  const question = normalizeLlmQuestion((obj as { question?: unknown }).question)
-  const toolCalls: LlmToolCall[] = []
-  ops.forEach((op, i) => {
-    if (op && typeof op === 'object' && typeof (op as { op?: unknown }).op === 'string') {
-      const { op: name, ...args } = op as { op: string } & Record<string, unknown>
-      toolCalls.push({ id: `claude-${turn}-${i}`, name, args })
-    }
-  })
-  return question ? { text, toolCalls, question } : { text, toolCalls }
 }
