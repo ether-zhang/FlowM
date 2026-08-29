@@ -39,7 +39,7 @@ Windows、macOS、iPad。
 #### 近期路线图（更新于 2026-08-23）
 
 - [x] **本地 Agent Runtime 收口**：Claude/Codex guide 统一写到项目 `.flowm` 下，由短 invocation-scoped 指令触发读取；本地画布 agent 只由 workspace 会话创建，删除会话、切换项目和卸载时释放 transport。无工程时不创建本地 fallback，API 模式仍可独立使用。
-- [ ] **Codex 侧画布 prompt 继续迭代**：当前已改为独立 Codex prompt，但仍需实测结构图/流程图判别、详略、布局倾向。先按 prompt + 框架后处理继续调；模型能力差异单独记录，不把“等 GPT-5.6”作为当前阻塞项。
+- [x] **统一画布语义根指令**：删除 Codex 独立绘图 prompt，`Conversation` 通过 `RunTurnParams.system` 向所有 provider 提供唯一行为契约；流程关系统一画自上而下流程图，结构关系按所有权、层级、并列、依赖和映射组织结构图，混合主题按区域分别应用。Claude/Codex adapter 只转发同一 system，portable/strict 仅处理 schema 方言差异，不再携带绘图偏好。
 - [x] **左侧文件栏改成 VSCode activity bar 样式**：不要只有窄箭头；做成可扩展侧栏，左边竖向图标入口，右侧 panel 可展开/收起/切换，后续可承载文件、搜索、Git、运行等视图。
 - [x] **Git 栏整合进左侧栏**：基于 activity bar 增加 Source Control panel，基础功能至少包含 changed files 树状列表、diff 查看、刷新、分支/HEAD 信息；后续再补 stage/unstage、commit message、commit 按钮、历史图谱/简易 log。
 - [x] **右侧对话栏支持模型主动询问**：本地 agent 的原生 question/permission request 映射为 provider-neutral `AgentQuestion`，UI 呈现选项与 other 输入，并把答案发回同一条 control 会话；无原生能力的 API 路径保留结构化问题 fallback。
@@ -51,6 +51,9 @@ Windows、macOS、iPad。
 #### Agent / 画布链路收敛（2026-08-23）
 
 - [x] **统一输出契约**：从同一组 `ToolDef` 编译 portable/strict 两种 schema；Claude/API 与 Codex 的结构化 envelope 均投影为同一个 `LlmTurn`，不再由 adapter 各自维护字段表。
+- [x] **统一输入语义契约**：`RunTurnParams.system` 是唯一画布行为来源；本地 adapter 不再导入或选择 provider 专用 prompt，项目下不同 guide 文件写入相同内容。根规则先判定 process / structure / mixed，再分别采用自上而下流程或按逻辑关系组织的结构布局。
+- [x] **统一符号引用与详略策略**：新节点始终以 `ref` 参与连接、结构声明和区域放置，框架在同一用户回合内统一解析为真实 shape id；代码原理图按会改变机制理解的职责、状态、所有权和映射边界拆分节点，不设置节点数上限，也不按 Agent 分叉。
+- [x] **根图规划协议**：结构化新图在同一操作批次中先声明 provider-neutral `declare_diagram`，显式给出 process/structure/mixed、解释焦点、语义区域和 primary/supporting refs；框架在落图前校验语义区域、类型一致性和 ref 唯一归属，避免不同 Agent 分别滑向过简与过细，同时不限制图的复杂度。
 - [x] **统一执行状态机**：`Conversation` 独占 `build → review → finalize` 编排；adapter 只负责 transport 与 provider 输出转换，最终正文只在 no-tools finalize 阶段发送一次。
 - [x] **复核权限显式化**：分离 `reviewTargetIds`、`contextIds`、`editableIds`；上下文只用于观察，context-only shape 的移动/结构声明在 `CanvasPort` 前被拒绝。
 - [x] **中立类型与依赖方向**：question/activity 类型移入 `agent/`；项目 artifact I/O 归一；Claude legacy CLI transport 移出 `engine/`；增加源码 import 方向测试防止 `llm → engine/UI/workspace` 回归。

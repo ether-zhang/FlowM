@@ -103,13 +103,62 @@ silently continue editing while explaining the result.
 `src/llm/outputContract.ts` compiles one logical output envelope from the active
 `ToolDef[]`:
 
-- `portable`: ordinary optional JSON Schema for Claude/API-compatible paths;
-- `strict`: closed objects with nullable placeholders for Codex Structured
-  Outputs.
+- `portable`: ordinary optional JSON Schema for providers that accept it;
+- `strict`: closed objects with nullable placeholders for transports that
+  require OpenAI-compatible strict Structured Outputs.
 
 `projectCanvasTurn` removes strict null placeholders and projects both forms to
 the same `LlmTurn`. `outputContract.conformance.test.ts` verifies equivalent
 operation and question turns across the two profiles.
+
+### Semantic prompt ownership
+
+`Conversation` is the single owner of the canvas behavior contract. It passes
+that contract through `RunTurnParams.system`; adapters must forward this value
+and must not import or select a provider-specific drawing prompt.
+
+The root diagram command classifies the requested relationships before any
+operations are created:
+
+- temporal, execution, lifecycle, and data-movement relationships use a
+  top-to-bottom process diagram;
+- composition, ownership, hierarchy, peer, and static mapping relationships use
+  a structural diagram arranged by those semantics;
+- genuinely mixed subjects use separate process and structure regions, each
+  following its own rule.
+
+For a structured new diagram, that decision is also emitted as one
+`declare_diagram` operation. The declaration contains the diagram kind, exact
+focus, semantic regions, and each region's primary/supporting create refs.
+`Conversation` parses the declaration before applying any operation in the
+batch. A batch that creates shapes and declares layout structure is rejected
+atomically when the plan is missing, invalid, or creates an unassigned ref. The
+declaration and creates still occupy one provider turn:
+FlowM compiles the complete operation array before materialization.
+The plan is accepted once per user turn. Before the build phase can finish,
+every planned shape ref must resolve to a created or existing canvas id; missing
+refs are returned as deterministic build feedback instead of silently accepting
+an incomplete declaration.
+
+This plan is an intermediate semantic contract, not model-visible geometry.
+The agent still understands the project and chooses concepts; the protocol
+states scope and makes that choice observable and testable across providers.
+The protocol intentionally does not impose a node quota: primary/supporting
+classification is semantic, and detail follows the user request. Supporting
+refs are reserved for region containers or essential context, not a way to
+hide low-value implementation detail.
+
+Claude and Codex may use different project guide filenames and schema profiles,
+but the guide contents come from the same `RunTurnParams.system`. Provider
+differences are transport encoding concerns, not diagram-selection policy.
+
+Canvas operations use symbolic create refs as their model-facing identity. The
+protocol owns pure ref resolution; `Conversation` compiles one logical batch in
+two internal stages: create/connect materialisation, then structure and region
+placement after refs have concrete canvas ids. A structure declaration may also
+precede its creates in an earlier build batch of the same user turn and remains
+pending until those refs exist. Adapters and concrete canvas libraries do not
+implement provider-specific ref rules.
 
 ### Review scope
 
@@ -140,7 +189,9 @@ canvas operations and does not classify build/review/finalize phases.
 
 Local adapters send only the new Conversation delta and resume the provider's
 own stored session. The canvas guide stays under the active project's `.flowm`
-directory and is referenced by a short invocation-scoped instruction.
+directory and is referenced by a short invocation-scoped instruction. Both
+local adapters write the caller-owned `RunTurnParams.system`; neither owns a
+provider-specific canvas behavior prompt.
 
 ## 5. Runtime ownership
 

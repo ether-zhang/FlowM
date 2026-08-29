@@ -5,26 +5,28 @@
 
 ## 1. 声明格式
 
-引用的是**节点的 shape id**（create 返回的、文本表里的真实 id）。**用 id 而非 mark** 的原因：
-模型建图当下就握着 id，可以**边画边声明**，不必等渲染出 marks 再来一轮。marks 仍保留，但只作
-**复核图上的视觉索引**（帮模型在图里指认该改哪个），声明本身走 id。箭头不参与（由端点派生）。
+引用的是**节点 key**：已有节点使用 shape id，新节点使用模型在 create 上声明的 `ref`。
+**不用 mark** 的原因：模型可以在节点真正落图前就声明完整结构，不必等渲染出 marks 再来一轮。
+FlowM 在同一用户回合维护 `ref → shape id` 注册表：整批 create/connect 先实体化，再解析结构与区域
+放置；声明早于 create 出现在前一 build 批次时保持 pending，相关 ref 出现后自动激活。marks 仍只作
+**复核图上的视觉索引**（帮模型在图里指认该改哪个）。箭头不参与（由端点派生）。
 
 ```ts
-type NodeId = string  // shape id
+type NodeKey = string  // existing shape id | create ref
 
 type StructureRelation =
   // 流链：自上而下/左右单列推进 → 匀缝 + 近轴吸附
-  | { kind: 'flow';       nodes: NodeId[]; dir?: 'down' | 'right' }
+  | { kind: 'flow';       nodes: NodeKey[]; dir?: 'down' | 'right' }
   // 对齐成行/列：投影到公共轴
-  | { kind: 'align';      nodes: NodeId[]; axis: 'col' | 'row'; at?: 'min' | 'center' | 'max' }
+  | { kind: 'align';      nodes: NodeKey[]; axis: 'col' | 'row'; at?: 'min' | 'center' | 'max' }
   // 等尺寸等距网格（行主序，rows 由 count/cols 推出）
-  | { kind: 'grid';       nodes: NodeId[]; cols: number; gap?: number }
+  | { kind: 'grid';       nodes: NodeKey[]; cols: number; gap?: number }
   // 嵌套：children 在 parent 内；父按子长大，子不被推出父界
-  | { kind: 'contain';    parent: NodeId; children: NodeId[] }
+  | { kind: 'contain';    parent: NodeKey; children: NodeKey[] }
   // 互不重叠（限定这组）
-  | { kind: 'nonOverlap'; nodes: NodeId[] }
+  | { kind: 'nonOverlap'; nodes: NodeKey[] }
   // 原样冻结（手绘/草图，或否决自动推断）
-  | { kind: 'freeze';     nodes: NodeId[] }
+  | { kind: 'freeze';     nodes: NodeKey[] }
 
 interface StructureDecl { relations: StructureRelation[] }
 ```
@@ -42,13 +44,13 @@ interface StructureDecl { relations: StructureRelation[] }
 
 ## 3. 怎么发出 + 校验
 
-- **工具** `declare_structure({ relations })`：**建图阶段就可调**（模型有 id），也可在复核轮补声明。
+- **工具** `declare_structure({ relations })`：**建图阶段就可调**（模型有已有 id 或新节点 ref），也可在复核轮补声明。
   **由模型自行判断**——有真实结构（链/网格/嵌套）才声明,自由排布**不声明**;不强制 flow。
 - **校验** `parseStructure`（纯函数，protocol 层，类比 `parseOp`）：字段/类型不合法即丢弃并回报，
   不阻断其余。id 是否指向真实形状由 `apply` 兜底（只移动场景里实际存在且在 scope 内的形状）。
 - 声明的 scope **按整个用户回合累积**（build loop + review），每次 `apply` 都带上，**不是单批次即弃**。
-  因为一条 flow 的 `declare_structure` 与组成它的 `connect_shapes` 常落在不同批次（模型先声明、
-  下一批才用真 id 补连——跨回合的 ref 会失效）。B 类 pass 只有在**同一次 apply 里 scope 与 edges 同时在场**
+  因为一条 flow 的 `declare_structure`、create 和 `connect_shapes` 可能落在不同 build 批次。ref 在本次
+  用户回合内保持有效，框架只在引用全部实体化后激活关系。B 类 pass 只有在**同一次 apply 里 scope 与 edges 同时在场**
   才会拉直，所以授权必须活过单批：留到回合结束，下一批补出边时仍然生效。每次 `send` 开头清空。
 
 ## 4. 默认 & 冲突（关键语义）

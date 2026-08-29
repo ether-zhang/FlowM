@@ -38,4 +38,37 @@ describe('canvas turn output conformance', () => {
 
     expect(strict).toEqual(portable)
   })
+
+  it('projects portable and strict diagram declarations to the same tool call', () => {
+    const base = {
+      op: 'declare_diagram',
+      kind: 'mixed',
+      focus: 'Allocation and storage.',
+      regions: [
+        {
+          ref: 'runtime',
+          kind: 'process',
+          purpose: 'Lifecycle.',
+          primaryRefs: ['request', 'allocate'],
+        },
+        {
+          ref: 'storage',
+          kind: 'structure',
+          purpose: 'Storage.',
+          primaryRefs: ['pool', 'pages'],
+        },
+      ],
+    }
+    const portable = projectCanvasTurn({ operations: [base] }, { callIdPrefix: 'turn' })
+    const strict = projectCanvasTurn({
+      reply: '',
+      question: null,
+      operations: [{
+        ...base,
+        regions: base.regions.map((region) => ({ ...region, supportingRefs: null })),
+      }],
+    }, { callIdPrefix: 'turn' })
+
+    expect(strict).toEqual(portable)
+  })
 })

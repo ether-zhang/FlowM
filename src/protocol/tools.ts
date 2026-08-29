@@ -21,6 +21,9 @@ const ref = {
   },
 } as const
 
+const shapeKeyDescription =
+  'Existing shape id, or a ref assigned by create_geo/create_text anywhere in the current user turn.'
+
 export const canvasTools: ToolDef[] = [
   {
     name: 'create_geo',
@@ -70,21 +73,21 @@ export const canvasTools: ToolDef[] = [
   {
     name: 'place_region',
     description:
-      'Ask the FlowM framework to place a group of existing non-arrow shapes into a nearby free slot. Use this instead of guessing far-away coordinates when a region overlaps/crowds existing content. The framework keeps the listed ids together, treats unlisted shapes as obstacles, finds the final empty area, moves the group as one unit, and re-routes attached arrows.',
+      'Ask the FlowM framework to place a group of non-arrow shapes into a nearby free slot. The shapes may be existing ids or refs created in the same user turn. Use this instead of guessing far-away coordinates when a region overlaps/crowds existing content. The framework keeps the listed shapes together, treats unlisted shapes as obstacles, finds the final empty area, moves the group as one unit, and re-routes attached arrows.',
     parameters: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Explicit shape ids to move together. List only shapes you are allowed to move.',
+          description: `Explicit shapes to move together. ${shapeKeyDescription} List only shapes you are allowed to move.`,
         },
         prefer: {
           type: 'string',
           enum: ['right', 'below', 'left', 'above', 'nearest'],
           description: 'Preferred placement direction relative to anchorId, or relative to the region itself when anchorId is omitted.',
         },
-        anchorId: { type: 'string', description: 'Optional existing shape id to place near.' },
+        anchorId: { type: 'string', description: `Optional shape to place near. ${shapeKeyDescription}` },
         margin: { type: 'number', description: 'Optional minimum clear gap in page pixels.' },
       },
       required: ['ids'],
@@ -127,10 +130,49 @@ export const canvasTools: ToolDef[] = [
   },
 ]
 
+export const declareDiagramTool: ToolDef = {
+  name: 'declare_diagram',
+  description:
+    'Declare the semantic plan for a structured diagram before it is materialized. This is a non-drawing operation: it fixes the process/structure/mixed choice, the explanation focus, semantic regions, and the refs of primary/supporting shapes. Include it in the same operation batch as the creates; FlowM compiles the whole batch before drawing. Scope and detail follow the user request rather than a fixed node quota.',
+  parameters: {
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: ['process', 'structure', 'mixed'] },
+      focus: {
+        type: 'string',
+        description: 'One sentence naming the exact mechanism and scope the diagram will explain.',
+      },
+      regions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            ref: { type: 'string', description: 'Short stable region key; not a canvas shape id.' },
+            kind: { type: 'string', enum: ['process', 'structure'] },
+            purpose: { type: 'string', description: 'What this region contributes to the explanation.' },
+            primaryRefs: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Refs of the semantic content nodes in this region.',
+            },
+            supportingRefs: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional refs for region containers or essential context nodes.',
+            },
+          },
+          required: ['ref', 'kind', 'purpose', 'primaryRefs'],
+        },
+      },
+    },
+    required: ['kind', 'focus', 'regions'],
+  },
+}
+
 /**
  * The structure-declaration tool (not an op — it doesn't mutate shapes; it tells the
- * framework how to lay a region out). Nodes are referenced by SHAPE ID (the ids returned
- * by create_geo / shown in the canvas list), so the model can declare as it draws. Use it
+ * framework how to lay a region out). Nodes use existing shape ids or create refs, so the
+ * model can declare structure before the concrete canvas ids exist. Use it
  * by judgment — only where a real structure applies; skip free-form work. JSON Schema
  * can't express the per-kind field union, so every possible field is listed with only
  * `kind` required; parseStructure (zod) validates the real per-kind shape and drops
@@ -139,7 +181,7 @@ export const canvasTools: ToolDef[] = [
 export const declareStructureTool: ToolDef = {
   name: 'declare_structure',
   description:
-    'Declare the layout STRUCTURE of a region so the framework positions it precisely — ONLY where a real structure applies (a chain of connected nodes, a grid, a nested group). Skip it entirely for free-form arrangements; not everything is a flow. Reference shapes by their ids (returned when you create them, and shown in the canvas list). Kinds: flow (a chain down a column / across a row → straightened + evenly spaced), align (share a row or column), grid (uniform matrix), contain (a parent box holding children), nonOverlap (must not overlap), freeze (leave exactly as drawn).',
+    'Declare the layout STRUCTURE of a region so the framework positions it precisely — ONLY where a real structure applies (a chain of connected nodes, a grid, a nested group). Skip it entirely for free-form arrangements; not everything is a flow. Reference shapes by existing ids or refs assigned by create operations anywhere in the current user turn. Kinds: flow (a chain down a column / across a row → straightened + evenly spaced), align (share a row or column), grid (uniform matrix), contain (a parent box holding children), nonOverlap (must not overlap), freeze (leave exactly as drawn).',
   parameters: {
     type: 'object',
     properties: {
@@ -149,9 +191,9 @@ export const declareStructureTool: ToolDef = {
           type: 'object',
           properties: {
             kind: { type: 'string', enum: ['flow', 'align', 'grid', 'contain', 'nonOverlap', 'freeze'] },
-            nodes: { type: 'array', items: { type: 'string' }, description: 'shape ids this relation applies to' },
-            parent: { type: 'string', description: 'contain: the container shape id' },
-            children: { type: 'array', items: { type: 'string' }, description: 'contain: the contained shape ids' },
+            nodes: { type: 'array', items: { type: 'string' }, description: 'shape ids or refs this relation applies to' },
+            parent: { type: 'string', description: 'contain: the container shape id or ref' },
+            children: { type: 'array', items: { type: 'string' }, description: 'contain: the contained shape ids or refs' },
             dir: { type: 'string', enum: ['down', 'right'], description: 'flow: chain direction' },
             axis: { type: 'string', enum: ['col', 'row'], description: 'align: shared axis' },
             at: { type: 'string', enum: ['min', 'center', 'max'], description: 'align: where on the axis' },

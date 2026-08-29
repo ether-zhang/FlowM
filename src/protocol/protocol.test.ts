@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseOp, type CanvasOp } from './schema'
 import { parseStructure, resolveScope } from './structure'
+import { resolveCanvasOpReferences, resolveStructureRelationReferences } from './references'
 import { formatCanvas } from './serialize'
 import { clusterDrawRegions } from './regions'
 import { canvasTools, toolCallToOp } from './tools'
@@ -195,5 +196,55 @@ describe('resolveScope', () => {
     ])
     expect(scope.spacing.size).toBe(0)
     expect(scope.overlap.size).toBe(0)
+  })
+})
+
+describe('symbolic canvas references', () => {
+  const ids = new Map([
+    ['a', 'shape-a'],
+    ['b', 'shape-b'],
+    ['group', 'shape-group'],
+  ])
+  const lookup = (key: string) => ids.get(key) ?? (key.startsWith('existing-') ? key : undefined)
+
+  it('resolves every ref carried by place_region while preserving real ids', () => {
+    const resolved = resolveCanvasOpReferences(
+      { op: 'place_region', ids: ['a', 'existing-c'], anchorId: 'group', prefer: 'right' },
+      lookup,
+    )
+    expect(resolved).toEqual({
+      value: {
+        op: 'place_region',
+        ids: ['shape-a', 'existing-c'],
+        anchorId: 'shape-group',
+        prefer: 'right',
+      },
+      unresolved: [],
+    })
+  })
+
+  it('reports unknown keys without discarding the original operation', () => {
+    const resolved = resolveCanvasOpReferences(
+      { op: 'connect_shapes', from: 'a', to: 'missing' },
+      lookup,
+    )
+    expect(resolved.value).toEqual({ op: 'connect_shapes', from: 'shape-a', to: 'missing' })
+    expect(resolved.unresolved).toEqual(['missing'])
+  })
+
+  it('resolves refs in both ordinary and containment relations', () => {
+    expect(resolveStructureRelationReferences(
+      { kind: 'flow', nodes: ['a', 'b'], dir: 'down' },
+      lookup,
+    )).toEqual({
+      value: { kind: 'flow', nodes: ['shape-a', 'shape-b'], dir: 'down' },
+      unresolved: [],
+    })
+    expect(resolveStructureRelationReferences(
+      { kind: 'contain', parent: 'group', children: ['a', 'b'] },
+      lookup,
+    ).value).toEqual({
+      kind: 'contain', parent: 'shape-group', children: ['shape-a', 'shape-b'],
+    })
   })
 })

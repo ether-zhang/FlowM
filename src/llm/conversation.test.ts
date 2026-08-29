@@ -197,6 +197,328 @@ describe('Conversation turn contract', () => {
     ])
   })
 
+  it('compiles a diagram plan before materializing same-batch create refs', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'plan',
+            name: 'declare_diagram',
+            args: {
+              kind: 'mixed',
+              focus: 'A compact request lifecycle and its storage.',
+              regions: [
+                {
+                  ref: 'runtime',
+                  kind: 'process',
+                  purpose: 'Request lifecycle.',
+                  primaryRefs: ['request', 'allocate'],
+                },
+                {
+                  ref: 'storage',
+                  kind: 'structure',
+                  purpose: 'Storage ownership.',
+                  primaryRefs: ['pool', 'pages'],
+                },
+              ],
+            },
+          },
+          { id: 'request', name: 'create_geo', args: { shape: 'rectangle', ref: 'request' } },
+          { id: 'allocate', name: 'create_geo', args: { shape: 'rectangle', ref: 'allocate' } },
+          { id: 'pool', name: 'create_geo', args: { shape: 'rectangle', ref: 'pool' } },
+          { id: 'pages', name: 'create_geo', args: { shape: 'rectangle', ref: 'pages' } },
+        ],
+      },
+      { text: 'Built.', toolCalls: [] },
+      { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Final.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort()
+
+    await new Conversation(adapter).send('Draw a mixed diagram.', port, callbacks())
+
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(apply.mock.calls[0]?.[0]).toHaveLength(4)
+    expect(adapter.requests[1]?.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'plan',
+      content: JSON.stringify({
+        ok: true,
+        kind: 'mixed',
+        regions: 2,
+        primary: 4,
+        supporting: 0,
+      }),
+    })
+  })
+
+  it('requires a semantic plan for a structured create batch without using a shape-count threshold', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          { id: 'create-a', name: 'create_geo', args: { shape: 'rectangle', ref: 'a' } },
+          { id: 'create-b', name: 'create_geo', args: { shape: 'rectangle', ref: 'b' } },
+          {
+            id: 'structure',
+            name: 'declare_structure',
+            args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] },
+          },
+        ],
+      },
+      { text: 'Stopped after the plan error.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort()
+
+    await new Conversation(adapter).send('Draw a non-trivial diagram.', port, callbacks())
+
+    expect(apply).not.toHaveBeenCalled()
+    expect(adapter.requests[1]?.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'create-a',
+      content: expect.stringContaining(
+        'create batch with declare_structure requires one declare_diagram operation',
+      ),
+    })
+  })
+
+  it('rejects an undeclared create ref without partially applying the planned batch', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'plan',
+            name: 'declare_diagram',
+            args: {
+              kind: 'process',
+              focus: 'A short process.',
+              regions: [{
+                ref: 'runtime',
+                kind: 'process',
+                purpose: 'Main flow.',
+                primaryRefs: ['a'],
+              }],
+            },
+          },
+          { id: 'create-a', name: 'create_geo', args: { shape: 'rectangle', ref: 'a' } },
+          { id: 'create-b', name: 'create_geo', args: { shape: 'rectangle', ref: 'b' } },
+        ],
+      },
+      { text: 'Stopped after the ref error.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort([
+      { id: 'a', type: 'rectangle', x: 0, y: 0 },
+    ])
+
+    await new Conversation(adapter).send('Draw it.', port, callbacks())
+
+    expect(apply).not.toHaveBeenCalled()
+    expect(adapter.requests[1]?.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'create-b',
+      content: expect.stringContaining('create ref b is not assigned to a diagram region'),
+    })
+  })
+
+  it('keeps a plan active across build batches and requests missing refs before completion', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'plan',
+            name: 'declare_diagram',
+            args: {
+              kind: 'process',
+              focus: 'A four-step process.',
+              regions: [{
+                ref: 'runtime',
+                kind: 'process',
+                purpose: 'Main flow.',
+                primaryRefs: ['a', 'b', 'c', 'd'],
+              }],
+            },
+          },
+          ...['a', 'b', 'c'].map((ref) => ({
+            id: `create-${ref}`,
+            name: 'create_geo',
+            args: { shape: 'rectangle', ref },
+          })),
+        ],
+      },
+      { text: 'Initially complete.', toolCalls: [] },
+      {
+        text: '',
+        toolCalls: [{ id: 'create-d', name: 'create_geo', args: { shape: 'rectangle', ref: 'd' } }],
+      },
+      { text: 'Built.', toolCalls: [] },
+      { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Final.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort()
+
+    await new Conversation(adapter).send('Draw four steps.', port, callbacks())
+
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(adapter.requests[2]?.messages).toContainEqual({
+      role: 'user',
+      content: expect.stringContaining('Materialize these planned shape refs before finishing: d'),
+    })
+  })
+
+  it('accepts exactly one diagram plan per user turn', async () => {
+    const plan = {
+      kind: 'process',
+      focus: 'Existing process.',
+      regions: [{
+        ref: 'runtime',
+        kind: 'process',
+        purpose: 'Main flow.',
+        primaryRefs: ['existing-a', 'existing-b'],
+      }],
+    }
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          { id: 'plan-1', name: 'declare_diagram', args: plan },
+          { id: 'plan-2', name: 'declare_diagram', args: plan },
+        ],
+      },
+      { text: 'Stopped.', toolCalls: [] },
+    ])
+    const { port } = createPort([
+      { id: 'existing-a', type: 'rectangle', x: 0, y: 0 },
+      { id: 'existing-b', type: 'rectangle', x: 200, y: 0 },
+    ])
+
+    await new Conversation(adapter).send('Inspect the process.', port, callbacks())
+
+    expect(adapter.requests[1]?.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'plan-2',
+      content: 'error: declare_diagram may be accepted only once per user turn',
+    })
+  })
+
+  it('resolves same-batch refs before realizing a structure declaration', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'plan',
+            name: 'declare_diagram',
+            args: {
+              kind: 'process',
+              focus: 'A two-step flow.',
+              regions: [{
+                ref: 'runtime',
+                kind: 'process',
+                purpose: 'Main flow.',
+                primaryRefs: ['a', 'b'],
+              }],
+            },
+          },
+          { id: 'create-a', name: 'create_geo', args: { shape: 'rectangle', ref: 'a' } },
+          { id: 'create-b', name: 'create_geo', args: { shape: 'rectangle', ref: 'b' } },
+          { id: 'connect', name: 'connect_shapes', args: { from: 'a', to: 'b' } },
+          {
+            id: 'structure',
+            name: 'declare_structure',
+            args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] },
+          },
+        ],
+      },
+      { text: 'Built.', toolCalls: [] },
+      { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Final.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort()
+
+    await new Conversation(adapter).send('Draw a flow.', port, callbacks())
+
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(apply.mock.calls[0]?.[0]).toHaveLength(3)
+    expect(apply.mock.calls[1]?.[0]).toEqual([])
+    expect(apply.mock.calls[1]?.[1]).toEqual({
+      spacing: new Set(['created-1', 'created-2']),
+      overlap: new Set(['created-1', 'created-2']),
+    })
+  })
+
+  it('resolves same-batch refs before placing a newly created region', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [
+          { id: 'create-a', name: 'create_geo', args: { shape: 'rectangle', ref: 'a' } },
+          { id: 'create-b', name: 'create_geo', args: { shape: 'rectangle', ref: 'b' } },
+          {
+            id: 'place',
+            name: 'place_region',
+            args: { ids: ['a', 'b'], anchorId: 'a', prefer: 'right' },
+          },
+        ],
+      },
+      { text: 'Built.', toolCalls: [] },
+      { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Final.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort()
+
+    await new Conversation(adapter).send('Draw and place a region.', port, callbacks())
+
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(apply.mock.calls[1]?.[0]).toEqual([{
+      op: 'place_region',
+      ids: ['created-1', 'created-2'],
+      anchorId: 'created-1',
+      prefer: 'right',
+    }])
+  })
+
+  it('keeps a declaration pending when its refs are created in a later build batch', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        text: '',
+        toolCalls: [{
+          id: 'structure',
+          name: 'declare_structure',
+          args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] },
+        }],
+      },
+      {
+        text: '',
+        toolCalls: [
+          { id: 'create-a', name: 'create_geo', args: { shape: 'rectangle', ref: 'a' } },
+          { id: 'create-b', name: 'create_geo', args: { shape: 'rectangle', ref: 'b' } },
+          { id: 'connect', name: 'connect_shapes', args: { from: 'a', to: 'b' } },
+        ],
+      },
+      { text: 'Built.', toolCalls: [] },
+      { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Final.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort()
+
+    await new Conversation(adapter).send('Declare, then draw.', port, callbacks())
+
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(apply.mock.calls[1]?.[0]).toEqual([])
+    expect(apply.mock.calls[1]?.[1]).toEqual({
+      spacing: new Set(['created-1', 'created-2']),
+      overlap: new Set(['created-1', 'created-2']),
+    })
+    expect(adapter.requests[1]?.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'structure',
+      content: JSON.stringify({ ok: true, accepted: 1, resolved: 0, pending: 1, errors: [] }),
+    })
+  })
+
   it('surfaces a structured question without applying or reviewing', async () => {
     const adapter = new ScriptedAdapter([
       {

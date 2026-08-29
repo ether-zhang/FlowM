@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { canvasTools, declareStructureTool } from '../protocol'
+import { canvasTools, declareDiagramTool, declareStructureTool } from '../protocol'
 import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
 describe('strict canvas turn output schema', () => {
   it('marks every object schema as closed for Codex structured outputs', () => {
-    const schema = buildCanvasTurnOutputSchema([...canvasTools, declareStructureTool], 'strict')
+    const schema = buildCanvasTurnOutputSchema(
+      [declareDiagramTool, ...canvasTools, declareStructureTool],
+      'strict',
+    )
     const openObjects: string[] = []
 
     const walk = (value: unknown, path: string) => {
@@ -19,7 +22,10 @@ describe('strict canvas turn output schema', () => {
   })
 
   it('exposes a nullable question channel for assistant confirmations', () => {
-    const schema = buildCanvasTurnOutputSchema([...canvasTools, declareStructureTool], 'strict') as {
+    const schema = buildCanvasTurnOutputSchema(
+      [declareDiagramTool, ...canvasTools, declareStructureTool],
+      'strict',
+    ) as {
       required?: string[]
       properties?: Record<string, unknown>
     }
@@ -29,6 +35,31 @@ describe('strict canvas turn output schema', () => {
       type: ['object', 'null'],
       additionalProperties: false,
     })
+  })
+
+  it('closes nested diagram-plan regions and makes optional fields nullable', () => {
+    const schema = buildCanvasTurnOutputSchema([declareDiagramTool], 'strict') as {
+      properties: {
+        operations: {
+          items: {
+            properties: {
+              regions: {
+                items: {
+                  required: string[]
+                  additionalProperties: boolean
+                  properties: { supportingRefs: { type: string[] } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    const region = schema.properties.operations.items.properties.regions.items
+
+    expect(region.additionalProperties).toBe(false)
+    expect(region.required).toContain('supportingRefs')
+    expect(region.properties.supportingRefs.type).toEqual(['array', 'null'])
   })
 
   it('derives operation properties from ToolDef instead of a hard-coded field list', () => {

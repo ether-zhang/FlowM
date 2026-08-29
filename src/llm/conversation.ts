@@ -2,14 +2,21 @@ import {
   type CanvasPort,
   type CanvasShape,
   type CanvasOp,
+  type DiagramPlan,
   type LayoutScope,
   type StructureRelation,
   canvasTools,
+  declareDiagramTool,
   declareStructureTool,
+  diagramPlanCounts,
+  diagramPlanRefs,
   formatCanvas,
+  parseDiagramPlan,
   parseOp,
   parseStructure,
+  resolveCanvasOpReferences,
   resolveScope,
+  resolveStructureRelationReferences,
   toolCallToOp,
 } from '../protocol'
 import type { LlmAdapter, RunTurnParams } from './adapter'
@@ -24,7 +31,7 @@ import {
 const MAX_ITERATIONS = 8
 
 /** Tools the model may call: the canvas ops plus the structure declaration. */
-const ALL_TOOLS = [...canvasTools, declareStructureTool]
+const ALL_TOOLS = [declareDiagramTool, ...canvasTools, declareStructureTool]
 const REVIEW_TOOL_NAMES = new Set(['move_shape', 'place_region', 'declare_structure'])
 const REVIEW_TOOLS = ALL_TOOLS.filter((tool) => REVIEW_TOOL_NAMES.has(tool.name))
 
@@ -67,14 +74,20 @@ interface ReviewScope {
 function splitTools(
   toolCalls: LlmToolCall[],
   access?: ToolAccess,
-): { opCalls: OpCall[]; declareCalls: DeclareCall[] } {
+): { opCalls: OpCall[]; diagramCalls: DeclareCall[]; declareCalls: DeclareCall[] } {
   const opCalls: OpCall[] = []
+  const diagramCalls: DeclareCall[] = []
   const declareCalls: DeclareCall[] = []
   for (const tc of toolCalls) {
     if (access && !access.allowedNames.has(tc.name)) {
       const error = `${tc.name} is not allowed during review`
-      if (tc.name === 'declare_structure') declareCalls.push({ id: tc.id, error })
+      if (tc.name === 'declare_diagram') diagramCalls.push({ id: tc.id, error })
+      else if (tc.name === 'declare_structure') declareCalls.push({ id: tc.id, error })
       else opCalls.push({ id: tc.id, error })
+      continue
+    }
+    if (tc.name === 'declare_diagram') {
+      diagramCalls.push({ id: tc.id, args: tc.args })
       continue
     }
     if (tc.name === 'declare_structure') {
@@ -83,13 +96,14 @@ function splitTools(
     }
     try {
       const op = parseOp(toolCallToOp(tc.name, tc.args))
-      const error = access ? operationAccessError(op, access.editableIds) : undefined
-      opCalls.push(error ? { id: tc.id, error } : { id: tc.id, op })
+      // Access is checked after symbolic refs are resolved. Checking a create ref here would
+      // incorrectly treat it as a context-only real id.
+      opCalls.push({ id: tc.id, op })
     } catch (e) {
       opCalls.push({ id: tc.id, error: (e as Error).message })
     }
   }
-  return { opCalls, declareCalls }
+  return { opCalls, diagramCalls, declareCalls }
 }
 
 function operationAccessError(op: CanvasOp, editableIds: ReadonlySet<string>): string | undefined {
@@ -112,6 +126,7 @@ function relationIds(relation: StructureRelation): string[] {
 /** Ops whose ok result id is a shape the model created/moved this turn — the review
  *  looks at exactly these (not the whole canvas, which would drown a complex board). */
 const REVIEWABLE_OPS = new Set(['create_geo', 'create_text', 'connect_shapes', 'move_shape', 'place_region'])
+const DEFERRED_REFERENCE_OPS = new Set(['move_shape', 'place_region', 'update_text', 'delete_shape'])
 
 /** Union two B-pass scopes (the per-batch declaration into the accumulated turn scope). */
 function mergeScope(into: LayoutScope | null, add: LayoutScope): LayoutScope {
@@ -218,6 +233,14 @@ export class Conversation {
    * in the same batch shadows this map (the port resolves those locally). Reset each send.
    */
   private refMap = new Map<string, string>()
+  /** One semantic root plan for a non-trivial diagram, scoped to the current user turn. */
+  private diagramPlan: DiagramPlan | null = null
+  /**
+   * Relations may intentionally be declared before their create refs are materialised in a
+   * later build batch. Keep those symbolic relations for this user turn and activate them as
+   * soon as every referenced shape exists.
+   */
+  private pendingRelations: StructureRelation[] = []
 
   constructor(adapter: LlmAdapter) {
     this.adapter = adapter
@@ -247,6 +270,8 @@ export class Conversation {
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn
+    this.diagramPlan = null
+    this.pendingRelations = []
     // What the user selected at request time — folded into the review set so the model's
     // new work is shown stitched to the diagram it was asked to expand, not in isolation.
     const selection = port.selectionScope()
@@ -307,7 +332,18 @@ export class Conversation {
       }
       this.history.push({ role: 'assistant', content: turn.text, toolCalls: turn.toolCalls })
       if (turn.text) text = turn.text
-      if (turn.toolCalls.length === 0) break
+      if (turn.toolCalls.length === 0) {
+        const missing = this.missingDiagramRefs(port)
+        if (missing.length && i < MAX_ITERATIONS - 1) {
+          this.history.push({
+            role: 'user',
+            content:
+              `FlowM diagram plan is incomplete. Materialize these planned shape refs before finishing: ${missing.join(', ')}`,
+          })
+          continue
+        }
+        break
+      }
       this.emitCommentary(cb, 'build', i, turn.text)
       const applied = await this.processToolCalls(port, turn.toolCalls, { changed, persistScope: true })
       cb.onToolsApplied(`已对画布执行 ${applied}/${turn.toolCalls.length} 个操作`)
@@ -418,37 +454,103 @@ export class Conversation {
     toolCalls: LlmToolCall[],
     opts: { changed?: Set<string>; persistScope: boolean; access?: ToolAccess },
   ): Promise<number> {
-    const { opCalls, declareCalls } = splitTools(toolCalls, opts.access)
+    const { opCalls, diagramCalls, declareCalls } = splitTools(toolCalls, opts.access)
+    const planErrors = this.compileDiagramPlan(diagramCalls)
+    const createErrors = this.validatePlannedCreates(opCalls, declareCalls.length > 0)
+    const blockingErrors = [...planErrors, ...createErrors]
+    if (blockingErrors.length) {
+      const reason = `diagram plan rejected: ${blockingErrors.join('; ')}`
+      for (const call of opCalls) {
+        this.history.push({
+          role: 'tool',
+          toolCallId: call.id,
+          content: call.error ? `error: ${call.error}` : `error: ${reason}`,
+        })
+      }
+      for (const call of declareCalls) {
+        this.history.push({
+          role: 'tool',
+          toolCallId: call.id,
+          content: call.error ? `error: ${call.error}` : `error: ${reason}`,
+        })
+      }
+      return 0
+    }
+    const earlyCalls = opCalls.filter((call) =>
+      call.error || !call.op || !DEFERRED_REFERENCE_OPS.has(call.op.op))
+    const deferredCalls = opCalls.filter((call) =>
+      !!call.op && DEFERRED_REFERENCE_OPS.has(call.op.op))
+
+    // Materialise creates/connects first. This is one logical model batch: the split is an
+    // internal compile step that makes every create ref available to declarations and region
+    // placement without forcing another provider turn.
+    const initialScope = opts.persistScope ? this.turnScope : null
+    let applied = await this.applyOpCalls(port, earlyCalls, initialScope, opts.changed)
+
+    const liveIds = new Set(port.snapshot('all').map((shape) => shape.id))
+    const lookup = (key: string): string | undefined =>
+      this.refMap.get(key) ?? (liveIds.has(key) ? key : undefined)
     const relations: StructureRelation[] = []
+
+    // Activate older declarations whose refs were created by this batch.
+    const stillPending: StructureRelation[] = []
+    for (const relation of this.pendingRelations) {
+      const resolved = resolveStructureRelationReferences(relation, lookup)
+      if (resolved.unresolved.length) stillPending.push(relation)
+      else relations.push(resolved.value)
+    }
+    this.pendingRelations = stillPending
+
     for (const d of declareCalls) {
       if (d.error) {
         this.history.push({ role: 'tool', toolCallId: d.id, content: `error: ${d.error}` })
         continue
       }
       const parsed = parseStructure(d.args ?? {})
-      const denied = opts.access
-        ? parsed.relations.flatMap(relationIds).filter((id) => !opts.access?.editableIds.has(id))
-        : []
-      if (denied.length) {
+      let resolvedCount = 0
+      let pendingCount = 0
+      const denied = new Set<string>()
+      for (const relation of parsed.relations) {
+        const resolved = resolveStructureRelationReferences(relation, lookup)
+        if (resolved.unresolved.length) {
+          this.pendingRelations.push(relation)
+          pendingCount++
+          continue
+        }
+        const forbidden = opts.access
+          ? relationIds(resolved.value).filter((id) => !opts.access?.editableIds.has(id))
+          : []
+        if (forbidden.length) {
+          for (const id of forbidden) denied.add(id)
+          continue
+        }
+        relations.push(resolved.value)
+        resolvedCount++
+      }
+      if (denied.size) {
         this.history.push({
           role: 'tool',
           toolCallId: d.id,
-          content: `error: review cannot declare structure over context-only shapes: ${[...new Set(denied)].join(', ')}`,
+          content: `error: review cannot declare structure over context-only shapes: ${[...denied].join(', ')}`,
         })
         continue
       }
-      relations.push(...parsed.relations)
       this.history.push({
         role: 'tool',
         toolCallId: d.id,
-        content: JSON.stringify({ ok: true, accepted: parsed.relations.length, errors: parsed.errors }),
+        content: JSON.stringify({
+          ok: true,
+          accepted: resolvedCount + pendingCount,
+          resolved: resolvedCount,
+          pending: pendingCount,
+          errors: parsed.errors,
+        }),
       })
     }
+
     const batchScope = relations.length ? resolveScope(relations) : null
-    // Build phase: accumulate into the turn scope (it must outlive a single apply — the
-    // edges that make a declared flow straightenable often arrive a batch later) and apply
-    // it. Review phase: apply ONLY this turn's fresh declaration, never the persisted build
-    // scope, so a manual move_shape fix isn't immediately re-flowed away.
+    // Build phase accumulates real ids for the user turn. Review uses only a declaration
+    // made in that review, so a manual correction cannot be overwritten by the build flow.
     let scope: LayoutScope | null
     if (opts.persistScope) {
       if (batchScope) this.turnScope = mergeScope(this.turnScope, batchScope)
@@ -456,13 +558,102 @@ export class Conversation {
     } else {
       scope = batchScope
     }
-    return await this.applyOpCalls(port, opCalls, scope, opts.changed)
+
+    const resolvedDeferred = deferredCalls.map((call): OpCall => {
+      if (!call.op) return call
+      const resolved = resolveCanvasOpReferences(call.op, lookup)
+      if (resolved.unresolved.length) {
+        return { id: call.id, error: `unresolved shape reference(s): ${resolved.unresolved.join(', ')}` }
+      }
+      const error = opts.access
+        ? operationAccessError(resolved.value, opts.access.editableIds)
+        : undefined
+      return error ? { id: call.id, error } : { id: call.id, op: resolved.value }
+    })
+    applied += await this.applyOpCalls(port, resolvedDeferred, scope, opts.changed)
+    return applied
+  }
+
+  /** Parse the non-drawing root declaration before any shapes in the batch are applied. */
+  private compileDiagramPlan(calls: DeclareCall[]): string[] {
+    const errors: string[] = []
+    for (const call of calls) {
+      if (call.error) {
+        this.history.push({ role: 'tool', toolCallId: call.id, content: `error: ${call.error}` })
+        errors.push(call.error)
+        continue
+      }
+      const parsed = parseDiagramPlan(call.args ?? {})
+      if (!parsed.plan) {
+        const error = parsed.errors.join('; ') || 'invalid diagram plan'
+        this.history.push({ role: 'tool', toolCallId: call.id, content: `error: ${error}` })
+        errors.push(error)
+        continue
+      }
+      if (this.diagramPlan) {
+        const error = 'declare_diagram may be accepted only once per user turn'
+        this.history.push({ role: 'tool', toolCallId: call.id, content: `error: ${error}` })
+        errors.push(error)
+        continue
+      }
+      this.diagramPlan = parsed.plan
+      const counts = diagramPlanCounts(parsed.plan)
+      this.history.push({
+        role: 'tool',
+        toolCallId: call.id,
+        content: JSON.stringify({
+          ok: true,
+          kind: parsed.plan.kind,
+          regions: parsed.plan.regions.length,
+          primary: counts.primary,
+          supporting: counts.supporting,
+        }),
+      })
+    }
+    return errors
+  }
+
+  private missingDiagramRefs(port: CanvasPort): string[] {
+    if (!this.diagramPlan) return []
+    const liveIds = new Set(port.snapshot('all').map((shape) => shape.id))
+    return [...diagramPlanRefs(this.diagramPlan)]
+      .filter((ref) => !this.refMap.has(ref) && !liveIds.has(ref))
+      .sort()
+  }
+
+  /** Enforce that a structured create batch materializes one declared semantic plan. */
+  private validatePlannedCreates(calls: OpCall[], structureDeclared: boolean): string[] {
+    const creates = calls
+      .filter((call) => call.op?.op === 'create_geo')
+      .map((call) => call.op as Extract<CanvasOp, { op: 'create_geo' }>)
+    if (!creates.length) return []
+    if (!this.diagramPlan) {
+      return structureDeclared
+        ? ['a create batch with declare_structure requires one declare_diagram operation in the same or an earlier build batch']
+        : []
+    }
+
+    const planned = diagramPlanRefs(this.diagramPlan)
+    const seen = new Set<string>()
+    const errors: string[] = []
+    for (const create of creates) {
+      if (!create.ref) {
+        errors.push('every planned create_geo operation must have a ref')
+        continue
+      }
+      if (seen.has(create.ref)) errors.push(`duplicate create ref ${create.ref}`)
+      seen.add(create.ref)
+      if (!planned.has(create.ref)) errors.push(`create ref ${create.ref} is not assigned to a diagram region`)
+    }
+    return [...new Set(errors)]
   }
 
   /**
    * Rewrite connect_shapes endpoints that name a ref minted in an EARLIER batch this turn
    * (now a real id in refMap) — the port only resolves refs created in the current batch.
    * A ref created in THIS batch shadows the map (left untouched; the port resolves it).
+   * Other ref-bearing operations are deliberately deferred by processToolCalls and resolved
+   * through the same turn-level registry after this batch's creates are materialised.
    */
   private resolveCrossBatchRefs(ops: CanvasOp[]): CanvasOp[] {
     const localRefs = new Set<string>()
