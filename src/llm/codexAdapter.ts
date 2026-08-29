@@ -3,7 +3,6 @@ import type { LlmMessage, LlmTurn } from './types'
 import type { AgentQuestionAnswer } from '../agent'
 import { writeCodexCanvasGuide, writeDesign } from '../agent/projectFiles'
 import { CodexAppServerClient } from '../agentControl'
-import { FLOWM_CODEX_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
 export class CodexAdapter implements LlmAdapter {
@@ -14,7 +13,8 @@ export class CodexAdapter implements LlmAdapter {
   private clientKey: string | null = null
   private sent = 0
   private turn = 0
-  private guideCwd: string | null = null
+  /** Re-write the project guide whenever either its project or semantic contract changes. */
+  private guideKey: string | null = null
   private guidePath = '.flowm/codex-canvas.md'
 
   constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
@@ -43,9 +43,10 @@ export class CodexAdapter implements LlmAdapter {
     const cwd = this.getCwd().trim()
     if (!cwd) throw new Error('请先打开工程')
 
-    if (this.guideCwd !== cwd) {
-      this.guidePath = await writeCodexCanvasGuide(cwd, FLOWM_CODEX_CANVAS_SYSTEM_PROMPT)
-      this.guideCwd = cwd
+    const guideKey = `${cwd}\0${params.system}`
+    if (this.guideKey !== guideKey) {
+      this.guidePath = await writeCodexCanvasGuide(cwd, params.system)
+      this.guideKey = guideKey
     }
 
     const fresh = params.messages.slice(this.sent)

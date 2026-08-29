@@ -2,7 +2,6 @@ import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { LlmMessage, LlmTurn } from './types'
 import type { AgentQuestionAnswer } from '../agent'
 import { writeClaudeCanvasGuide, writeDesign } from '../agent/projectFiles'
-import { FLOWM_CANVAS_SYSTEM_PROMPT } from './canvasPrompt'
 import { CompatibleClaudeTransport } from './claudeTransport'
 import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 
@@ -37,7 +36,8 @@ export class ClaudeAdapter implements LlmAdapter {
   private sent = 0
   /** Bump per turn so tool-call ids are unique across the within-turn build loop. */
   private turn = 0
-  private guideCwd: string | null = null
+  /** Re-write the project guide whenever either its project or semantic contract changes. */
+  private guideKey: string | null = null
   private guidePath = '.flowm/claude-canvas.md'
   /** Path to the `claude` executable (empty → let the backend resolve `claude` via PATH). */
   private getBin: () => string
@@ -73,9 +73,10 @@ export class ClaudeAdapter implements LlmAdapter {
     const cwd = this.getCwd().trim()
     if (!cwd) throw new Error('请先填写工程目录')
 
-    if (this.guideCwd !== cwd) {
-      this.guidePath = await writeClaudeCanvasGuide(cwd, FLOWM_CANVAS_SYSTEM_PROMPT)
-      this.guideCwd = cwd
+    const guideKey = `${cwd}\0${params.system}`
+    if (this.guideKey !== guideKey) {
+      this.guidePath = await writeClaudeCanvasGuide(cwd, params.system)
+      this.guideKey = guideKey
     }
 
     // (3) Only what's new since the last runTurn; Claude's session has the rest.

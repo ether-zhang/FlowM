@@ -47,4 +47,14 @@ describe('module dependency direction', () => {
   it('keeps LLM orchestration independent of UI, workspace, and engine implementations', () => {
     expect(forbiddenImports('llm', /^\.\.\/(?:app|canvas|chat|engine|workspace)(?:\/|$)/)).toEqual([])
   })
+
+  it('keeps provider adapters independent of canvas behavior policy', () => {
+    const violations = sourceFiles('llm')
+      .filter(([path]) => /(?:claude|codex)Adapter\.ts$/.test(path))
+      .flatMap(([path, source]) => importsOf(source)
+        .filter((specifier) => specifier === './canvasPrompt')
+        .map((specifier) => `${path} -> ${specifier}`))
+
+    expect(violations).toEqual([])
+  })
 })
