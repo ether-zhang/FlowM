@@ -32,6 +32,7 @@ export async function claudeRun(
   resume?: string,
   disallowedTools?: string[],
   appendSystemPrompt?: string,
+  model?: string,
 ): Promise<void> {
   const channel = new Channel<ClaudeEvent>()
   channel.onmessage = onEvent
@@ -48,6 +49,7 @@ export async function claudeRun(
     // reads code directly instead of spawning a costly, stream-perturbing subagent.
     disallowedTools: disallowedTools ?? null,
     appendSystemPrompt: appendSystemPrompt ?? null,
+    model: model?.trim() || null,
     onEvent: channel,
   })
 }

@@ -1,3 +1,9 @@
+export interface AgentModel {
+  id: string
+  label: string
+  isDefault?: boolean
+}
+
 export interface AgentQuestionOption {
   label: string
   description?: string

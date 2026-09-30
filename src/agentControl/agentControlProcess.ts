@@ -7,6 +7,7 @@ export type AgentControlProcessEvent =
 
 export interface ClaudeControlProcessOptions {
   bin?: string
+  model?: string
   cwd: string
   jsonSchema?: unknown
   resume?: string
@@ -57,6 +58,7 @@ export class AgentControlProcess {
     channel.onmessage = onEvent
     const id = await invoke<string>('start_claude_control', {
       bin: options.bin || null,
+      model: options.model || null,
       cwd: options.cwd,
       jsonSchema: options.jsonSchema == null ? null : JSON.stringify(options.jsonSchema),
       resume: options.resume || null,

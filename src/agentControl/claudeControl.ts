@@ -18,6 +18,7 @@ import {
 
 export interface ClaudeControlOptions {
   bin?: string
+  model?: string
   cwd: string
   jsonSchema?: unknown
   initialSessionId?: string
@@ -177,6 +178,7 @@ export class ClaudeControlClient {
     this.startupDiagnostics = []
     this.process = await AgentControlProcess.startClaude({
       bin: this.options.bin,
+      model: this.options.model,
       cwd: this.options.cwd,
       jsonSchema: this.options.jsonSchema,
       resume: this.options.initialSessionId,

@@ -73,6 +73,8 @@ export function useWorkspace(opts: {
   getCwd: () => string
   getBin: () => string
   getCodexBin: () => string
+  getClaudeModel: () => string
+  getCodexModel: () => string
   setFolder: (folder: string) => void
 }): WorkspaceApi {
   const [projectName, setProjectName] = useState<string | null>(null)
@@ -97,8 +99,8 @@ export function useWorkspace(opts: {
       if (!rt[agent]) {
         const adapter =
           agent === 'claude'
-            ? new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null)
-            : new CodexAdapter(opts.getCwd, opts.getCodexBin, sm.codexSessionId ?? null)
+            ? new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null, opts.getClaudeModel)
+            : new CodexAdapter(opts.getCwd, opts.getCodexBin, sm.codexSessionId ?? null, opts.getCodexModel)
         rt[agent] = new Conversation(adapter)
       }
       return rt[agent]

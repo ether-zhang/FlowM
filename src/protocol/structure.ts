@@ -65,14 +65,15 @@ export function parseStructure(input: unknown): ParsedStructure {
 export interface LayoutScope {
   spacing: Set<string>
   overlap: Set<string>
+  /** Preserve grouping, order, direction and containment alongside movement permission. */
+  relations?: StructureRelation[]
 }
 
 /**
  * Turn declared relations into a per-pass id scope. `flow` nodes get even spacing AND
  * de-overlap (a flow shouldn't self-overlap); `nonOverlap` nodes get de-overlap only.
- * The other kinds (align/grid/contain/freeze) have no realiser yet, so they contribute
- * nothing — their nodes simply stay frozen for now. Ids of shapes that don't exist are
- * harmless: `apply` only moves shapes it actually finds in the scene.
+ * align/grid/contain constrain repairs without granting movement. Explicit freeze vetoes
+ * automatic movement even when another relation includes the same node.
  */
 export function resolveScope(relations: StructureRelation[]): LayoutScope {
   const spacing = new Set<string>()
@@ -87,5 +88,12 @@ export function resolveScope(relations: StructureRelation[]): LayoutScope {
       for (const id of r.nodes) overlap.add(id)
     }
   }
-  return { spacing, overlap }
+  for (const r of relations) {
+    if (r.kind !== 'freeze') continue
+    for (const id of r.nodes) {
+      spacing.delete(id)
+      overlap.delete(id)
+    }
+  }
+  return { spacing, overlap, relations: structuredClone(relations) }
 }

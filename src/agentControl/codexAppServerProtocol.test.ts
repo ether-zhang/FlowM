@@ -7,7 +7,24 @@ import {
   codexReasoningText,
   parseCodexQuestion,
   parseCodexServerRequest,
+  parseCodexModelPage,
 } from './codexAppServerProtocol'
+
+describe('Codex native model catalog', () => {
+  it('uses model values rather than catalog record ids and carries pagination', () => {
+    expect(parseCodexModelPage({ data: [
+      { id: 'record-1', model: 'native-model', displayName: 'Native model', isDefault: true },
+      { id: 'custom-local-model' },
+      { model: 'hidden-model', hidden: true },
+      null,
+    ], nextCursor: 'page-2' })).toEqual({
+      models: [
+        { id: 'native-model', label: 'Native model', isDefault: true },
+        { id: 'custom-local-model', label: 'custom-local-model', isDefault: false },
+      ], nextCursor: 'page-2',
+    })
+  })
+})
 
 describe('Codex app-server request_user_input mapping', () => {
   it('maps provider fields into the shared question contract', () => {

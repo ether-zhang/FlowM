@@ -7,6 +7,8 @@ import { PoeAdapter, TauriAdapter, POE_BASE_URL, tauriKey, Conversation, type Ll
 import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
+import { ModelPicker } from './ModelPicker'
+import { useAgentModels } from './useAgentModels'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, ClaudeEngine, CodexEngine, defaultCodexBin, type ChatEngine } from '../engine'
 import { IS_TAURI } from '../runtime'
@@ -19,6 +21,8 @@ const API_URL_STORAGE = 'flowm.apiUrl'
 // Persisted across restarts so heavy iteration doesn't mean re-picking the engine / re-typing the path.
 const BIN_STORAGE = 'flowm.bin'
 const CODEX_BIN_STORAGE = 'flowm.codexBin'
+const CLAUDE_MODEL_STORAGE = 'flowm.claudeModel'
+const CODEX_MODEL_STORAGE = 'flowm.codexModel'
 const ENGINE_STORAGE = 'flowm.engine'
 // Shell pane geometry (files left / chat right), persisted so the layout survives restarts.
 const FILES_W_STORAGE = 'flowm.filesW'
@@ -106,6 +110,13 @@ export function App() {
   const [bin, setBin] = useState(binRef.current)
   const codexBinRef = useRef(localStorage.getItem(CODEX_BIN_STORAGE) ?? '')
   const [codexBin, setCodexBin] = useState(codexBinRef.current)
+  const claudeModelRef = useRef(localStorage.getItem(CLAUDE_MODEL_STORAGE) ?? '')
+  const [claudeModel, setClaudeModel] = useState(claudeModelRef.current)
+  const codexModelRef = useRef(localStorage.getItem(CODEX_MODEL_STORAGE) ?? '')
+  const [codexModel, setCodexModel] = useState(codexModelRef.current)
+  const [agentPathsReady, setAgentPathsReady] = useState(false)
+  const claudeCatalog = useAgentModels('claude', bin, cwd, IS_TAURI && agentPathsReady)
+  const codexCatalog = useAgentModels('codex', codexBin, cwd, IS_TAURI && agentPathsReady)
 
   // Shell pane geometry. Panels are data-driven (side + width + shown) so a future VSCode-style
   // rearrange only changes this state, not the render — the seam is here. Defaults keep the centre
@@ -156,6 +167,8 @@ export function App() {
     getCwd: () => cwdRef.current,
     getBin: () => binRef.current,
     getCodexBin: () => codexBinRef.current,
+    getClaudeModel: () => claudeModelRef.current,
+    getCodexModel: () => codexModelRef.current,
     setFolder,
   })
 
@@ -185,6 +198,17 @@ export function App() {
     return saved && visibleEngines.some((e) => e.id === saved) ? saved : 'canvas'
   })
 
+  const selectClaudeModel = (model: string) => {
+    claudeModelRef.current = model
+    setClaudeModel(model)
+    localStorage.setItem(CLAUDE_MODEL_STORAGE, model)
+  }
+  const selectCodexModel = (model: string) => {
+    codexModelRef.current = model
+    setCodexModel(model)
+    localStorage.setItem(CODEX_MODEL_STORAGE, model)
+  }
+
   // Tauri's adapter keeps the API key in Rust; the browser adapter keeps it in localStorage.
   const ensureConversation = useCallback((key?: string) => {
     const adapter = IS_TAURI
@@ -206,25 +230,24 @@ export function App() {
     })
   }, [ensureConversation])
 
-  // Prefill the `claude` executable path with the backend's platform default (the user can edit it).
+  // Resolve both executable paths before the startup model-catalog probes run.
   useEffect(() => {
     if (!IS_TAURI) return
-    defaultClaudeBin().then((p) => {
-      if (!binRef.current) {
-        binRef.current = p
-        setBin(p)
+    let current = true
+    void Promise.allSettled([defaultClaudeBin(), defaultCodexBin()]).then(([claude, codex]) => {
+      if (!current) return
+      if (claude.status === 'fulfilled' && !binRef.current) {
+        binRef.current = claude.value
+        setBin(claude.value)
       }
-    })
-  }, [])
-  useEffect(() => {
-    if (!IS_TAURI) return
-    defaultCodexBin().then((p) => {
-      if (!codexBinRef.current || (isVsCodeBundledCodex(codexBinRef.current) && p !== codexBinRef.current)) {
-        codexBinRef.current = p
-        setCodexBin(p)
-        localStorage.setItem(CODEX_BIN_STORAGE, p)
+      if (codex.status === 'fulfilled' && (!codexBinRef.current || (isVsCodeBundledCodex(codexBinRef.current) && codex.value !== codexBinRef.current))) {
+        codexBinRef.current = codex.value
+        setCodexBin(codex.value)
+        localStorage.setItem(CODEX_BIN_STORAGE, codex.value)
       }
+      setAgentPathsReady(true)
     })
+    return () => { current = false }
   }, [])
 
   // Mirror `messages` for the workspace's async reads (declared FIRST so it updates before the
@@ -468,6 +491,7 @@ export function App() {
   // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
   const engineConfig =
     (engineId === 'canvas-claude' || engineId === 'canvas-codex') ? (
+      <>
       <PickerBar
         items={ws.sessions}
         activeId={ws.activeSessionId}
@@ -479,6 +503,18 @@ export function App() {
         onDelete={(id, name) => openConfirm(text.workspace.deleteSessionTitle, formatUiText(text.workspace.deleteSessionMessage, { name }), () => ws.deleteSession(id))}
         text={text}
       />
+      <ModelPicker
+        key={engineId}
+        value={engineId === 'canvas-claude' ? claudeModel : codexModel}
+        models={engineId === 'canvas-claude' ? claudeCatalog.models : codexCatalog.models}
+        onChange={engineId === 'canvas-claude' ? selectClaudeModel : selectCodexModel}
+        disabled={busy}
+        loading={engineId === 'canvas-claude' ? claudeCatalog.loading : codexCatalog.loading}
+        error={engineId === 'canvas-claude' ? claudeCatalog.error : codexCatalog.error}
+        onRefresh={engineId === 'canvas-claude' ? claudeCatalog.refresh : codexCatalog.refresh}
+        text={text}
+      />
+      </>
     ) : undefined
   const activeActivityLabel = text.activity.labels[activeActivity]
 

@@ -295,6 +295,17 @@ describe('normalizeSpacing (2 — edge-direction gap rhythm)', () => {
     expect(labeled.x - (a.x + a.w)).toBeGreaterThanOrEqual(200) // edge-to-edge gap >= label width
   })
 
+  it('does not let a small label reduce a compiled per-edge corridor', () => {
+    const a = box('a', 0, 0, 100, 60, false)
+    const b = box('b', 180, 0, 100, 60, true)
+    const moved = normalizeSpacing(
+      [a, b],
+      [{ from: 'a', to: 'b', labelW: 20, labelH: 20, minGap: 160 }],
+      { minGap: 72 },
+    ).get('b')!
+    expect(moved.x - (a.x + a.w)).toBe(160)
+  })
+
   it('defaults the target gap to the model’s own median gap (scale stays the model’s)', () => {
     // model gaps: a->b = 100, b->c = 140 → median 120; the framework evens both to 120.
     const a = node('a', 100, 0, 100, 60) // bottom 60

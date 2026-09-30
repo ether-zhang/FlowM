@@ -193,6 +193,28 @@ directory and is referenced by a short invocation-scoped instruction. Both
 local adapters write the caller-owned `RunTurnParams.system`; neither owns a
 provider-specific canvas behavior prompt.
 
+### Model selection and discovery
+
+The session bar contains a model picker for Claude and Codex. Only the selected
+model ID is persisted, separately for each provider; catalogs are never hard-coded
+or restored from localStorage. At desktop startup, after resolving both executable
+paths, `list_agent_models` queries both configured programs. Executable/project
+changes and the refresh button trigger a new query.
+
+Discovery is a short-lived metadata process, independent of workspace conversations:
+Codex uses initialize + paginated `model/list`; Claude uses the `models` field of
+its control initialize response. It sends no user prompt, starts no Codex thread,
+and writes no FlowM guide/image artifacts. Before a project opens, the process uses
+the user's home directory for configuration discovery. Queries have a timeout and
+their child process is terminated after the response. Unsupported wrappers report
+an unavailable catalog; the user may still enter a model ID explicitly.
+
+The selected Codex model travels in `turn/start.model`. Claude's control and legacy
+CLI paths both receive `--model`; a selection change recreates the transport using
+the latest resume handle. UI labels and translations remain outside those paths.
+Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server#models)
+and [Claude model configuration](https://code.claude.com/docs/en/model-config).
+
 ## 5. Runtime ownership
 
 `useWorkspace` is the owner of project-scoped local canvas-agent runtimes:
@@ -223,12 +245,54 @@ The geometry pipeline is split by responsibility:
 
 - `bindingGeometry.ts`: pure bound-arrow endpoint geometry;
 - `layout.ts`: pure spacing, overlap, port, and route algorithms;
+- `layoutPlan.ts`: compiles measured scene state and `LayoutScope` authorization
+  into a canvas-internal `CompiledLayoutPlan`;
+- `layoutPreservation.ts`: protects existing alignment, order, containment and
+  connector clearance while evaluating proposed node repairs;
+- `layoutTrace.ts`: keeps a bounded local history of materialization and repair stages;
+- `edgeRouting.ts`: deterministic batch-aware corridor routing and label anchors;
 - `layoutPasses.ts`: provider/library-neutral pass orchestration;
 - `excalidrawPort.ts`: Excalidraw-specific data conversion and mutation.
 
 The governing rule is **the model chooses the design; the framework implements
-declared geometric intent**. Invariant arrow geometry always runs. Node-moving
-passes run only inside an explicitly declared structure scope.
+declared geometric intent**. Node-moving passes run only inside an explicitly
+declared structure scope, and a repair may not destroy the original composition.
+
+`LayoutScope` retains both movement permission and the resolved structure declarations.
+Flow order/direction, alignment/grid groups, containment, and explicit freeze survive
+across build batches. Freeze vetoes automatic movement. Materialization runs before
+intent repair, so new declarations are considered before an older scope can move nodes.
+The canvas port measures the live elements and
+compiles a `CompiledLayoutPlan` containing the authorized node subsets, adaptive
+connector corridors, endpoint focus, container pass-through rules, deterministic
+edge order, and label dimensions. A node move invalidates the plan, so routing is
+compiled again from settled geometry rather than from stale pre-layout positions.
+
+Spacing only expands insufficient gaps between consecutive declared flow nodes;
+cross-region dependency edges do not become flow constraints. It no longer compacts
+all gaps to a median or lets a UUID-sorted first parent determine placement. Existing
+rows/columns are preserved through equal translations, and moving a container carries
+its children only when they are also authorized to move. Existing containment is not
+an overlap to eliminate. Recognizing existing geometry adds protection, never permission.
+
+Each proposed movement is checked for permission, original order, containment, new or
+worsened overlaps, and reduced connector clearance. A failing proposal is rejected as
+a whole. Containers are not silently enlarged. Unresolved conflicts are returned to
+Conversation after all tool results have been paired, for explicit model correction.
+This is conservative repair, not a complete constraint solver or an align/grid realizer.
+
+Only new/edited edges, edges with moved endpoints, and routes or labels obstructed by
+changed shapes are reconsidered. Unaffected routes and labels reserve their existing
+space first. Existing clear bends are retained; translating both endpoints translates
+the route. Among affected edges, labeled edges run first. Newly computed routes use the
+checked line segments directly. An invalid fallback cannot silently replace an existing
+route; it retains the prior direction and reports the conflict.
+
+For local diagnosis, `window.__flowmLayout.getTraces()` returns the last eight apply
+batches as detached JSON-safe snapshots: operations, resolved declarations, the scene
+before/materialized/spacing/overlap/routing, candidate node positions, accepted/rejected
+decisions, and diagnostics. `window.__flowmLayout.clear()` clears this memory. Snapshots
+are not uploaded or written to project files; export them manually when retaining a repro.
 
 ## 7. UI and activity
 
@@ -268,5 +332,7 @@ mixed into provider or canvas behavior work.
 - Review is deliberately limited to changed IDs. Moving a larger existing user
   region requires an explicit authorization design rather than widening review
   implicitly.
-- Layout quality and arrow routing still need independent geometry work; they
-  must not be corrected by provider-specific prompt or UI patches.
+- Dense diagrams now use deterministic corridor candidates, but routing remains a
+  bounded greedy batch rather than a complete global graph optimizer. Further
+  quality work belongs in canvas geometry and must not become provider-specific
+  prompt or UI patches.

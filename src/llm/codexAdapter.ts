@@ -8,6 +8,7 @@ import { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract
 export class CodexAdapter implements LlmAdapter {
   private getCwd: () => string
   private getBin: () => string
+  private getModel: () => string
   private initialSession: string | null
   private client: CodexAppServerClient | null = null
   private clientKey: string | null = null
@@ -17,10 +18,11 @@ export class CodexAdapter implements LlmAdapter {
   private guideKey: string | null = null
   private guidePath = '.flowm/codex-canvas.md'
 
-  constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
+  constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null, getModel: () => string = () => '') {
     this.getCwd = getCwd
     this.getBin = getBin
     this.initialSession = initialSession
+    this.getModel = getModel
   }
 
   get sessionId(): string | null {
@@ -50,7 +52,7 @@ export class CodexAdapter implements LlmAdapter {
     }
 
     const fresh = params.messages.slice(this.sent)
-    this.sent = params.messages.length
+    const sentCount = params.messages.length
     const { prompt, image } = await this.composeDelta(fresh, cwd)
     const schema = buildCanvasTurnOutputSchema(params.tools, 'strict')
     const client = await this.ensureClient(cwd)
@@ -58,7 +60,7 @@ export class CodexAdapter implements LlmAdapter {
 
     cb.onDebug?.(
       `▶ 实际发给 Codex · 第 ${this.turn} 轮\n` +
-        `transport: app-server · thread: ${client.threadId ?? this.initialSession ?? '(新会话)'} · output-schema: { reply, operations[] }\n` +
+        `transport: app-server · thread: ${client.threadId ?? this.initialSession ?? '(新会话)'} · model: ${this.getModel().trim() || '(default)'} · output-schema: { reply, operations[] }\n` +
         `system: invocation-scoped guide -> ${this.guidePath}\n` +
         `cwd: ${cwd} · repo policy: read-only · sandbox: platform default · image: ${image ?? '(无)'}\n` +
         `本轮增量：${fresh.length} 条 / ${prompt.length} 字符\n${prompt}`,
@@ -66,6 +68,7 @@ export class CodexAdapter implements LlmAdapter {
 
     const last = await client.runTurn({
       prompt,
+      model: this.getModel().trim(),
       image,
       outputSchema: schema,
       onSystem: cb.onSystem,
@@ -73,7 +76,15 @@ export class CodexAdapter implements LlmAdapter {
       onActivity: cb.onActivity,
     })
     const structured = parseStructured(last)
+    if (!structured || typeof structured !== 'object' || !Array.isArray((structured as { operations?: unknown }).operations)) {
+      throw new Error('Codex returned incomplete or invalid canvas JSON. No operations from this response were applied; please retry.')
+    }
     const result = projectCanvasTurn(structured, { callIdPrefix: `codex-${this.turn}` })
+    if (!result.text.trim() && !result.toolCalls.length && !result.question
+      && (params.phase === 'finalize' || (params.phase === 'build' && !fresh.some((message) => message.role === 'tool')))) {
+      throw new Error('Codex returned no answer or canvas operations. Please retry.')
+    }
+    this.sent = sentCount
 
     if (cb.onDebug) {
       const ops = Array.isArray((structured as { operations?: unknown })?.operations) ? ((structured as { operations: unknown[] }).operations) : []
@@ -84,7 +95,6 @@ export class CodexAdapter implements LlmAdapter {
           (last ?? '(无最终消息)'),
       )
     }
-    if (structured == null) console.warn('[CodexAdapter] no structured output captured - nothing to apply this turn')
     console.info(
       `[CodexAdapter] turn ${this.turn}: sent ${prompt.length} chars / ${fresh.length} msgs · captured ${result.toolCalls.length} ops · session ${client.threadId ?? '(new)'}`,
     )
@@ -95,7 +105,9 @@ export class CodexAdapter implements LlmAdapter {
     const bin = this.getBin().trim()
     const key = `${cwd}\0${bin}`
     if (this.client && this.clientKey === key) return this.client
+    const sessionId = this.sessionId
     if (this.client) await this.client.dispose()
+    this.initialSession = sessionId
     this.client = new CodexAppServerClient({
       cwd,
       bin: bin || undefined,

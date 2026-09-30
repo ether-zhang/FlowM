@@ -47,6 +47,17 @@ Windows、macOS、iPad。
 - [ ] **丰富 Claude Code 思考过程**：当前 control stream 中原生 `thinking` block 可能为空，只能展示 Claude 主动返回的公开工作说明。后续调查 Claude Agent SDK / control protocol 的模型与配置能力，在不伪造推理、不把正文误标为思考的前提下展示更完整的公开 thinking summary。
 - [ ] **思考期间展示正文**：模型工作时按 provider 的真实事件边界及时展示公开 commentary，并与可折叠 thinking、工具调用及最终正文保持明确分层；不能等整轮完成后再移动或猜测文本角色。
 - [ ] **画布布局观感优化**：当前自动摆放间距偏保守、箭头路由容易乱拐。需要调节点间距策略、group margin、arrow routing/label 避让，让图更紧凑但不重叠，优先解决大图空旷和长箭头折返问题。
+  - [x] **框架内部几何计划第一阶段**：保留 `LayoutScope` 作为节点移动授权，新增画布层 `CompiledLayoutPlan`，从最终实测尺寸编译自适应连接走廊、端口 focus、同对边 offset、容器穿越规则及标签优先级；intent pass 移动节点后自动失效并重编译。箭头改为确定性批量候选走廊路由，已放置线路计入交叉代价，标签边先占位，并同步 Excalidraw bound text 锚点。后续仍需基于碰撞诊断评估是否升级为全局 visibility graph/A*，不向模型暴露像素级微调工具。
+
+#### 本地 Agent 模型选择（2026-09-19）
+
+- 模型选择已接入，待用户验证：Claude/Codex 会话栏支持模型下拉与自定义 ID；每次桌面应用启动读取两家本机程序的模型目录，修改路径/工程或手动刷新时重新查询。只保存各家的选择，不保存固定模型列表。查询不发送用户回合、不创建 Codex thread，完成或超时后关闭查询进程。
+
+#### 保留原构图的后处理修正（2026-09-19）
+
+- 已实现，待用户验证效果：完整保留结构声明与冻结约束；仅为声明流程补足过短间距，保留原有行列、顺序和包含关系；移动候选若越权、挤出容器、加剧碰撞或缩短连接净空则拒绝。节点尺寸不自动扩大。
+- 连线只更新受影响部分，尽量保留既有折点和整组平移后的路线；找不到通过检查的路线时反馈冲突。
+- 通过 `window.__flowmLayout.getTraces()` 可读取最近 8 批操作及各阶段快照、候选位置和拒绝原因。已补对应回归用例；本轮后续测试、构建及真实图形效果验证由用户进行。
 
 #### Agent / 画布链路收敛（2026-08-23）
 
@@ -94,8 +105,8 @@ Windows、macOS、iPad。
     - 布局优化
         - [ ] 未绑定箭头的处理，也许与上两条相互兼容
         - [x] 多输入/输出端点端口分配 + 轻度弯曲：shape 挂多条进/出箭头时全瞄中心 → 挤在同一边界点；改为按对方方位把各边分到周边**不同端口**（focus≠0 求解器 `solveEndpoint`/`determineFocusPoint` 已支持，**写入侧已接** `assignPortFocus`），重合/返回边轻弯错开（`assignParallelOffsets`），label 随各自边走。介于"中心瞄准+单弓"与正交寻路之间；**不做 B 版**（elbow/全局寻路太深）。本质是"否，继续生成"那类标签贴节点问题的根治
-            - [x] 同对/反向边分离：`assignParallelOffsets`（按**无序端点对**分组、按规范方向定号使**反向边落两侧**而非同侧）+ `routeBoundArrow` 的 `offset` 在中点垂直起弓（端点对弓点重解、不动点照旧）；port 每批预算各箭头偏移传入 `updateArrow`。治了 `boundary↔buffer` 那种双向箭头+标签重叠（"拼接否截断ken"乱码）。单测 3 例
-            - [x] 多端口分配：一个 shape 上**多条不同对**的出/入边按方位分端口 —— 纯函数 `assignPortFocus`（`layout.ts`）：每个 shape 把入射箭头端按出口**侧**（右/下/左/上，按对方方位 90° 扇区）分桶，**≥2 条挤同一侧**才给各端均匀分配小 `focus`（绕 0 对称、按沿边偏角排序使扇形不交叉），独占一侧仍 focus 0（落边中点、轮廓数学最准）；**同对/反向边跳过**（交给 `assignParallelOffsets`，二者不抢同一批箭头）。写入侧已接：`reflowArrow`/`routeBoundArrow` 都吃 `PortFocus`，端点用该 focus 求解、binding 也写同值（不动点不破，nudge 不跳）；新增一条边会触发同侧旧边一起重扇（centre 查找跨全场景 + `arrowsToUpdate` 纳入带非零 focus 的箭头）。**绕障边不算拥挤**：`bowedEdges`（直线中心连线穿第三个框 → 会被 `routeBoundArrow` 弓开、自行分离）从分桶中剔除，否则一条折回的回边会把同侧本该竖直的前向边掰斜（实测 bug）。单测 5 例（独占→0、三条挤一侧落点互异、同对→0、skip 回边不掰斜、bowedEdges 命中/放行）
+            - [x] 同对/反向边分离：`assignParallelOffsets`（按**无序端点对**分组、按规范方向定号使**反向边落两侧**而非同侧）计算 offset；现由 `layoutPlan.ts` 编译进批量 edge plan，再交给 `edgeRouting.ts` 选择分离走廊。治了 `boundary↔buffer` 那种双向箭头+标签重叠（"拼接否截断ken"乱码）。
+            - [x] 多端口分配：一个 shape 上**多条不同对**的出/入边按方位分端口 —— 纯函数 `assignPortFocus`（`layout.ts`）：每个 shape 把入射箭头端按出口**侧**（右/下/左/上，按对方方位 90° 扇区）分桶，**≥2 条挤同一侧**才给各端均匀分配小 `focus`（绕 0 对称、按沿边偏角排序使扇形不交叉），独占一侧仍 focus 0；**同对/反向边跳过**（交给 `assignParallelOffsets`）。`CompiledLayoutPlan` 在节点最终位置上统一重算 focus/offset，再由批量路由写入 endpoint binding；绕障边经 `bowedEdges` 从同侧拥挤预算中剔除，避免回边把正常主链掰斜。
             - [ ] **仍待**：`focus` step/max 暂定值（0.3/0.6）、未按边数/label 自适应；`offset` 暂定值 48、未按 label 尺寸自适应；offset 路径暂未叠加绕障；diamond/ellipse 侧分桶用 bbox 方位近似
         ~~- [ ] 箭头端点几何自算（edgePoint + computeBoundArrow），也许可以用shape自带初始指明端点优化~~
         - [ ] 提高模型操作画布的精准度，脚本修改大模型返回的xywh，**一个自动避障与优化排布的脚本也许才是这个模块的核心**?
@@ -108,7 +119,7 @@ Windows、macOS、iPad。
                 - **本期修订**：「撑盒围中心生长（只增不减）」已废——它会把模型精确拼好的紧密格子（CUDA SM 表头）撑破列界、互相重叠。改为 **尺寸=模型 intent（`w/h` 可选、给了就冻结）+ `fitFontSize` 缩字号塞进框**（见上「结构化精修门控」）。`labelBoxSize` 仅在模型未给尺寸时供默认框、及作 `fitFontSize` 的内核
             - **原则（已定）：模型与框架分工，框架不捂住模型** —— ①**模型层**始终据「序列化文本 + 图片」给出*它认为合理*的坐标与大小（不偷懒、不被回收）；②**框架层**只在其输出**之上**调优（消重叠/匀节律/绕障/贴标签）。**尺度、方向、原点、拓扑、尺寸下限都归模型**，框架只做一致化与正确性兜底，**不做收走全部坐标的布局引擎**（过激，已否决）。守则：系统提示词永远要模型好好排版（决不"反正脚本会修"）；改善排版优先走**杠杆1（标注图增强模型感知）**而非下游硬补
                 - **一句话总纲（已校准）：模型给设计，框架给实现**——宏观（存在什么/大致位置/整体排布/尺度/方向/**尺寸**）信模型、默认冻结；微观才靠框架，且分两类：**不变式几何**（端点/路由，唯一正确解）框架恒算，**意图一致性**（匀缝/对齐/消重叠/字号）框架按声明 scope 兑现。**「算而不信」收窄**：它仅对不变式几何字面成立（出生于箭头端点），**不是整体布局的总纲**；布局是"宏观信模型设计、微观按声明兑现"，而**尺寸本期已改为 intent（信模型）**，不再属于"不信"之列
-            - **后处理架构**：已抽象为可插拔 `LayoutPass` 管线（`layoutPasses.ts`）——pass 只对抽象 `PassContext` 编排，**库无关、可 headless 单测**（顺序/行为都测）；port 提供 Excalidraw 实现（boxes/edges/applyMoves/arrowsToUpdate/updateArrow）。**新增后处理（如上色）只实现 `LayoutPass` 接口并入 `DEFAULT_PASSES`，不动编排**。算法纯函数在 `layout.ts`，编排在 `layoutPasses.ts`，库胶水在 port——三层解耦
+            - **后处理架构**：已抽象为可插拔 `LayoutPass` 管线（`layoutPasses.ts`）——pass 只消费画布层 `CompiledLayoutPlan` 并通过抽象 `PassContext` 调用 `applyMoves/routeArrows`，**库无关、可 headless 单测**；port 负责测量 Excalidraw 场景、计划缓存失效与最终元素写入。算法纯函数在 `layout.ts`/`edgeRouting.ts`，计划编译在 `layoutPlan.ts`，编排在 `layoutPasses.ts`，库胶水在 port，新增后处理不需要改协议或 provider。
 
 - step模式与项目开发能力
    - [ ] step模式，需要结合项目功能5，是先打通功能，再接agent?

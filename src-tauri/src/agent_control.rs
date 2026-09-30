@@ -8,7 +8,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -23,9 +23,14 @@ enum ProcessCommand {
     Stop,
 }
 
+struct ControlProcess {
+    commands: mpsc::UnboundedSender<ProcessCommand>,
+    stop: oneshot::Sender<()>,
+}
+
 #[derive(Clone, Default)]
 pub struct AgentControlProcesses {
-    processes: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<ProcessCommand>>>>,
+    processes: Arc<Mutex<HashMap<String, ControlProcess>>>,
 }
 
 #[derive(Serialize)]
@@ -50,6 +55,7 @@ async fn spawn_control_process(
     on_event: Channel<AgentControlEvent>,
 ) -> Result<String, String> {
     let mut child = command
+        .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -61,11 +67,12 @@ async fn spawn_control_process(
     let stderr = child.stderr.take().ok_or("agent process has no stderr")?;
     let id = process_id(prefix)?;
     let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let (stop_tx, stop_rx) = oneshot::channel();
     processes
         .processes
         .lock()
         .await
-        .insert(id.clone(), command_tx);
+        .insert(id.clone(), ControlProcess { commands: command_tx, stop: stop_tx });
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let stdout_tx = event_tx.clone();
@@ -114,7 +121,14 @@ async fn spawn_control_process(
 
     let cleanup_id = id.clone();
     tokio::spawn(async move {
-        let status = child.wait().await.ok();
+        // Stop must interrupt generation even if stdin is blocked or EOF is ignored.
+        let status = tokio::select! {
+            status = child.wait() => status.ok(),
+            _ = stop_rx => {
+                let _ = child.kill().await;
+                child.wait().await.ok()
+            }
+        };
         let _ = stdout_task.await;
         let _ = stderr_task.await;
         let _ = event_tx.send(AgentControlEvent::Exit {
@@ -137,7 +151,8 @@ pub async fn start_codex_app_server(
     processes: State<'_, AgentControlProcesses>,
 ) -> Result<CodexAppServerStart, String> {
     let mut command = Command::new(bin.unwrap_or_else(|| "codex".to_string()));
-    command.arg("app-server").arg("--stdio").current_dir(cwd);
+    // app-server uses stdio by default, matching the metadata discovery connection.
+    command.arg("app-server").current_dir(cwd);
     let process_id =
         spawn_control_process(command, "codex", processes.inner().clone(), on_event).await?;
     Ok(CodexAppServerStart {
@@ -150,6 +165,7 @@ pub async fn start_codex_app_server(
 #[allow(clippy::too_many_arguments)]
 pub async fn start_claude_control(
     bin: Option<String>,
+    model: Option<String>,
     cwd: String,
     json_schema: Option<String>,
     resume: Option<String>,
@@ -172,6 +188,9 @@ pub async fn start_claude_control(
         .env_remove("CLAUDECODE")
         .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
         .current_dir(cwd);
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        command.arg("--model").arg(model.trim());
+    }
     if let Some(schema) = json_schema.filter(|s| !s.trim().is_empty()) {
         command.arg("--json-schema").arg(schema);
     }
@@ -198,7 +217,7 @@ pub async fn write_agent_control(
         .lock()
         .await
         .get(&process_id)
-        .cloned()
+        .map(|process| process.commands.clone())
         .ok_or_else(|| format!("agent control process not found: {process_id}"))?;
     sender
         .send(ProcessCommand::Write(line))
@@ -210,8 +229,9 @@ pub async fn stop_agent_control(
     process_id: String,
     processes: State<'_, AgentControlProcesses>,
 ) -> Result<(), String> {
-    if let Some(sender) = processes.processes.lock().await.remove(&process_id) {
-        let _ = sender.send(ProcessCommand::Stop);
+    if let Some(process) = processes.processes.lock().await.remove(&process_id) {
+        let _ = process.stop.send(());
+        let _ = process.commands.send(ProcessCommand::Stop);
     }
     Ok(())
 }

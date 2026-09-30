@@ -12,10 +12,14 @@ import type {
 } from '@excalidraw/excalidraw/element/types'
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform'
 import { clusterDrawRegions, type CanvasPort, type CanvasShape, type CanvasOp, type OpResult, type LayoutScope } from '../protocol'
-import { solveArrowEndpoints } from './bindingGeometry'
-import { findVacantRect, routeBoundArrow, labelBoxSize, fitFontSize, assignParallelOffsets, assignPortFocus, bowedEdges, type LayoutBox, type SpacingEdge, type PairedEdge, type PortFocus } from './layout'
+import { solveArrowEndpoints, solveEndpoint } from './bindingGeometry'
+import { findVacantRect, labelBoxSize, fitFontSize, type LayoutBox, type PortFocus } from './layout'
 import { runPasses, INVARIANT_PASSES, INTENT_PASSES, type PassContext } from './layoutPasses'
 import { autoLayout, type AutoEdge } from './autoLayout'
+import { arrowLabelTopLeft, routeNeedsUpdate, routePlannedArrow, routeSegments, type RoutedSegment } from './edgeRouting'
+import { compileLayoutPlan, type LayoutEdgeSnapshot, type LayoutNodeSnapshot, type PlannedRouteEdge } from './layoutPlan'
+import { protectLayoutMoves, remainingLayoutConflicts, type LayoutPreservation } from './layoutPreservation'
+import { recordLayoutTrace, type LayoutTrace, type LayoutTraceStage } from './layoutTrace'
 
 /** Map an Excalidraw element type to the protocol's CanvasShape.type. */
 function shapeType(el: ExcalidrawElement): CanvasShape['type'] {
@@ -205,6 +209,15 @@ function withBoundArrow(el: ExcalidrawElement, arrowId: string): ExcalidrawEleme
 const GAP = 8
 type Pt = { x: number; y: number }
 
+function arrowDimensions(points: ExcalidrawArrowElement['points']): { width: number; height: number } {
+  const xs = points.map((point) => point[0])
+  const ys = points.map((point) => point[1])
+  return {
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
+  }
+}
+
 /**
  * Re-origin a linear element so points[0] = [0,0] (shifting the offset into x/y).
  * The converter re-origins arrows with negative extent (pointing up/left) to their
@@ -319,13 +332,15 @@ function reflowArrow(
     curStart: startEl ? center(startEl) : startFree,
     curEnd: endEl ? center(endEl) : endFree,
   })
+  const points = [
+    [0, 0],
+    [end.x - start.x, end.y - start.y],
+  ] as ExcalidrawArrowElement['points']
   return newElementWith(a, {
     x: start.x,
     y: start.y,
-    points: [
-      [0, 0],
-      [end.x - start.x, end.y - start.y],
-    ] as ExcalidrawArrowElement['points'],
+    points,
+    ...arrowDimensions(points),
     // Write the bindings to match the focus we just solved with, so the native
     // pipeline reproduces this geometry instead of snapping back to a stored focus.
     ...(a.startBinding ? { startBinding: { ...a.startBinding, focus: focus.start, gap: GAP } } : {}),
@@ -333,19 +348,54 @@ function reflowArrow(
   })
 }
 
-/**
- * After endpoints settle, bow a bound arrow with a single bend point when its
- * straight segment would cut through a third shape; otherwise keep it straight
- * (and undo any earlier bow). Obstacles are every box-like shape except the
- * arrow's own two endpoints. Same stance as reflowArrow — model ops own
- * bound-arrow geometry. Routing math lives in layout.ts (pure, unit-tested).
- */
+/** Keep an existing route's bends; moving a whole region translates its internal routes. */
+function reanchorArrow(
+  arrow: ExcalidrawArrowElement,
+  current: Map<string, ExcalidrawElement>,
+  previous: Map<string, ExcalidrawElement>,
+): ExcalidrawArrowElement {
+  const startShape = arrow.startBinding && current.get(arrow.startBinding.elementId)
+  const endShape = arrow.endBinding && current.get(arrow.endBinding.elementId)
+  const delta = (shape: ExcalidrawElement | null | undefined): Pt => {
+    const old = shape && previous.get(shape.id)
+    return shape && old ? { x: shape.x - old.x, y: shape.y - old.y } : { x: 0, y: 0 }
+  }
+  const startDelta = delta(startShape)
+  const endDelta = delta(endShape)
+  if (startDelta.x === endDelta.x && startDelta.y === endDelta.y) {
+    return startDelta.x || startDelta.y
+      ? newElementWith(arrow, { x: arrow.x + startDelta.x, y: arrow.y + startDelta.y })
+      : arrow
+  }
+  const points = absoluteArrowPoints(arrow)
+  if (points.length === 2) {
+    const endpoints = solveArrowEndpoints({
+      start: startShape && arrow.startBinding ? { shape: startShape, focus: arrow.startBinding.focus, gap: arrow.startBinding.gap } : undefined,
+      end: endShape && arrow.endBinding ? { shape: endShape, focus: arrow.endBinding.focus, gap: arrow.endBinding.gap } : undefined,
+      curStart: points[0],
+      curEnd: points[1],
+    })
+    points[0] = endpoints.start
+    points[1] = endpoints.end
+  } else {
+    if (startShape && arrow.startBinding) points[0] = solveEndpoint(startShape, arrow.startBinding.focus, arrow.startBinding.gap, points[1])
+    if (endShape && arrow.endBinding) points[points.length - 1] = solveEndpoint(endShape, arrow.endBinding.focus, arrow.endBinding.gap, points[points.length - 2])
+  }
+  const origin = points[0]
+  const relative = points.map((point) => [point.x - origin.x, point.y - origin.y]) as ExcalidrawArrowElement['points']
+  return newElementWith(arrow, { x: origin.x, y: origin.y, points: relative, ...arrowDimensions(relative) })
+}
+
+/** Adapt one compiled route to Excalidraw points; routing math remains pure. */
 function routeArrowElement(
   a: ExcalidrawArrowElement,
   lookup: Map<string, ExcalidrawElement>,
-  offset = 0,
-  focus: PortFocus = { start: 0, end: 0 },
-): ExcalidrawElement {
+  edge: PlannedRouteEdge,
+  occupied: readonly RoutedSegment[],
+  reservedLabels: readonly LayoutBox[],
+  preserve: boolean,
+  warnings: string[],
+): ExcalidrawArrowElement {
   const startEl = a.startBinding ? lookup.get(a.startBinding.elementId) : undefined
   const endEl = a.endBinding ? lookup.get(a.endBinding.elementId) : undefined
   if (!startEl && !endEl) return a
@@ -353,46 +403,79 @@ function routeArrowElement(
   const start = { x: a.x, y: a.y }
   const end = { x: a.x + last[0], y: a.y + last[1] }
 
-  const obstacles: LayoutBox[] = []
+  const obstacles: LayoutBox[] = [...reservedLabels]
+  const labelObstacles: LayoutBox[] = [...reservedLabels]
+  const transparent = new Set(edge.transparentObstacleIds)
   for (const el of lookup.values()) {
     if (el.type === 'arrow') continue
-    if (isText(el) && el.containerId) continue // bound labels move with their container
-    if (el.id === startEl?.id || el.id === endEl?.id) continue
-    obstacles.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false })
+    if (isText(el) && el.containerId) continue
+    const box = { id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false }
+    if (transparent.has(el.id)) {
+      const border = 4
+      labelObstacles.push(
+        { ...box, id: `${box.id}:top`, h: border },
+        { ...box, id: `${box.id}:bottom`, y: box.y + box.h - border, h: border },
+        { ...box, id: `${box.id}:left`, w: border },
+        { ...box, id: `${box.id}:right`, x: box.x + box.w - border, w: border },
+      )
+    } else {
+      obstacles.push(box)
+      labelObstacles.push(box)
+    }
   }
 
-  const r = routeBoundArrow({ startShape: startEl, endShape: endEl, start, end, obstacles, gap: GAP, offset, startFocus: focus.start, endFocus: focus.end })
-  if (!r.mid) {
-    if (a.points.length === 2) return a // already straight
-    return newElementWith(a, {
-      x: r.start.x,
-      y: r.start.y,
-      points: [
-        [0, 0],
-        [r.end.x - r.start.x, r.end.y - r.start.y],
-      ] as ExcalidrawArrowElement['points'],
-      roundness: null,
-    })
-  }
+  const route = routePlannedArrow({
+    startId: startEl?.id,
+    endId: endEl?.id,
+    startShape: startEl,
+    endShape: endEl,
+    start,
+    end,
+    obstacles,
+    labelObstacles,
+    occupied,
+    label: edge.label,
+    gap: GAP,
+    offset: edge.offset,
+    focus: preserve ? { start: a.startBinding?.focus ?? 0, end: a.endBinding?.focus ?? 0 } : edge.focus,
+    preferredPoints: preserve ? absoluteArrowPoints(a) : undefined,
+  })
+  warnings.push(...route.warnings.map((warning) => `${edge.id}: ${warning}`))
+  const origin = route.points[0]
+  const points = route.points.map((point) => [point.x - origin.x, point.y - origin.y]) as ExcalidrawArrowElement['points']
   return newElementWith(a, {
-    x: r.start.x,
-    y: r.start.y,
-    points: [
-      [0, 0],
-      [r.mid.x - r.start.x, r.mid.y - r.start.y],
-      [r.end.x - r.start.x, r.end.y - r.start.y],
-    ] as ExcalidrawArrowElement['points'],
-    roundness: { type: 2 }, // proportional radius → smooth curve through the bend
+    x: origin.x,
+    y: origin.y,
+    points,
+    ...arrowDimensions(points),
+    // New routes use the checked line segments exactly; preserve existing visual treatment.
+    roundness: preserve && JSON.stringify(points) === JSON.stringify(a.points) ? a.roundness : null,
   })
 }
 
+/** Absolute points are required both for shared route occupancy and bound text. */
+function absoluteArrowPoints(arrow: ExcalidrawArrowElement): Pt[] {
+  return arrow.points.map((point) => ({ x: arrow.x + point[0], y: arrow.y + point[1] }))
+}
+
+/** Keep Excalidraw's bound text element aligned with the route written above. */
+function syncArrowLabel(
+  arrow: ExcalidrawArrowElement,
+  edge: PlannedRouteEdge,
+  lookup: Map<string, ExcalidrawElement>,
+): LayoutBox | null {
+  if (!edge.label) return null
+  const label = lookup.get(edge.label.id)
+  if (!label || !isText(label)) return null
+  const pos = arrowLabelTopLeft(absoluteArrowPoints(arrow), label.width, label.height)
+  const next = newElementWith(label, { x: pos.x, y: pos.y })
+  lookup.set(next.id, next)
+  return { id: next.id, x: next.x, y: next.y, w: next.width, h: next.height, movable: false }
+}
+
 /**
- * Positions for create ops the model left WITHOUT coordinates — it's trusting the framework to
- * lay them out from their connections (flowchart / structured nodes). Returns op-index → top-left;
- * coordinate-ful ops are absent (kept exactly as the model placed them — free-form / edits). Sizes
- * use the same label fit as create_geo below, so the layout's gaps match the rendered boxes; the
- * pure layered math lives in autoLayout.ts. Origin is just right of existing box content (or a
- * default on an empty canvas) so a fresh diagram starts near the top-left and edits don't overlap.
+ * Positions for coordinate-less create ops. Coordinate-ful operations keep the
+ * model's macro placement; pure layered placement lives in autoLayout.ts.
  */
 function autoPlaceMissing(ops: CanvasOp[], existing: ExcalidrawElement[]): Map<number, { x: number; y: number }> {
   const auto: { i: number; key: string; ref?: string; w: number; h: number }[] = []
@@ -455,7 +538,9 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
   // Warm the canvas fonts so the first labeled shape is measured with the real font
   // (not a fallback) and never renders clipped until clicked. See ensureCanvasFonts.
   ensureCanvasFonts()
+  let lastDiagnostics: string[] = []
   return {
+    layoutDiagnostics: () => [...lastDiagnostics],
     selectionScope() {
       const all = getNonDeletedElements(api.getSceneElements())
       return selectionRegion(all, api.getAppState().selectedElementIds)
@@ -502,8 +587,17 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
     },
 
     async apply(ops: CanvasOp[], scope: LayoutScope | null = null): Promise<OpResult[]> {
+      lastDiagnostics = []
       const byId = new Map<string, ExcalidrawElement>()
       for (const el of getNonDeletedElements(api.getSceneElements())) byId.set(el.id, el)
+      const previous = new Map(byId)
+      const trace: LayoutTrace = { operations: ops, relations: scope?.relations ?? [], stages: [], diagnostics: [] }
+      const snapshotStage = (
+        name: LayoutTraceStage['name'],
+        elements: Map<string, ExcalidrawElement>,
+        details: Partial<Pick<LayoutTraceStage, 'candidate' | 'accepted' | 'issues'>> = {},
+      ) => trace.stages.push(structuredClone({ name, elements: [...elements.values()], accepted: true, issues: [], ...details }))
+      snapshotStage('before', byId)
 
       // Place any create ops the model left coordinate-less (it's trusting the framework to lay
       // them out from their connections); coordinate-ful ops keep the model's exact placement.
@@ -514,6 +608,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       const skeleton: ExcalidrawElementSkeleton[] = []
       const connects: { id: string; from: string; to: string; text?: string }[] = []
       const movedIds = new Set<string>() // shapes moved this batch → reflow their bound arrows
+      const editedArrowIds = new Set<string>()
       const results: OpResult[] = new Array(ops.length)
 
       // Resolve an op's id/ref to a real element id (existing scene shape or a
@@ -643,6 +738,8 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
               break
             }
             const text = decodeText(op.text)
+            if (el.type === 'arrow') editedArrowIds.add(el.id)
+            if (isText(el) && el.containerId && byId.get(el.containerId)?.type === 'arrow') editedArrowIds.add(el.containerId)
             if (isText(el)) {
               byId.set(el.id, newElementWith(el, { text, originalText: text }))
             } else {
@@ -707,9 +804,7 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
       // Create each arrow now that all endpoint shapes exist in `combined`. When
       // both ends are bindable shapes, bind them (the converter computes correct
       // focus/gap); otherwise draw a plain arrow.
-      const createdArrowIds = new Set<string>()
       for (const { id, from, to, text } of connects) {
-        createdArrowIds.add(id)
         const a = combined.get(from)
         const b = combined.get(to)
         if (a && b && BINDABLE.has(a.type) && BINDABLE.has(b.type)) {
@@ -721,118 +816,124 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         }
       }
 
-      // updateScene bypasses Excalidraw's binding/layout pipeline, so when this batch
-      // touched any geometry we run our own post-process pipeline (layoutPasses.ts):
-      // even spacing on fresh diagrams → clean leftover overlaps → reflow/route arrows.
-      // The passes and their order are library-agnostic; the port just supplies the
-      // Excalidraw-aware PassContext below. New post-process steps (e.g. colouring) join
-      // as another LayoutPass without touching this orchestration.
-      if (movedIds.size > 0 || createdIds.size > 0 || createdArrowIds.size > 0 || scope) {
+      snapshotStage('materialized', combined)
+
+      // updateScene bypasses Excalidraw's binding/layout pipeline. Recompile after every
+      // applied batch so text edits and deleted obstacles cannot leave stale edge geometry.
+      if (ops.length > 0 || scope) {
         // Shapes created/moved this batch may be repositioned; with a structure scope the
         // declared nodes may move too (the model authorised laying them out), even if they
         // were created on an earlier turn. Everything else stays pinned.
         const movable = new Set<string>([...createdIds, ...movedIds])
         if (scope) for (const id of [...scope.spacing, ...scope.overlap]) movable.add(id)
-        const displaced = new Set<string>(movedIds)
-        // Spread arrows that share an endpoint pair (parallel/antiparallel) so they and
-        // their labels don't overlap. Bindings don't move, so compute this once.
-        const boundEdges: PairedEdge[] = []
-        for (const el of combined.values()) {
-          if (el.type !== 'arrow') continue
-          const ar = el as ExcalidrawArrowElement
-          if (ar.startBinding && ar.endBinding) boundEdges.push({ id: ar.id, from: ar.startBinding.elementId, to: ar.endBinding.elementId })
+        // The compiler measures the live scene. Any node move invalidates its cached
+        // plan, so endpoint focus and obstacle lanes are derived only after nodes settle.
+        let planCache: ReturnType<typeof compileLayoutPlan> | null = null
+        const compileCurrentPlan = (preservation?: LayoutPreservation): ReturnType<typeof compileLayoutPlan> => {
+          const nodes: LayoutNodeSnapshot[] = []
+          const labels = new Map<string, { id: string; w: number; h: number }>()
+          for (const el of combined.values()) {
+            if (isText(el) && el.containerId) {
+              labels.set(el.containerId, { id: el.id, w: el.width, h: el.height })
+              continue
+            }
+            if (el.type === 'arrow') continue
+            nodes.push({
+              id: el.id,
+              x: el.x,
+              y: el.y,
+              w: el.width,
+              h: el.height,
+              movable: movable.has(el.id),
+              containerCandidate: el.type === 'rectangle' || el.type === 'frame',
+              alignable: BINDABLE.has(el.type) || el.type === 'text' || el.type === 'frame',
+            })
+          }
+          const edges: LayoutEdgeSnapshot[] = []
+          for (const el of combined.values()) {
+            if (el.type !== 'arrow') continue
+            const arrow = el as ExcalidrawArrowElement
+            if (!arrow.startBinding || !arrow.endBinding) continue
+            edges.push({
+              id: arrow.id,
+              from: arrow.startBinding.elementId,
+              to: arrow.endBinding.elementId,
+              label: labels.get(arrow.id),
+            })
+          }
+          return compileLayoutPlan({
+            nodes,
+            edges,
+            authorization: scope,
+            createdCount: createdIds.size,
+            preservation,
+          })
         }
-        const arrowOffsets = assignParallelOffsets(boundEdges)
-        // Fan apart arrows that crowd one side of a shape (different pairs sharing a
-        // node) by assigning each end a small binding focus. Centre lookup spans the
-        // whole scene so a new arrow re-fans the side's pre-existing arrows too. Edges
-        // that will be bowed around an obstacle separate on their own, so exclude them
-        // (else a back-edge looping past a node would slant that node's clean edges).
-        const portBoxes: LayoutBox[] = []
-        for (const el of combined.values()) {
-          if (el.type === 'arrow') continue
-          if (isText(el) && el.containerId) continue
-          portBoxes.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: false })
-        }
-        const skip = bowedEdges(boundEdges, portBoxes)
-        const portFocus = assignPortFocus(
-          boundEdges,
-          (id) => {
-            const el = combined.get(id)
-            return el ? center(el) : undefined
-          },
-          { skip },
-        )
+        planCache = compileCurrentPlan()
+        const preservation = planCache.preservation
+        const routeWarnings: string[] = []
+
         const ctx: PassContext = {
-          createdCount: createdIds.size,
-          // Boxes (geo + standalone text); bound labels follow their container.
-          boxes: () => {
-            const out: LayoutBox[] = []
-            for (const el of combined.values()) {
-              if (el.type === 'arrow') continue
-              if (isText(el) && el.containerId) continue
-              out.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, movable: movable.has(el.id) })
-            }
-            return out
-          },
-          // Bound-arrow connections + label sizes (labeled diagonal edges get a wider gap).
-          edges: () => {
-            const labelByArrow = new Map<string, { w: number; h: number }>()
-            for (const el of combined.values()) {
-              if (isText(el) && el.containerId) labelByArrow.set(el.containerId, { w: el.width, h: el.height })
-            }
-            const out: SpacingEdge[] = []
-            for (const el of combined.values()) {
-              if (el.type !== 'arrow') continue
-              const a = el as ExcalidrawArrowElement
-              if (!a.startBinding || !a.endBinding) continue
-              const lbl = labelByArrow.get(a.id)
-              out.push({ from: a.startBinding.elementId, to: a.endBinding.elementId, labelW: lbl?.w, labelH: lbl?.h })
-            }
-            return out
-          },
-          // The gate's structure scope limits which nodes the B passes may move; null
-          // (no declarations) keeps them global, i.e. today's behaviour.
-          structure: () => scope,
-          applyMoves: (moves) => {
-            for (const [id, p] of moves) {
+          plan: () => (planCache ??= compileCurrentPlan(preservation)),
+          applyMoves: (moves, stage) => {
+            const plan = ctx.plan()
+            const allowed = stage === 'spacing' ? scope?.spacing : scope?.overlap
+            const nodes = plan.nodes.map((node) => ({ ...node, movable: allowed?.has(node.id) ?? false }))
+            const guarded = moves.size
+              ? protectLayoutMoves(nodes, moves, plan.preservation, plan.intent.spacing.edges)
+              : { moves, candidate: nodes, issues: [] }
+            let changed = false
+            for (const [id, p] of guarded.moves) {
               const el = combined.get(id)
-              if (!el) continue
+              if (!el || (p.x === el.x && p.y === el.y)) continue
               const dx = p.x - el.x
               const dy = p.y - el.y
               combined.set(id, newElementWith(el, { x: p.x, y: p.y }))
-              for (const t of combined.values()) {
-                if (isText(t) && t.containerId === id) combined.set(t.id, newElementWith(t, { x: t.x + dx, y: t.y + dy }))
+              for (const text of combined.values()) {
+                if (isText(text) && text.containerId === id) {
+                  combined.set(text.id, newElementWith(text, { x: text.x + dx, y: text.y + dy }))
+                }
               }
-              displaced.add(id)
+              movedIds.add(id)
+              changed = true
             }
+            snapshotStage(stage, combined, { accepted: guarded.issues.length === 0, issues: guarded.issues, candidate: guarded.candidate })
+            if (changed) planCache = null
           },
-          // Arrows created this batch, touching a displaced shape, or assigned a port
-          // focus (so an existing arrow re-fans when a new sibling crowds its side).
-          arrowsToUpdate: () => {
-            const out: string[] = []
-            for (const el of combined.values()) {
-              if (el.type !== 'arrow') continue
-              const a = el as ExcalidrawArrowElement
-              const f = portFocus.get(a.id)
-              if (
-                createdArrowIds.has(a.id) ||
-                (a.startBinding && displaced.has(a.startBinding.elementId)) ||
-                (a.endBinding && displaced.has(a.endBinding.elementId)) ||
-                (f && (f.start !== 0 || f.end !== 0))
-              )
-                out.push(a.id)
+          routeArrows: (edges) => {
+            const occupied: RoutedSegment[] = []
+            const reservedLabels: LayoutBox[] = []
+            const changedNodes = new Set([...createdIds, ...movedIds])
+            const changedEdges = new Set([...connects.map((edge) => edge.id), ...editedArrowIds])
+            const changedObstacles = ctx.plan().nodes.filter((node) => changedNodes.has(node.id))
+            const affected = new Set<string>()
+            for (const edge of edges) {
+              const el = combined.get(edge.id) as ExcalidrawArrowElement | undefined
+              if (!el) continue
+              const label = edge.label && combined.get(edge.label.id)
+              const labelBox = label ? { id: label.id, x: label.x, y: label.y, w: label.width, h: label.height, movable: false } : undefined
+              if (routeNeedsUpdate({ ...edge, points: absoluteArrowPoints(el), label: labelBox }, changedNodes, changedEdges, changedObstacles)) {
+                affected.add(edge.id)
+              } else {
+                occupied.push(...routeSegments(absoluteArrowPoints(el)))
+                if (labelBox) reservedLabels.push(labelBox)
+              }
             }
-            return out
-          },
-          // Straight edge-to-edge endpoints, then bow (around obstacles, or by the
-          // same-pair offset so parallel/antiparallel edges don't overlap).
-          updateArrow: (id) => {
-            const el = combined.get(id)
-            if (!el || el.type !== 'arrow') return
-            const focus = portFocus.get(id) ?? { start: 0, end: 0 }
-            const straight = reflowArrow(el as ExcalidrawArrowElement, combined, focus) as ExcalidrawArrowElement
-            combined.set(id, routeArrowElement(straight, combined, arrowOffsets.get(id) ?? 0, focus))
+            for (const edge of edges) {
+              if (!affected.has(edge.id)) continue
+              const el = combined.get(edge.id)
+              if (!el || el.type !== 'arrow') continue
+              const preserve = previous.has(edge.id)
+              const anchored = preserve
+                ? reanchorArrow(el as ExcalidrawArrowElement, combined, previous)
+                : reflowArrow(el as ExcalidrawArrowElement, combined, edge.focus) as ExcalidrawArrowElement
+              const routed = routeArrowElement(anchored, combined, edge, occupied, reservedLabels, preserve, routeWarnings)
+              combined.set(edge.id, routed)
+              const labelBox = syncArrowLabel(routed, edge, combined)
+              if (labelBox) reservedLabels.push(labelBox)
+              occupied.push(...routeSegments(absoluteArrowPoints(routed)))
+            }
+            snapshotStage('routing', combined, { issues: [...routeWarnings] })
           },
         }
         // Intent passes (B) move nodes only where the model declared structure — never
@@ -840,9 +941,16 @@ export function createExcalidrawPort(api: ExcalidrawImperativeAPI): CanvasPort {
         // are left exactly as placed. Invariant passes (A) always run so arrows stay bound.
         if (scope) runPasses(ctx, INTENT_PASSES)
         runPasses(ctx, INVARIANT_PASSES)
+        const finalPlan = ctx.plan()
+        lastDiagnostics = [...new Set([
+          ...remainingLayoutConflicts(finalPlan.nodes, finalPlan.preservation, finalPlan.intent.spacing.edges),
+          ...routeWarnings,
+        ])].slice(0, 20)
       }
 
       api.updateScene({ elements: [...combined.values()] })
+      trace.diagnostics = lastDiagnostics
+      recordLayoutTrace(trace)
       return results
     },
 

@@ -14,9 +14,9 @@
  *    that mid point (via bindingGeometry) so a curved bound arrow stays a fixed
  *    point of Excalidraw's native recompute — no jump on the next nudge.
  *
- * Dependency-free apart from bindingGeometry's pure solver, so both are unit-tested
- * headlessly. Single-blocker, single-bow on purpose; multi-obstacle / global routing
- * is a documented follow-up (see FlowM.md 布局优化).
+ * Dependency-free apart from bindingGeometry's pure solver, so the algorithms are
+ * unit-tested headlessly. routeBoundArrow remains the conservative fallback; the
+ * batch-aware candidate router lives in edgeRouting.ts.
  */
 import { solveEndpoint, type Pt, type Shape } from './bindingGeometry'
 
@@ -68,7 +68,7 @@ function separation(a: LayoutBox, b: LayoutBox, margin: number): Pt | null {
  */
 export function resolveOverlaps(
   boxes: LayoutBox[],
-  opts: { margin?: number; iterations?: number } = {},
+  opts: { margin?: number; iterations?: number; ignorePairs?: ReadonlySet<string> } = {},
 ): Map<string, Pt> {
   const margin = opts.margin ?? MARGIN
   const iterations = opts.iterations ?? 60
@@ -80,6 +80,8 @@ export function resolveOverlaps(
         const a = pos[i]
         const b = pos[j]
         if (!a.movable && !b.movable) continue
+        const pair = JSON.stringify(a.id < b.id ? [a.id, b.id] : [b.id, a.id])
+        if (opts.ignorePairs?.has(pair)) continue
         const mtv = separation(a, b, margin)
         if (!mtv) continue
         moved = true
@@ -271,6 +273,8 @@ export interface SpacingEdge {
    *  labeled diagonal/horizontal edge needs a wider gap for the label to fit. */
   labelW?: number
   labelH?: number
+  /** Framework-compiled minimum clear corridor for this edge. */
+  minGap?: number
 }
 
 /** Distance from a box centre to its border along unit direction (dx,dy) (AABB ray exit). */
@@ -302,9 +306,10 @@ const median = (xs: number[]): number => {
 export function normalizeSpacing(
   nodes: LayoutBox[],
   edges: SpacingEdge[],
-  opts: { gap?: number } = {},
+  opts: { gap?: number; minGap?: number } = {},
 ): Map<string, Pt> {
   let gap = opts.gap
+  const minimumGap = opts.minGap ?? MARGIN
   const byId = new Map(nodes.map((n) => [n.id, { ...n }]))
   const ids = [...byId.keys()].sort()
   const adj = new Map<string, string[]>(ids.map((id) => [id, []]))
@@ -313,8 +318,18 @@ export function normalizeSpacing(
   }
   for (const id of ids) adj.get(id)!.sort()
   const labelOf = new Map<string, { w: number; h: number }>()
+  const minGapOf = new Map<string, number>()
   for (const e of edges) {
-    if (e.labelW != null && e.labelH != null && e.from !== e.to) labelOf.set(`${e.from}->${e.to}`, { w: e.labelW, h: e.labelH })
+    if (e.from === e.to) continue
+    const key = `${e.from}->${e.to}`
+    if (e.labelW != null && e.labelH != null) {
+      const previous = labelOf.get(key)
+      labelOf.set(key, {
+        w: Math.max(previous?.w ?? 0, e.labelW),
+        h: Math.max(previous?.h ?? 0, e.labelH),
+      })
+    }
+    if (e.minGap != null) minGapOf.set(key, Math.max(minGapOf.get(key) ?? 0, e.minGap))
   }
 
   // Iterative DFS: flag back-edges (edge into an on-stack node), collect a topo order.
@@ -361,7 +376,7 @@ export function normalizeSpacing(
         gaps.push(cd - halfExtentAlong(cu, dx / cd, dy / cd) - halfExtentAlong(cv, dx / cd, dy / cd))
       }
     }
-    gap = gaps.length ? Math.max(MARGIN, median(gaps)) : 96
+    gap = gaps.length ? Math.max(minimumGap, median(gaps)) : Math.max(minimumGap, 96)
   }
 
   // Forward sweep: place each child off its first parent at the target edge-to-edge gap.
@@ -389,9 +404,9 @@ export function normalizeSpacing(
       }
       // A horizontal label projects onto the (snapped) edge direction; widen the gap
       // so it fits between the two shapes instead of being clipped by them.
-      let effGap = gap
+      let effGap = Math.max(gap, minGapOf.get(`${u}->${v}`) ?? minimumGap)
       const lbl = labelOf.get(`${u}->${v}`)
-      if (lbl) effGap = Math.max(gap, Math.abs(lbl.w * dx) + Math.abs(lbl.h * dy) + 2 * LABEL_PAD)
+      if (lbl) effGap = Math.max(effGap, Math.abs(lbl.w * dx) + Math.abs(lbl.h * dy) + 2 * LABEL_PAD)
       const dist = halfExtentAlong(cu, dx, dy) + effGap + halfExtentAlong(cv, dx, dy)
       cv.x = ucx + dx * dist - cv.w / 2
       cv.y = ucy + dy * dist - cv.h / 2

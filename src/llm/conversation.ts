@@ -131,6 +131,11 @@ const DEFERRED_REFERENCE_OPS = new Set(['move_shape', 'place_region', 'update_te
 /** Union two B-pass scopes (the per-batch declaration into the accumulated turn scope). */
 function mergeScope(into: LayoutScope | null, add: LayoutScope): LayoutScope {
   if (!into) return add
+  if (into.relations && add.relations) {
+    const relations = [...into.relations, ...add.relations]
+    const unique = new Map(relations.map((relation) => [JSON.stringify(relation), relation]))
+    return resolveScope([...unique.values()])
+  }
   for (const id of add.spacing) into.spacing.add(id)
   for (const id of add.overlap) into.overlap.add(id)
   return into
@@ -484,8 +489,9 @@ export class Conversation {
     // Materialise creates/connects first. This is one logical model batch: the split is an
     // internal compile step that makes every create ref available to declarations and region
     // placement without forcing another provider turn.
-    const initialScope = opts.persistScope ? this.turnScope : null
-    let applied = await this.applyOpCalls(port, earlyCalls, initialScope, opts.changed)
+    // Keep the materialized model layout intact until this batch's declarations (including
+    // freeze) are known. The final apply below performs the combined intent repair once.
+    let applied = await this.applyOpCalls(port, earlyCalls, null, opts.changed)
 
     const liveIds = new Set(port.snapshot('all').map((shape) => shape.id))
     const lookup = (key: string): string | undefined =>
@@ -571,6 +577,16 @@ export class Conversation {
       return error ? { id: call.id, error } : { id: call.id, op: resolved.value }
     })
     applied += await this.applyOpCalls(port, resolvedDeferred, scope, opts.changed)
+    // Append feedback only after EVERY tool result, including declaration results. Read the
+    // final apply so a later scoped repair cannot leave an already-resolved warning in history.
+    const didApply = scope || [...earlyCalls, ...resolvedDeferred].some((call) => call.op)
+    const layoutWarnings = didApply ? port.layoutDiagnostics?.() ?? [] : []
+    if (layoutWarnings.length) {
+      this.history.push({
+        role: 'user',
+        content: `FlowM layout diagnostics (automatic repair preserved the original composition):\n${layoutWarnings.join('\n')}`,
+      })
+    }
     return applied
   }
 

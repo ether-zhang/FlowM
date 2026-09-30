@@ -1,4 +1,17 @@
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer, AgentToolStatus } from '../agent'
+import type { AgentActivityEvent, AgentModel, AgentQuestion, AgentQuestionAnswer, AgentToolStatus } from '../agent'
+
+/** Use the transport's model ids, not display names or a hard-coded model catalog. */
+export function parseCodexModelPage(value: unknown): { models: AgentModel[]; nextCursor: string | null } {
+  const page = recordOf(value)
+  const entries = Array.isArray(page?.data) ? page.data : []
+  const models = entries.flatMap((entry) => {
+    const model = recordOf(entry)
+    if (!model || model.hidden === true) return []
+    const id = stringValue(model.model) || stringValue(model.id)
+    return id ? [{ id, label: stringValue(model.displayName) || id, isDefault: model.isDefault === true }] : []
+  })
+  return { models, nextCursor: stringValue(page?.nextCursor) || null }
+}
 
 export type JsonRpcId = string | number
 

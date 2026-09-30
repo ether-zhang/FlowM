@@ -3,6 +3,15 @@ export type UiLanguage = 'en' | 'zh'
 export const UI_LANGUAGE_STORAGE = 'flowm.language'
 
 const en = {
+  model: {
+    label: 'Model',
+    default: 'Default',
+    custom: 'Custom model…',
+    placeholder: 'Enter a model ID',
+    loading: 'Loading available models…',
+    refresh: 'Refresh models',
+    loadFailed: 'Could not load models. Retry or enter a model ID.',
+  },
   activity: {
     aria: 'Workspace views',
     labels: {
@@ -138,6 +147,15 @@ const en = {
 export type UiText = typeof en
 
 const zh: UiText = {
+  model: {
+    label: '模型',
+    default: '默认',
+    custom: '自定义模型…',
+    placeholder: '输入模型 ID',
+    loading: '正在读取可用模型…',
+    refresh: '刷新模型列表',
+    loadFailed: '模型列表读取失败，可重试或输入模型 ID。',
+  },
   activity: {
     aria: '工作区视图',
     labels: {

@@ -8,8 +8,24 @@ import {
   parseClaudePartialEvent,
   parseClaudePermission,
   parseClaudeQuestion,
+  parseClaudeModels,
   shouldAskClaudeToolPermission,
 } from './claudeControlProtocol'
+
+describe('Claude native model catalog', () => {
+  it('preserves native picker values, including context-window variants and new models', () => {
+    expect(parseClaudeModels({ models: [
+      { value: 'default', displayName: 'Default (recommended)' },
+      { value: 'opus[1m]', displayName: 'Opus' },
+      { value: 'new-model-from-cli', displayName: 'New model' },
+      { description: 'invalid entry' },
+    ] })).toEqual([
+      { id: 'default', label: 'Default (recommended)', isDefault: true },
+      { id: 'opus[1m]', label: 'Opus', isDefault: false },
+      { id: 'new-model-from-cli', label: 'New model', isDefault: false },
+    ])
+  })
+})
 
 describe('Claude Agent SDK AskUserQuestion mapping', () => {
   it('maps questions into the shared contract and answers back by prompt text', () => {

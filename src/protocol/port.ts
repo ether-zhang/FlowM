@@ -28,9 +28,11 @@ export interface CanvasPort {
   /**
    * Apply a batch of ops in order, resolving create-refs so later ops can target them.
    * `scope` (from the gate's structure declarations) limits which nodes the intent
-   * passes may move; omit it (pre-gate / no declarations) to keep today's global B.
+   * passes may move and preserves declared structure; omit it to keep nodes frozen.
    */
   apply(ops: CanvasOp[], scope?: LayoutScope | null): Promise<OpResult[]>
+  /** Unresolved geometry conflicts from the last apply, returned as model feedback. */
+  layoutDiagnostics?(): readonly string[]
   /**
    * Render the given scope to a PNG data URL (or null if empty), so the model can
    * be sent a *visual* of the canvas alongside the serialized text — letting it

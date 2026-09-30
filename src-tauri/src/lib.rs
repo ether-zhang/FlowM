@@ -5,6 +5,9 @@
 //! never enters JS, and native HTTP has no browser CORS restriction).
 
 mod agent_control;
+mod model_catalog;
+
+use model_catalog::list_agent_models;
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -128,6 +131,7 @@ enum CodexEvent {
 #[tauri::command]
 async fn claude_run(
     bin: Option<String>,
+    model: Option<String>,
     prompt: String,
     cwd: String,
     json_schema: Option<String>,
@@ -147,6 +151,9 @@ async fn claude_run(
         .arg("--verbose")
         .arg("--permission-mode")
         .arg("bypassPermissions");
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        cmd.arg("--model").arg(model.trim());
+    }
     // Force a validated structured result (the canvas operations). arg() escapes the JSON,
     // so the embedded quotes survive (unlike a shell).
     if let Some(schema) = &json_schema {
@@ -895,6 +902,7 @@ pub fn run() {
             write_agent_control,
             stop_agent_control,
             default_codex_bin,
+            list_agent_models,
             write_codex_canvas_guide,
             write_claude_canvas_guide,
             write_design,

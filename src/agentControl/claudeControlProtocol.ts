@@ -1,4 +1,15 @@
-import type { AgentActivityEvent, AgentQuestion, AgentQuestionAnswer } from '../agent'
+import type { AgentActivityEvent, AgentModel, AgentQuestion, AgentQuestionAnswer } from '../agent'
+
+/** Claude's initialize response exposes the same values as its native model picker. */
+export function parseClaudeModels(value: unknown): AgentModel[] {
+  const response = recordOf(value)
+  if (!Array.isArray(response?.models)) return []
+  return response.models.flatMap((entry) => {
+    const model = recordOf(entry)
+    const id = stringValue(model?.value) || stringValue(model?.id)
+    return id ? [{ id, label: stringValue(model?.displayName) || id, isDefault: id === 'default' }] : []
+  })
+}
 
 interface ClaudeQuestionOption {
   label?: unknown

@@ -14,6 +14,7 @@ import type { TurnCallbacks } from './adapter'
 
 export interface ClaudeTransportOptions {
   bin?: string
+  model?: string
   cwd: string
   jsonSchema?: unknown
   initialSessionId?: string
@@ -134,6 +135,7 @@ class ClaudeLegacyTransport implements ClaudeTurnTransport {
         this.session ?? undefined,
         this.options.disallowedTools,
         this.options.appendSystemPrompt,
+        this.options.model,
       )
     } catch (error) {
       callbacks.onActivity?.({ type: 'status', status: 'failed' })

@@ -1,4 +1,5 @@
 export type {
+  AgentModel,
   AgentActivityEvent,
   AgentQuestion,
   AgentQuestionAnswer,

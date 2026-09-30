@@ -41,14 +41,16 @@ export class ClaudeAdapter implements LlmAdapter {
   private guidePath = '.flowm/claude-canvas.md'
   /** Path to the `claude` executable (empty → let the backend resolve `claude` via PATH). */
   private getBin: () => string
+  private getModel: () => string
 
   /** `initialSession` seeds `--resume` when a persisted conversation is reopened (e.g. after a
    *  restart): the adapter resumes Claude's stored session and sends only the new delta, so the
    *  history need not be replayed. Omit for a brand-new conversation. */
-  constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null) {
+  constructor(getCwd: () => string, getBin: () => string, initialSession: string | null = null, getModel: () => string = () => '') {
     this.getCwd = getCwd
     this.getBin = getBin
     this.initialSession = initialSession
+    this.getModel = getModel
   }
 
   /** The Claude Code session id captured for this conversation (the `--resume` handle), or null
@@ -97,7 +99,7 @@ export class ClaudeAdapter implements LlmAdapter {
     cb.onDebug?.(
       `▶ 实际发给 Claude · 第 ${this.turn} 轮\n` +
         `system: --append-system-prompt -> ${this.guidePath}\n` +
-        `transport: ${transport.kind} · session: ${transport.sessionId ?? this.initialSession ?? '(新会话)'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
+        `transport: ${transport.kind} · session: ${transport.sessionId ?? this.initialSession ?? '(新会话)'} · model: ${this.getModel().trim() || 'default'} · disallowedTools: Task · json-schema: { reply, operations[] }\n` +
         `本轮增量（${fresh.length} 条 / ${prompt.length} 字）:\n${prompt}`,
     )
 
@@ -140,12 +142,17 @@ export class ClaudeAdapter implements LlmAdapter {
     schema: unknown,
   ): Promise<CompatibleClaudeTransport> {
     const bin = this.getBin().trim()
-    const key = `${cwd}\0${bin}`
+    const model = this.getModel().trim() || 'default'
+    const key = `${cwd}\0${bin}\0${model}`
     if (this.transport && this.transportKey === key) return this.transport
+    // A model switch restarts the transport, but continues the latest provider session.
+    const sessionId = this.sessionId
     if (this.transport) await this.transport.dispose()
+    this.initialSession = sessionId
     this.transport = new CompatibleClaudeTransport({
       cwd,
       bin: bin || undefined,
+      model,
       jsonSchema: schema,
       initialSessionId: this.initialSession ?? undefined,
       disallowedTools: ['Task'],

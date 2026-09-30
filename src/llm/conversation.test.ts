@@ -75,6 +75,49 @@ const callbacks = () => ({
 })
 
 describe('Conversation turn contract', () => {
+  it('keeps structure and freeze constraints across build batches before running intent repair', async () => {
+    const adapter = new ScriptedAdapter([
+      { text: '', toolCalls: [{ id: 'flow', name: 'declare_structure', args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] } }] },
+      { text: '', toolCalls: [{ id: 'protect', name: 'declare_structure', args: { relations: [
+        { kind: 'align', nodes: ['b', 'c'], axis: 'row' }, { kind: 'freeze', nodes: ['a'] },
+      ] } }] },
+      { text: 'Done.', toolCalls: [] },
+    ])
+    const { port, apply } = createPort(['a', 'b', 'c'].map((id) => ({ id, type: 'rectangle', x: 0, y: 0 })))
+    await new Conversation(adapter).send('Repair the layout.', port, callbacks())
+    expect(apply).toHaveBeenCalledTimes(2)
+    const scope = apply.mock.calls[1][1]!
+    expect([...scope.spacing]).toEqual(['b'])
+    expect(scope.relations).toEqual([
+      { kind: 'flow', nodes: ['a', 'b'], dir: 'down' },
+      { kind: 'align', nodes: ['b', 'c'], axis: 'row' },
+      { kind: 'freeze', nodes: ['a'] },
+    ])
+  })
+
+  it('returns layout conflicts only after all tool results have been paired', async () => {
+    const adapter = new ScriptedAdapter([
+      { text: '', toolCalls: [
+        { id: 'move', name: 'move_shape', args: { id: 'a', x: 0, y: 10 } },
+        { id: 'structure', name: 'declare_structure', args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] } },
+      ] },
+      { text: 'Built.', toolCalls: [] },
+      { text: 'Reviewed.', toolCalls: [] },
+      { text: 'Explain the remaining conflict.', toolCalls: [] },
+    ])
+    const { port } = createPort(['a', 'b'].map((id) => ({ id, type: 'rectangle', x: 0, y: 0 })))
+    port.layoutDiagnostics = () => ['Container region cannot accommodate b without changing its size.']
+    await new Conversation(adapter).send('Repair this flow.', port, callbacks())
+    const messages = adapter.requests[1].messages
+    const feedbackIndex = messages.findIndex((message) => message.role === 'user' && message.content.startsWith('FlowM layout diagnostics'))
+    expect(feedbackIndex).toBeGreaterThan(0)
+    for (const id of ['move', 'structure']) {
+      const resultIndex = messages.findIndex((message) => message.role === 'tool' && message.toolCallId === id)
+      expect(resultIndex).toBeGreaterThan(0)
+      expect(resultIndex).toBeLessThan(feedbackIndex)
+    }
+    expect(messages[feedbackIndex].content).toContain('cannot accommodate b')
+  })
   it('exposes and disposes the adapter-owned session lifecycle', async () => {
     const adapter = new ScriptedAdapter([])
     const conversation = new Conversation(adapter)
@@ -446,6 +489,7 @@ describe('Conversation turn contract', () => {
     expect(apply.mock.calls[1]?.[1]).toEqual({
       spacing: new Set(['created-1', 'created-2']),
       overlap: new Set(['created-1', 'created-2']),
+      relations: [{ kind: 'flow', nodes: ['created-1', 'created-2'], dir: 'down' }],
     })
   })
 
@@ -511,6 +555,7 @@ describe('Conversation turn contract', () => {
     expect(apply.mock.calls[1]?.[1]).toEqual({
       spacing: new Set(['created-1', 'created-2']),
       overlap: new Set(['created-1', 'created-2']),
+      relations: [{ kind: 'flow', nodes: ['created-1', 'created-2'], dir: 'down' }],
     })
     expect(adapter.requests[1]?.messages).toContainEqual({
       role: 'tool',

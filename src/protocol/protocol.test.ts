@@ -179,6 +179,20 @@ describe('parseStructure', () => {
 })
 
 describe('resolveScope', () => {
+  it('retains structural constraints and lets freeze veto other movement declarations', () => {
+    const relations = [
+      { kind: 'flow' as const, nodes: ['a', 'b'], dir: 'down' as const },
+      { kind: 'contain' as const, parent: 'region', children: ['a', 'b'] },
+      { kind: 'align' as const, nodes: ['a', 'context'], axis: 'row' as const },
+      { kind: 'freeze' as const, nodes: ['a'] },
+    ]
+    const scope = resolveScope(relations)
+    expect([...scope.spacing]).toEqual(['b'])
+    expect([...scope.overlap]).toEqual(['b'])
+    expect(scope.relations).toEqual(relations)
+    relations[0].nodes!.push('later')
+    expect(scope.relations?.[0]).toMatchObject({ nodes: ['a', 'b'] })
+  })
   it('flow nodes get spacing + overlap; nonOverlap nodes get overlap only', () => {
     const scope = resolveScope([
       { kind: 'flow', nodes: ['id1', 'id2', 'id3'] },
