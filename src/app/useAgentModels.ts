@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AgentModel } from '../agent'
-import { listAgentModels } from '../agentControl/modelCatalog'
+import { harnessClient, type HarnessProfile } from '../harness'
 
 interface CatalogState {
   key: string
@@ -10,17 +10,18 @@ interface CatalogState {
 }
 
 /** Refresh on startup, executable/project change, or an explicit refresh click. */
-export function useAgentModels(provider: 'claude' | 'codex', bin: string, cwd: string, enabled: boolean) {
+export function useAgentModels(profile: HarnessProfile | null, enabled: boolean) {
   const [revision, setRevision] = useState(0)
   const [state, setState] = useState<CatalogState>({ key: '', models: [], loading: false, error: null })
-  const key = JSON.stringify([provider, bin, cwd, revision])
+  const profileId = profile?.id ?? ''
+  const key = JSON.stringify([profileId, profile?.credentialVersion, profile?.signedIn, revision])
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || !profileId || !profile?.signedIn) return
     let current = true
     // Debounce path edits; StrictMode's initial cleanup also cancels its first probe.
     const timer = setTimeout(() => {
       setState({ key, models: [], loading: true, error: null })
-      void listAgentModels(provider, bin, cwd).then(
+      void harnessClient.models(profileId).then(
         (models) => {
           if (current) setState({ key, models, loading: false, error: models.length ? null : 'The agent returned an empty model catalog' })
         },
@@ -30,7 +31,7 @@ export function useAgentModels(provider: 'claude' | 'codex', bin: string, cwd: s
       )
     }, 200)
     return () => { current = false; clearTimeout(timer) }
-  }, [provider, bin, cwd, enabled, key])
-  const catalog = state.key === key ? state : { models: [], loading: enabled, error: null }
+  }, [profileId, profile?.signedIn, enabled, key])
+  const catalog = state.key === key ? state : { models: [], loading: enabled && !!profile?.signedIn, error: null }
   return { ...catalog, refresh: () => setRevision((value) => value + 1) }
 }

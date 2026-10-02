@@ -4,6 +4,7 @@ import type { DisplayActivity } from './activityReducer'
 export type DisplayRole = 'user' | 'assistant' | 'system' | 'debug'
 
 export interface DisplayQuestion {
+  expired?: boolean
   requestId?: string
   items?: AgentQuestionItem[]
   /** Compatibility with questions persisted before native agent control. */

@@ -27,10 +27,9 @@ export interface RunTurnParams {
 }
 
 /**
- * Abstracts *where and how* an assistant turn is produced. The Poe (OpenAI-
- * compatible) implementation lives in poe.ts; a future direct-Anthropic adapter
- * or an agent bridge (claude code / codex) is just another implementation —
- * the conversation loop and the rest of the app never change.
+ * Keeps canvas turn orchestration independent of the model transport.
+ * HarnessAdapter implements the packaged runtime boundary; model connections
+ * and credentials are managed below that boundary.
  */
 export interface LlmAdapter {
   /** Provider session handle persisted by the workspace, when this adapter owns one. */
@@ -39,6 +38,8 @@ export interface LlmAdapter {
   runTurn(params: RunTurnParams, cb: TurnCallbacks): Promise<LlmTurn>
   /** Answer a native in-flight question. Structured-output fallback adapters omit this. */
   answerQuestion?(answer: AgentQuestionAnswer): Promise<void>
+  /** Cancel the current model turn without replaying its input. */
+  cancel?(): Promise<void>
   /** Release any long-lived local transport owned by this adapter. */
   dispose?(): Promise<void>
 }

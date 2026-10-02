@@ -11,12 +11,17 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "harness:build": "node scripts/build-harness.mjs",
+    "harness:test": "node scripts/test-harness.mjs",
+    "predev:desktop": "node scripts/build-harness.mjs",
+    "dev:desktop": "npm run dev",
+    "predesktop:build": "node scripts/build-harness.mjs --release",
+    "desktop:build": "npm run build"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
     "@tauri-apps/api": "^2.9.0",
-    "openai": "^6.44.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",

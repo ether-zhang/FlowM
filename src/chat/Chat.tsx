@@ -21,6 +21,7 @@ export interface ChatProps {
   engineConfig?: React.ReactNode
   placeholder: string
   onSend: (text: string) => void
+  onStop?: () => void
   onAnswerQuestion: (messageId: string, answers: Record<string, string[]>) => void | Promise<void>
   onToggleDebug: () => void
   onOpenSettings: () => void
@@ -44,6 +45,7 @@ export function Chat({
   engineConfig,
   placeholder,
   onSend,
+  onStop,
   onAnswerQuestion,
   onToggleDebug,
   onOpenSettings,
@@ -94,7 +96,7 @@ export function Chat({
     }
   }, [engineMenuOpen])
 
-  const pendingQuestion = messages.find((m) => m.question && !m.question.answer)
+  const pendingQuestion = messages.find((m) => m.question && !m.question.answer && !m.question.expired)
 
   const send = () => {
     const t = text.trim()
@@ -121,6 +123,7 @@ export function Chat({
             <button
               type="button"
               className="chat-engine-select"
+              disabled={busy}
               aria-haspopup="listbox"
               aria-expanded={engineMenuOpen}
               title={uiText.chat.selectAssistant}
@@ -138,6 +141,7 @@ export function Chat({
                       key={e.id}
                       type="button"
                       role="option"
+                      disabled={busy}
                       aria-selected={e.id === engineId}
                       className={`engine-option${e.id === engineId ? ' active' : ''}`}
                       onClick={() => {
@@ -305,9 +309,9 @@ export function Chat({
             send()
           }}
         />
-        <button onClick={send} disabled={!canSend || busy || !!pendingQuestion || !text.trim()}>
+        {busy && onStop ? <button onClick={onStop}>{uiText.chat.stop}</button> : <button onClick={send} disabled={!canSend || busy || !!pendingQuestion || !text.trim()}>
           {busy ? '…' : uiText.chat.send}
-        </button>
+        </button>}
       </div>
     </div>
   )

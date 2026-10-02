@@ -25,7 +25,7 @@ export function restoreCanvas(port: CanvasPort, project: Project) {
   port.deserialize(project.canvas)
 }
 
-/** Browser fallback persistence: download the project as a .json file. */
+/** Export a portable project file from the desktop webview. */
 export function downloadProject(project: Project, name = 'flowm-project') {
   const blob = new Blob([JSON.stringify(project)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -36,7 +36,7 @@ export function downloadProject(project: Project, name = 'flowm-project') {
   URL.revokeObjectURL(url)
 }
 
-/** Browser fallback: open a file picker and parse the chosen project. */
+/** Import a portable project file, including legacy API history. */
 export function openProjectFile(): Promise<Project | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input')

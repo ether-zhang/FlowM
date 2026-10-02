@@ -4,7 +4,7 @@ const sources = import.meta.glob(
   [
     './protocol/**/*.{ts,tsx}',
     './agent/**/*.{ts,tsx}',
-    './agentControl/**/*.{ts,tsx}',
+    './harness/**/*.{ts,tsx}',
     './llm/**/*.{ts,tsx}',
   ],
   { query: '?raw', import: 'default', eager: true },
@@ -41,7 +41,7 @@ describe('module dependency direction', () => {
   })
 
   it('keeps agent transports independent of orchestration and UI layers', () => {
-    expect(forbiddenImports('agentControl', /^\.\.\/(?:app|canvas|chat|engine|llm|workspace)(?:\/|$)/)).toEqual([])
+    expect(forbiddenImports('harness', /^\.\.\/(?:app|canvas|chat|engine|llm|workspace)(?:\/|$)/)).toEqual([])
   })
 
   it('keeps LLM orchestration independent of UI, workspace, and engine implementations', () => {
@@ -50,7 +50,7 @@ describe('module dependency direction', () => {
 
   it('keeps provider adapters independent of canvas behavior policy', () => {
     const violations = sourceFiles('llm')
-      .filter(([path]) => /(?:claude|codex)Adapter\.ts$/.test(path))
+      .filter(([path]) => /harnessAdapter\.ts$/.test(path))
       .flatMap(([path, source]) => importsOf(source)
         .filter((specifier) => specifier === './canvasPrompt')
         .map((specifier) => `${path} -> ${specifier}`))

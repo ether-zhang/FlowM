@@ -65,4 +65,8 @@ export class CanvasEngine implements ChatEngine {
     if (!conv) throw new Error('Canvas conversation is not ready')
     await conv.answerQuestion(answer)
   }
+
+  async cancel(): Promise<void> {
+    await this.getConv()?.cancel()
+  }
 }

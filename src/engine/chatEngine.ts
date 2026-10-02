@@ -32,4 +32,5 @@ export interface ChatEngine {
   send(text: string, cb: ChatCallbacks): Promise<void>
   /** Resume an in-flight native agent question without starting a new turn. */
   answerQuestion?(answer: AgentQuestionAnswer): Promise<void>
+  cancel?(): Promise<void>
 }

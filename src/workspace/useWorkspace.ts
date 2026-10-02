@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CanvasPort } from '../protocol'
-import { ClaudeAdapter, CodexAdapter, Conversation } from '../llm'
+import { Conversation } from '../llm'
+import { HarnessAdapter } from '../llm/harnessAdapter'
+import { HarnessSession, harnessClient, type HarnessProfile } from '../harness'
+import { continuationContext, harnessBindingKey } from './harnessBindings'
 import type { DisplayMessage } from '../chat/types'
 import {
   deleteCanvasScene,
@@ -10,26 +13,26 @@ import {
   loadSessionDisplay,
   openProject,
   pickFolder,
+  pickHarnessHistory,
   saveCanvasScene,
   saveProject,
   saveSessionDisplay,
 } from './store'
 import type { CanvasMeta, ProjectMeta, SessionMeta } from './types'
 
-export type AgentKind = 'claude' | 'codex'
-
 interface Runtime {
-  /** One long-lived local agent per provider and FlowM session. */
-  claude?: Conversation
-  codex?: Conversation
+  canvas?: Conversation
+  project?: HarnessSession
 }
 
 async function disposeRuntime(runtime: Runtime | undefined): Promise<void> {
   if (!runtime) return
-  await Promise.allSettled([runtime.claude?.dispose(), runtime.codex?.dispose()])
+  await Promise.allSettled([runtime.canvas?.dispose(), runtime.project?.dispose()])
 }
 
 export interface WorkspaceApi {
+  changing: boolean
+  isChanging: () => boolean
   projectName: string | null
   // Sessions = chat threads (each its own Claude session).
   sessions: SessionMeta[]
@@ -50,7 +53,9 @@ export interface WorkspaceApi {
   /** Persist the active session's bubbles + the active canvas's scene — call after each send. */
   persistActive: () => Promise<void>
   /** The active session's Conversation, for local-agent canvas engines (null = no project). */
-  activeConv: (agent?: AgentKind) => Conversation | null
+  activeConv: () => Conversation | null
+  activeProject: () => HarnessSession | null
+  importHistory: () => Promise<void>
 }
 
 /**
@@ -71,10 +76,8 @@ export function useWorkspace(opts: {
   getMessages: () => DisplayMessage[]
   setMessages: (m: DisplayMessage[]) => void
   getCwd: () => string
-  getBin: () => string
-  getCodexBin: () => string
-  getClaudeModel: () => string
-  getCodexModel: () => string
+  getProfile: () => HarnessProfile | null
+  isBusy: () => boolean
   setFolder: (folder: string) => void
 }): WorkspaceApi {
   const [projectName, setProjectName] = useState<string | null>(null)
@@ -82,28 +85,49 @@ export function useWorkspace(opts: {
   const [canvases, setCanvases] = useState<CanvasMeta[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [activeCanvasId, setActiveCanvasId] = useState<string | null>(null)
+  const [changing, setChanging] = useState(false)
+  const changingRef = useRef(false)
 
   const projIdRef = useRef<string | null>(null)
   const metaRef = useRef<ProjectMeta | null>(null)
   const runtimes = useRef(new Map<string, Runtime>())
   const activeSessRef = useRef<string | null>(null)
   const activeCanvasRef = useRef<string | null>(null)
+  const transition = async (operation: () => Promise<void>) => {
+    if (opts.isBusy() || changingRef.current) return
+    changingRef.current = true
+    setChanging(true)
+    try { await operation() } finally { changingRef.current = false; setChanging(false) }
+  }
+  const isChanging = useCallback(() => changingRef.current, [])
 
   const ensureRuntime = useCallback(
-    (sm: SessionMeta, agent: AgentKind): Conversation => {
-      let rt = runtimes.current.get(sm.id)
+    (sm: SessionMeta, role: 'canvas' | 'project'): Runtime | null => {
+      const profile = opts.getProfile()
+      if (!profile) return null
+      const bindingKey = harnessBindingKey(profile, role)
+      const runtimeKey = `${sm.id}\0${bindingKey}`
+      let rt = runtimes.current.get(runtimeKey)
       if (!rt) {
         rt = {}
-        runtimes.current.set(sm.id, rt)
+        runtimes.current.set(runtimeKey, rt)
       }
-      if (!rt[agent]) {
-        const adapter =
-          agent === 'claude'
-            ? new ClaudeAdapter(opts.getCwd, opts.getBin, sm.sessionId ?? null, opts.getClaudeModel)
-            : new CodexAdapter(opts.getCwd, opts.getCodexBin, sm.codexSessionId ?? null, opts.getCodexModel)
-        rt[agent] = new Conversation(adapter)
+      if (!rt[role]) {
+        const threadId = sm.harnessThreads?.[bindingKey]
+        const importId = sm.harnessImports?.[bindingKey]
+        const binding = { projectRoot: opts.getCwd(), flowSessionId: sm.id, profileId: profile.id, model: profile.model, ...(threadId ? { threadId } : {}), ...(importId && !threadId ? { importId } : {}) }
+        const saveBinding = async (id: string) => {
+          sm.harnessThreads = { ...sm.harnessThreads, [bindingKey]: id }
+          if (projIdRef.current && metaRef.current) await saveProject(projIdRef.current, metaRef.current)
+        }
+        if (role === 'canvas') {
+          const adapter = new HarnessAdapter(binding, threadId ? '' : continuationContext(opts.getMessages()), (request) => new HarnessSession(request, harnessClient, saveBinding))
+          rt.canvas = new Conversation(adapter)
+        } else {
+          rt.project = new HarnessSession({ ...binding, role: 'project', system: '' }, harnessClient, saveBinding, threadId ? '' : continuationContext(opts.getMessages()))
+        }
       }
-      return rt[agent]
+      return rt
     },
     [opts],
   )
@@ -116,13 +140,7 @@ export function useWorkspace(opts: {
   /** Write project.json, first folding each live adapter's captured session id into its meta. */
   const persistMeta = useCallback(async () => {
     if (!projIdRef.current || !metaRef.current) return
-    for (const sm of metaRef.current.sessions) {
-      const rt = runtimes.current.get(sm.id)
-      const claudeSid = rt?.claude?.sessionId
-      const codexSid = rt?.codex?.sessionId
-      if (claudeSid) sm.sessionId = claudeSid
-      if (codexSid) sm.codexSessionId = codexSid
-    }
+    // A native binding is persisted before its first model request, through saveBinding above.
     await saveProject(projIdRef.current, metaRef.current)
   }, [])
 
@@ -146,7 +164,7 @@ export function useWorkspace(opts: {
   const activateSession = useCallback(
     async (sm: SessionMeta) => {
       const display = projIdRef.current ? await loadSessionDisplay(projIdRef.current, sm.id) : null
-      opts.setMessages(display ?? [])
+      opts.setMessages((display ?? []).map((message) => message.question?.requestId && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message))
       activeSessRef.current = sm.id
       setActiveSessionId(sm.id)
     },
@@ -165,25 +183,28 @@ export function useWorkspace(opts: {
 
   const selectSession = useCallback(
     async (id: string) => {
+      if (opts.isBusy()) return
       if (id === activeSessRef.current) return
       await persistActiveSession()
       const sm = metaRef.current?.sessions.find((s) => s.id === id)
       if (sm) await activateSession(sm)
     },
-    [persistActiveSession, activateSession],
+    [persistActiveSession, activateSession, opts],
   )
 
   const selectCanvas = useCallback(
     async (id: string) => {
+      if (opts.isBusy()) return
       if (id === activeCanvasRef.current) return
       await persistActiveCanvas()
       const cm = metaRef.current?.canvases.find((c) => c.id === id)
       if (cm) await activateCanvas(cm)
     },
-    [persistActiveCanvas, activateCanvas],
+    [persistActiveCanvas, activateCanvas, opts],
   )
 
   const newSession = useCallback(async () => {
+    if (opts.isBusy()) return
     if (!metaRef.current) return
     await persistActiveSession()
     const sm: SessionMeta = { id: crypto.randomUUID().slice(0, 8), name: `Conversation ${metaRef.current.sessions.length + 1}` }
@@ -191,9 +212,10 @@ export function useWorkspace(opts: {
     syncLists()
     await activateSession(sm)
     await persistMeta()
-  }, [persistActiveSession, activateSession, syncLists, persistMeta])
+  }, [persistActiveSession, activateSession, syncLists, persistMeta, opts])
 
   const newCanvas = useCallback(async () => {
+    if (opts.isBusy()) return
     if (!metaRef.current) return
     await persistActiveCanvas()
     const cm: CanvasMeta = { id: crypto.randomUUID().slice(0, 8), name: `Canvas ${metaRef.current.canvases.length + 1}` }
@@ -201,7 +223,7 @@ export function useWorkspace(opts: {
     syncLists()
     await activateCanvas(cm)
     await persistMeta()
-  }, [persistActiveCanvas, activateCanvas, syncLists, persistMeta])
+  }, [persistActiveCanvas, activateCanvas, syncLists, persistMeta, opts])
 
   const renameSession = useCallback(
     async (id: string, name: string) => {
@@ -216,14 +238,16 @@ export function useWorkspace(opts: {
 
   const deleteSession = useCallback(
     async (id: string) => {
+      if (opts.isBusy()) return
       const meta = metaRef.current
       const projId = projIdRef.current
       if (!meta || !projId) return
       const idx = meta.sessions.findIndex((s) => s.id === id)
       if (idx < 0) return
       meta.sessions.splice(idx, 1)
-      await disposeRuntime(runtimes.current.get(id))
-      runtimes.current.delete(id)
+      for (const [key, runtime] of runtimes.current) {
+        if (key.startsWith(`${id}\0`)) { await disposeRuntime(runtime); runtimes.current.delete(key) }
+      }
       if (activeSessRef.current === id) {
         activeSessRef.current = null // don't re-save the deleted session on the next activate
         const next = meta.sessions[Math.min(idx, meta.sessions.length - 1)]
@@ -242,7 +266,7 @@ export function useWorkspace(opts: {
       }
       await deleteSessionDisplay(projId, id) // the data file goes with the meta entry
     },
-    [syncLists, activateSession, newSession, persistMeta],
+    [syncLists, activateSession, newSession, persistMeta, opts],
   )
 
   const renameCanvas = useCallback(
@@ -258,6 +282,7 @@ export function useWorkspace(opts: {
 
   const deleteCanvas = useCallback(
     async (id: string) => {
+      if (opts.isBusy()) return
       const meta = metaRef.current
       const projId = projIdRef.current
       if (!meta || !projId) return
@@ -281,12 +306,13 @@ export function useWorkspace(opts: {
       }
       await deleteCanvasScene(projId, id) // the scene file goes with the meta entry
     },
-    [syncLists, activateCanvas, newCanvas, persistMeta],
+    [syncLists, activateCanvas, newCanvas, persistMeta, opts],
   )
 
   const openFolder = useCallback(async () => {
+    if (opts.isBusy()) return
     const folder = await pickFolder()
-    if (!folder) return
+    if (!folder || opts.isBusy()) return
     await persistActive() // flush the previous project
     await Promise.all([...runtimes.current.values()].map(disposeRuntime))
     runtimes.current.clear()
@@ -312,28 +338,53 @@ export function useWorkspace(opts: {
   }, [])
 
   // Stable (reads refs), so the engine's getConv closure captured once stays live across switches.
-  const activeConv = useCallback((agent: AgentKind = 'claude') => {
+  const activeConv = useCallback(() => {
     const id = activeSessRef.current
     const sm = metaRef.current?.sessions.find((s) => s.id === id)
-    return sm ? ensureRuntime(sm, agent) : null
+    return sm ? ensureRuntime(sm, 'canvas')?.canvas ?? null : null
   }, [ensureRuntime])
 
+  const activeProject = useCallback(() => {
+    const sm = metaRef.current?.sessions.find((session) => session.id === activeSessRef.current)
+    return sm ? ensureRuntime(sm, 'project')?.project ?? null : null
+  }, [ensureRuntime])
+
+  const importHistory = async () => {
+    const profile = opts.getProfile()
+    const sm = metaRef.current?.sessions.find((session) => session.id === activeSessRef.current)
+    if (!profile || !sm || !projIdRef.current) return
+    const filePath = await pickHarnessHistory()
+    if (!filePath || opts.isBusy()) return
+    const result = await harnessClient.importHistory(filePath, opts.getCwd())
+    const key = harnessBindingKey(profile, 'canvas')
+    if (sm.harnessImports?.[key] === result.importId) return
+    await disposeRuntime(runtimes.current.get(`${sm.id}\0${key}`))
+    runtimes.current.delete(`${sm.id}\0${key}`)
+    if (sm.harnessThreads) delete sm.harnessThreads[key]
+    sm.harnessImports = { ...sm.harnessImports, [key]: result.importId }
+    await persistMeta()
+  }
+
   return {
+    changing,
+    isChanging,
     projectName,
     sessions,
     activeSessionId,
-    newSession,
-    selectSession,
+    newSession: () => transition(newSession),
+    selectSession: (id) => transition(() => selectSession(id)),
     renameSession,
-    deleteSession,
+    deleteSession: (id) => transition(() => deleteSession(id)),
     canvases,
     activeCanvasId,
-    newCanvas,
-    selectCanvas,
+    newCanvas: () => transition(newCanvas),
+    selectCanvas: (id) => transition(() => selectCanvas(id)),
     renameCanvas,
-    deleteCanvas,
-    openFolder,
+    deleteCanvas: (id) => transition(() => deleteCanvas(id)),
+    openFolder: () => transition(openFolder),
     persistActive,
     activeConv,
+    activeProject,
+    importHistory: () => transition(importHistory),
   }
 }

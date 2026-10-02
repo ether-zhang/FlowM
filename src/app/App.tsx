@@ -2,27 +2,24 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import { defaultClaudeBin } from '../agentControl/claudeCli'
-import { PoeAdapter, TauriAdapter, POE_BASE_URL, tauriKey, Conversation, type LlmQuestion, type RunTurnParams } from '../llm'
+import type { LlmMessage, LlmQuestion, RunTurnParams } from '../llm'
 import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { ModelPicker } from './ModelPicker'
 import { useAgentModels } from './useAgentModels'
+import { useHarnessProfiles } from './useHarnessProfiles'
+import { HarnessSettings } from './HarnessSettings'
+import { resolveEngineId } from './engineSelection'
+import type { HarnessProfile } from '../harness'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
-import { CanvasEngine, ClaudeEngine, CodexEngine, defaultCodexBin, type ChatEngine } from '../engine'
-import { IS_TAURI } from '../runtime'
+import { CanvasEngine, type ChatEngine } from '../engine'
+import { HarnessProjectEngine } from '../engine/harnessProjectEngine'
 import { ActivityBar, isActivityView, type ActivityView } from './ActivityBar'
 import { formatUiText, parseUiLanguage, UI_LANGUAGE_STORAGE, uiLanguageOptions, uiText, type UiLanguage } from './uiText'
 import './app.css'
 
-const KEY_STORAGE = 'flowm.apiKey'
-const API_URL_STORAGE = 'flowm.apiUrl'
 // Persisted across restarts so heavy iteration doesn't mean re-picking the engine / re-typing the path.
-const BIN_STORAGE = 'flowm.bin'
-const CODEX_BIN_STORAGE = 'flowm.codexBin'
-const CLAUDE_MODEL_STORAGE = 'flowm.claudeModel'
-const CODEX_MODEL_STORAGE = 'flowm.codexModel'
 const ENGINE_STORAGE = 'flowm.engine'
 // Shell pane geometry (files left / chat right), persisted so the layout survives restarts.
 const FILES_W_STORAGE = 'flowm.filesW'
@@ -34,8 +31,6 @@ const numFromStorage = (k: string, fallback: number) => {
   const n = Number(localStorage.getItem(k))
   return Number.isFinite(n) && n > 0 ? n : fallback
 }
-
-const isVsCodeBundledCodex = (p: string) => /[\\/]\.vscode[\\/]extensions[\\/]openai\.chatgpt-/i.test(p)
 
 /** Render one outgoing model request as readable text for the debug panel. */
 function formatRequest(params: RunTurnParams, iteration: number): string {
@@ -68,15 +63,12 @@ function requestImage(params: RunTurnParams): string | undefined {
 
 export function App() {
   const portRef = useRef<CanvasPort | null>(null)
-  const convRef = useRef<Conversation | null>(null)
-
-  // Browser: key lives in localStorage and is known synchronously.
-  // Tauri: key lives in the Rust backend; resolve asynchronously below.
-  const [apiKeySet, setApiKeySet] = useState(() =>
-    IS_TAURI ? false : !!localStorage.getItem(KEY_STORAGE),
-  )
+  // Preserve an imported file's legacy history for export, without using its old transport.
+  const importedHistoryRef = useRef<{ display: DisplayMessage[]; api: LlmMessage[] } | null>(null)
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const activeEngineRef = useRef<ChatEngine | null>(null)
   const [debug, setDebug] = useState(false)
   const [language, setLanguageState] = useState<UiLanguage>(() => parseUiLanguage(localStorage.getItem(UI_LANGUAGE_STORAGE)))
   const text = uiText[language]
@@ -84,12 +76,7 @@ export function App() {
     setLanguageState(next)
     localStorage.setItem(UI_LANGUAGE_STORAGE, next)
   }
-  const initialApiUrl = localStorage.getItem(API_URL_STORAGE) ?? POE_BASE_URL
-  const apiUrlRef = useRef(initialApiUrl)
-  const [apiUrl, setApiUrl] = useState(initialApiUrl)
-  // The saved API key is never prefilled; this field only holds a replacement typed in Settings.
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  // Settings dialog holds API config and local agent executable paths.
+  // Settings presents one active model connection managed by the native harness.
   const [settingsOpen, setSettingsOpen] = useState(false)
   // A small confirm dialog for destructive actions (delete session / canvas). Rename is inline in
   // the picker (double-click), so it needs no dialog. `onOk` runs on 删除.
@@ -98,25 +85,15 @@ export function App() {
     setDialog({ title, message, onOk })
   }, [])
 
-  // The working directory the local Claude Code engines run in (canvas·Claude + build). NOT restored
-  // from localStorage: the folder now comes from 打开工程 in-session, so a fresh launch shows no files
-  // until a project is opened (a persisted folder with no open project was confusing).
+  // Harness roles use the folder selected by Open Project, rather than a restored shell path.
   const cwdRef = useRef('')
   const [cwd, setCwd] = useState('')
-  // Path to the user's `claude` executable; prefilled from the backend's platform default (see the
-  // effect below). A GUI Mac app doesn't inherit the shell PATH, so an absolute path is what lets
-  // `claude` spawn; empty means "resolve `claude` via PATH".
-  const binRef = useRef(localStorage.getItem(BIN_STORAGE) ?? '')
-  const [bin, setBin] = useState(binRef.current)
-  const codexBinRef = useRef(localStorage.getItem(CODEX_BIN_STORAGE) ?? '')
-  const [codexBin, setCodexBin] = useState(codexBinRef.current)
-  const claudeModelRef = useRef(localStorage.getItem(CLAUDE_MODEL_STORAGE) ?? '')
-  const [claudeModel, setClaudeModel] = useState(claudeModelRef.current)
-  const codexModelRef = useRef(localStorage.getItem(CODEX_MODEL_STORAGE) ?? '')
-  const [codexModel, setCodexModel] = useState(codexModelRef.current)
-  const [agentPathsReady, setAgentPathsReady] = useState(false)
-  const claudeCatalog = useAgentModels('claude', bin, cwd, IS_TAURI && agentPathsReady)
-  const codexCatalog = useAgentModels('codex', codexBin, cwd, IS_TAURI && agentPathsReady)
+  const connections = useHarnessProfiles(true)
+  const profileRef = useRef<HarnessProfile | null>(null)
+  useEffect(() => {
+    profileRef.current = connections.profile ? { ...connections.profile, model: connections.model } : null
+  }, [connections.profile, connections.model])
+  const catalog = useAgentModels(connections.profile, true)
 
   // Shell pane geometry. Panels are data-driven (side + width + shown) so a future VSCode-style
   // rearrange only changes this state, not the render — the seam is here. Defaults keep the centre
@@ -165,90 +142,20 @@ export function App() {
     getMessages: () => messagesRef.current,
     setMessages,
     getCwd: () => cwdRef.current,
-    getBin: () => binRef.current,
-    getCodexBin: () => codexBinRef.current,
-    getClaudeModel: () => claudeModelRef.current,
-    getCodexModel: () => codexModelRef.current,
+    getProfile: () => profileRef.current,
+    isBusy: () => busyRef.current,
     setFolder,
   })
 
-  // Selectable chat engines (decoupled behind ChatEngine). They read live conv/port/cwd via
-  // getters, so they stay valid as those are recreated. On desktop: the API canvas assistant,
-  // the SAME canvas assistant backed by Claude Code, and the build engine (画布 → 工程).
-  const enginesRef = useRef<ChatEngine[] | null>(null)
-  if (!enginesRef.current) {
-    const poe = new CanvasEngine(() => convRef.current, () => portRef.current, {
-      id: 'canvas',
-      label: '画布助手·API',
-    })
-    enginesRef.current = IS_TAURI
-      ? [
-          poe,
-          new CanvasEngine(() => ws.activeConv(), () => portRef.current, { id: 'canvas-claude', label: '画布助手·Claude', debugViaAdapter: true, structuredActivity: true }),
-          new CanvasEngine(() => ws.activeConv('codex'), () => portRef.current, { id: 'canvas-codex', label: '画布助手·Codex', debugViaAdapter: true, structuredActivity: true }),
-          new ClaudeEngine(() => cwdRef.current, () => portRef.current, () => binRef.current), // 画布 → 工程 (build)
-          new CodexEngine(() => cwdRef.current, () => portRef.current, () => codexBinRef.current),
-        ]
-      : [poe]
-  }
-  const engines = enginesRef.current
-  const visibleEngines = engines.filter((e) => e.id !== 'claude' && e.id !== 'codex')
-  const [engineId, setEngineId] = useState(() => {
-    const saved = localStorage.getItem(ENGINE_STORAGE)
-    return saved && visibleEngines.some((e) => e.id === saved) ? saved : 'canvas'
-  })
-
-  const selectClaudeModel = (model: string) => {
-    claudeModelRef.current = model
-    setClaudeModel(model)
-    localStorage.setItem(CLAUDE_MODEL_STORAGE, model)
-  }
-  const selectCodexModel = (model: string) => {
-    codexModelRef.current = model
-    setCodexModel(model)
-    localStorage.setItem(CODEX_MODEL_STORAGE, model)
-  }
-
-  // Tauri's adapter keeps the API key in Rust; the browser adapter keeps it in localStorage.
-  const ensureConversation = useCallback((key?: string) => {
-    const adapter = IS_TAURI
-      ? new TauriAdapter(() => apiUrlRef.current)
-      : new PoeAdapter(key ?? '', () => apiUrlRef.current)
-    const prev = convRef.current
-    const conv = new Conversation(adapter)
-    if (prev) conv.reset(prev.messages) // preserve history across key changes
-    convRef.current = conv
-    return conv
-  }, [])
-
-  // Under Tauri, ask the backend whether a key is stored, then wire the adapter.
-  useEffect(() => {
-    if (!IS_TAURI) return
-    tauriKey.has().then((has) => {
-      setApiKeySet(has)
-      if (has && !convRef.current) ensureConversation()
-    })
-  }, [ensureConversation])
-
-  // Resolve both executable paths before the startup model-catalog probes run.
-  useEffect(() => {
-    if (!IS_TAURI) return
-    let current = true
-    void Promise.allSettled([defaultClaudeBin(), defaultCodexBin()]).then(([claude, codex]) => {
-      if (!current) return
-      if (claude.status === 'fulfilled' && !binRef.current) {
-        binRef.current = claude.value
-        setBin(claude.value)
-      }
-      if (codex.status === 'fulfilled' && (!codexBinRef.current || (isVsCodeBundledCodex(codexBinRef.current) && codex.value !== codexBinRef.current))) {
-        codexBinRef.current = codex.value
-        setCodexBin(codex.value)
-        localStorage.setItem(CODEX_BIN_STORAGE, codex.value)
-      }
-      setAgentPathsReady(true)
-    })
-    return () => { current = false }
-  }, [])
+  const isWorkspaceChanging = ws.isChanging
+  // Both roles use the packaged harness and read the active workspace through getters.
+  // Constructors store getters and read them only during send/cancel, outside render.
+  // eslint-disable-next-line react-hooks/refs
+  const [engines] = useState<ChatEngine[]>(() => [
+    new CanvasEngine(() => ws.activeConv(), () => portRef.current, { id: 'canvas-harness', label: 'Canvas Assistant', debugViaAdapter: true, structuredActivity: true }),
+    new HarnessProjectEngine(() => ws.activeProject(), () => portRef.current),
+  ])
+  const [engineId, setEngineId] = useState(() => resolveEngineId(localStorage.getItem(ENGINE_STORAGE)))
 
   // Mirror `messages` for the workspace's async reads (declared FIRST so it updates before the
   // persist effect below reads it), then persist the active conversation whenever a send settles
@@ -263,16 +170,8 @@ export function App() {
   const onReady = useCallback(
     (api: ExcalidrawImperativeAPI) => {
       portRef.current = createExcalidrawPort(api)
-      if (!IS_TAURI) {
-        const key = localStorage.getItem(KEY_STORAGE)
-        if (key && !convRef.current) ensureConversation(key)
-      } else if (!convRef.current) {
-        tauriKey.has().then((has) => {
-          if (has && !convRef.current) ensureConversation()
-        })
-      }
     },
-    [ensureConversation],
+    [],
   )
 
   const addMessage = (role: DisplayMessage['role'], text: string, image?: string) => {
@@ -302,27 +201,6 @@ export function App() {
   const appendToMessage = (id: string, delta: string) =>
     setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, text: msg.text + delta } : msg)))
 
-  const saveApiKey = async () => {
-    const key = apiKeyInput.trim()
-    if (!key) return
-    if (IS_TAURI) {
-      await tauriKey.set(key)
-      ensureConversation()
-    } else {
-      localStorage.setItem(KEY_STORAGE, key)
-      ensureConversation(key)
-    }
-    setApiKeySet(true)
-    setApiKeyInput('')
-  }
-
-  const clearApiKey = async () => {
-    if (IS_TAURI) await tauriKey.clear()
-    else localStorage.removeItem(KEY_STORAGE)
-    setApiKeySet(false)
-    setApiKeyInput('')
-  }
-
   const formatQuestionAnswer = useCallback((question: DisplayQuestion, answers: Record<string, string[]>) => {
     const items = question.items?.length
       ? question.items
@@ -342,19 +220,12 @@ export function App() {
 
   const sendToEngine = useCallback(
     async (targetEngineId: string, text: string) => {
+      if (busyRef.current || isWorkspaceChanging()) return
       const engine = engines.find((e) => e.id === targetEngineId)
       if (!engine) return
-      // The API canvas engine needs a live Conversation; create it on first use.
-      if (targetEngineId === 'canvas' && !convRef.current) {
-        if (IS_TAURI) ensureConversation()
-        else {
-          const key = localStorage.getItem(KEY_STORAGE)
-          if (!key) return
-          ensureConversation(key)
-        }
-      }
-
       addMessage('user', text)
+      busyRef.current = true
+      activeEngineRef.current = engine
       setBusy(true)
       // Lazily open an assistant bubble on the first text; a system note closes it so the next
       // text starts a fresh bubble below — keeps Claude's "progress then prose" ordering readable.
@@ -412,10 +283,13 @@ export function App() {
         const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e)
         addMessage('system', `出错：${msg || '(空错误)'}`)
       } finally {
+        setMessages((items) => items.map((message) => message.question?.requestId && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message))
+        activeEngineRef.current = null
+        busyRef.current = false
         setBusy(false)
       }
     },
-    [engines, ensureConversation, debug],
+    [engines, debug, isWorkspaceChanging],
   )
 
   const onSend = useCallback(
@@ -429,10 +303,11 @@ export function App() {
     async (messageId: string, answers: Record<string, string[]>) => {
       const message = messagesRef.current.find((m) => m.id === messageId)
       const question = message?.question
-      if (!question || question.answer) return
+      if (!question || question.answer || question.expired) return
       const answerText = formatQuestionAnswer(question, answers)
       if (!answerText.trim()) return
-      const engine = engines.find((item) => item.id === question.engineId)
+      const targetEngineId = resolveEngineId(question.engineId)
+      const engine = question.requestId ? activeEngineRef.current : engines.find((item) => item.id === targetEngineId)
       if (!engine) return
       setMessages((items) =>
         items.map((m) =>
@@ -447,7 +322,7 @@ export function App() {
           await engine.answerQuestion({ requestId: question.requestId, answers })
         } else {
           if (busy) throw new Error('Wait for the current request to finish before answering')
-          await sendToEngine(question.engineId, answerText)
+          await sendToEngine(targetEngineId, answerText)
         }
       } catch (error) {
         setMessages((items) =>
@@ -467,32 +342,35 @@ export function App() {
   const onSave = useCallback(() => {
     const port = portRef.current
     if (!port) return
-    downloadProject(buildProject(port, messages, convRef.current?.messages ?? []))
-  }, [messages])
+    const imported = importedHistoryRef.current
+    const history = imported?.display === messages ? imported.api : ws.activeConv()?.messages ?? []
+    downloadProject(buildProject(port, messages, history))
+  }, [messages, ws])
 
   const onLoad = useCallback(async () => {
+    if (busyRef.current || ws.isChanging()) return
     const port = portRef.current
     if (!port) return
     const project = await openProjectFile()
-    if (!project) return
+    if (!project || busyRef.current || ws.isChanging()) return
+    // Start imported visible history in a fresh harness session, retaining the previous session.
+    if (ws.projectName) await ws.newSession()
     restoreCanvas(port, project)
-    setMessages(project.display)
-    convRef.current?.reset(project.api)
-  }, [])
+    const display = project.display.map((message) => message.question && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message)
+    importedHistoryRef.current = { display, api: project.api }
+    messagesRef.current = display
+    setMessages(display)
+    await ws.persistActive()
+  }, [ws])
 
-  const isLocalAgent = engineId.includes('claude') || engineId.includes('codex')
-  const canSend = isLocalAgent ? !!cwd.trim() : apiKeySet
+  const canSend = !ws.changing && !!cwd.trim() && !!connections.profile?.signedIn && !!connections.model
   const placeholder = canSend
     ? text.app.placeholderReady
-    : isLocalAgent
-      ? text.app.openProjectFirst
-      : text.app.apiKeyFirst
-  // The Claude canvas engine's config row is just the session switcher now; 打开工程 moved to the file
-  // panel, the claude path to Settings, and the cwd input is gone (the folder is set by 打开工程).
-  const engineConfig =
-    (engineId === 'canvas-claude' || engineId === 'canvas-codex') ? (
+    : cwd.trim() ? text.harness.configureFirst : text.app.openProjectFirst
+  const engineConfig = (
       <>
       <PickerBar
+        disabled={busy || ws.changing}
         items={ws.sessions}
         activeId={ws.activeSessionId}
         placeholder={ws.projectName ? text.workspace.noSession : text.workspace.noProject}
@@ -503,28 +381,32 @@ export function App() {
         onDelete={(id, name) => openConfirm(text.workspace.deleteSessionTitle, formatUiText(text.workspace.deleteSessionMessage, { name }), () => ws.deleteSession(id))}
         text={text}
       />
+      <div className="chat-model-connection" title={connections.profile?.account ?? ''}>
+        <span className={`connection-status-dot${connections.profile ? ' online' : ''}`} />
+        <span>{connections.profile ? connections.profile.kind === 'gateway' ? 'Gateway' : 'GPT' : text.harness.configureFirst}</span>
+      </div>
       <ModelPicker
         key={engineId}
-        value={engineId === 'canvas-claude' ? claudeModel : codexModel}
-        models={engineId === 'canvas-claude' ? claudeCatalog.models : codexCatalog.models}
-        onChange={engineId === 'canvas-claude' ? selectClaudeModel : selectCodexModel}
-        disabled={busy}
-        loading={engineId === 'canvas-claude' ? claudeCatalog.loading : codexCatalog.loading}
-        error={engineId === 'canvas-claude' ? claudeCatalog.error : codexCatalog.error}
-        onRefresh={engineId === 'canvas-claude' ? claudeCatalog.refresh : codexCatalog.refresh}
+        value={connections.model}
+        models={catalog.models}
+        onChange={connections.selectModel}
+        disabled={busy || ws.changing}
+        loading={catalog.loading}
+        error={catalog.error}
+        onRefresh={catalog.refresh}
         text={text}
       />
+      {engineId === 'canvas-harness' && <button disabled={busy || ws.changing || !connections.profile} onClick={() => {
+        void ws.importHistory().catch((error) => addMessage('system', `出错：${error instanceof Error ? error.message : String(error)}`))
+      }}>{text.harness.importHistory}</button>}
       </>
-    ) : undefined
+    )
   const activeActivityLabel = text.activity.labels[activeActivity]
 
   return (
     <>
-    {/* Shell: 文件左 · 画布中 · 对话右. Panes are data-driven (width/shown state above), so widths
-        drag-resize and the file pane hides — and a future VSCode-style rearrange only touches that
-        state. The file pane is desktop-only; browser API mode is just 画布中 · 对话右. */}
+    {/* Shell: files left, canvas centre, chat right; pane visibility and widths are persisted. */}
     <div className="layout">
-      {IS_TAURI && (
         <aside className="activity-shell">
           <ActivityBar active={activeActivity} panelOpen={filesShown} onSelect={selectActivity} text={text} />
           {filesShown && (
@@ -552,7 +434,6 @@ export function App() {
             </>
           )}
         </aside>
-      )}
       <main className="canvas-pane">
         <Canvas onReady={onReady} />
         {/* Canvas picker floats over the canvas top-right (below Excalidraw's Library button). Only
@@ -560,6 +441,7 @@ export function App() {
         {ws.activeCanvasId && (
           <div className="canvas-bar">
             <PickerBar
+              disabled={busy || ws.changing}
               items={ws.canvases}
               activeId={ws.activeCanvasId}
               placeholder={text.workspace.noCanvas}
@@ -580,15 +462,19 @@ export function App() {
           busy={busy}
           canSend={canSend}
           debug={debug}
-          engines={visibleEngines.map((e) => ({ id: e.id, label: e.label }))}
+          engines={engines.map((e) => ({ id: e.id, label: e.label }))}
           engineId={engineId}
           onSelectEngine={(id) => {
-            setEngineId(id)
+            if (busyRef.current || ws.isChanging()) return
+            setEngineId(resolveEngineId(id))
             localStorage.setItem(ENGINE_STORAGE, id)
           }}
           engineConfig={engineConfig}
           placeholder={placeholder}
           onSend={onSend}
+          onStop={() => {
+            void activeEngineRef.current?.cancel?.().catch((error) => addMessage('system', `出错：${error instanceof Error ? error.message : String(error)}`))
+          }}
           onAnswerQuestion={onAnswerQuestion}
           onToggleDebug={() => setDebug((d) => !d)}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -633,10 +519,11 @@ export function App() {
 
     {settingsOpen && (
       <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <h3 className="modal-title">{text.settings.title}</h3>
-          <p className="modal-hint"><strong>{text.language.label}</strong></p>
+        <div className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="flowm-settings-title" onClick={(e) => e.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setSettingsOpen(false) }}>
+          <div className="settings-header"><h3 id="flowm-settings-title">{text.settings.title}</h3><button type="button" className="settings-close" aria-label={text.common.done} onClick={() => setSettingsOpen(false)}>×</button></div>
+          <div className="settings-language-row"><label htmlFor="flowm-language">{text.language.label}</label>
           <select
+            id="flowm-language"
             className="modal-input"
             value={language}
             onChange={(e) => setLanguage(parseUiLanguage(e.target.value))}
@@ -645,75 +532,22 @@ export function App() {
               <option key={id} value={id}>{text.language.options[id]}</option>
             ))}
           </select>
-          <p className="modal-hint"><strong>{text.settings.apiSection}</strong></p>
-          <p className="modal-hint">OpenAI-compatible URL</p>
-          <input
-            className="modal-input"
-            autoFocus
-            value={apiUrl}
-            placeholder={POE_BASE_URL}
-            onChange={(e) => {
-              apiUrlRef.current = e.target.value
-              setApiUrl(e.target.value)
-              localStorage.setItem(API_URL_STORAGE, e.target.value)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
-            }}
-            style={{ fontFamily: 'monospace' }}
-          />
-          <p className="modal-hint">{text.settings.apiKeyStatus} ({apiKeySet ? text.settings.apiKeySet : text.settings.apiKeyUnset})</p>
-          <input
-            className="modal-input"
-            type="password"
-            value={apiKeyInput}
-            placeholder={apiKeySet ? text.settings.apiKeyKeep : text.settings.apiKeyInput}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void saveApiKey()
-              else if (e.key === 'Escape') setSettingsOpen(false)
-            }}
-          />
-          <div className="modal-actions">
-            <button onClick={clearApiKey}>{text.settings.clearKey}</button>
-            <button className="primary" disabled={!apiKeyInput.trim()} onClick={saveApiKey}>{text.settings.saveKey}</button>
           </div>
-
-          <p className="modal-hint"><strong>{text.settings.localAgentSection}</strong></p>
-          <p className="modal-hint">
-            {text.settings.executableHint}
-          </p>
-          <p className="modal-hint">Claude</p>
-          <input
-            className="modal-input"
-            value={bin}
-            placeholder={text.settings.claudePlaceholder}
-            onChange={(e) => {
-              binRef.current = e.target.value
-              setBin(e.target.value)
-              localStorage.setItem(BIN_STORAGE, e.target.value)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
-            }}
-            style={{ fontFamily: 'monospace' }}
-          />
-          <p className="modal-hint">Codex</p>
-          <input
-            className="modal-input"
-            value={codexBin}
-            placeholder={text.settings.codexPlaceholder}
-            onChange={(e) => {
-              codexBinRef.current = e.target.value
-              setCodexBin(e.target.value)
-              localStorage.setItem(CODEX_BIN_STORAGE, e.target.value)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === 'Escape') setSettingsOpen(false)
-            }}
-            style={{ fontFamily: 'monospace' }}
-          />
-          <div className="modal-actions">
+            <HarnessSettings
+              key={connections.profile?.id ?? 'disconnected'}
+              profiles={connections.profiles}
+              profile={connections.profile}
+              disabled={busy || ws.changing || connections.loading}
+              loginPending={!!connections.loginAttempt}
+              onSave={connections.save}
+              onLogin={connections.login}
+              onLogout={connections.logout}
+              onConnect={connections.connect}
+              onCancelLogin={connections.cancelLogin}
+              text={text}
+            />
+            {connections.error && <p className="settings-error" role="alert">{connections.error}</p>}
+          <div className="modal-actions settings-footer">
             <button className="primary" onClick={() => setSettingsOpen(false)}>{text.common.done}</button>
           </div>
         </div>

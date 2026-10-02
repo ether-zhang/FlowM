@@ -1,6 +1,5 @@
-/* Shell layout: 文件左 · 画布中 · 对话右 (desktop). A flex row — the centre canvas takes the slack,
-   the two side panes carry their width via inline style (drag-resizable, the file pane hideable).
-   Browser (Poe) mode has no file pane, so it's just 画布中 · 对话右. */
+/* Shell layout: files left, canvas centre, chat right. The centre canvas takes the slack;
+   side-pane widths and the file pane's visibility are controlled by the desktop UI. */
 .layout {
   display: flex;
   height: 100svh;
@@ -1065,6 +1064,8 @@
   z-index: 1000;
 }
 .modal {
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
   width: 360px;
   max-width: calc(100vw - 32px);
   background: #fff;
@@ -1085,6 +1086,7 @@
   font-size: 14px;
 }
 .modal-actions {
+  flex-wrap: wrap;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -1105,6 +1107,61 @@
   color: #fff;
 }
 .modal-actions button.primary:hover { background: #1d4ed8; }
+
+/* Settings exposes one native model connection at a time. */
+.settings-modal { width: 520px; padding: 24px; border-radius: 16px; box-sizing: border-box; }
+.settings-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+.settings-header h3 { margin: 0; font-size: 20px; font-weight: 600; }
+.settings-close { border: 0; background: transparent; color: #777; padding: 0 4px; font-size: 26px; line-height: 1; cursor: pointer; }
+.settings-language-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 22px; }
+.settings-language-row label { font-size: 13px; color: #666; }
+.settings-language-row select { width: 160px; font-size: 13px; }
+.settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.settings-section-heading h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.settings-section-heading > span { font-size: 12px; color: #777; }
+.model-connections { border-top: 1px solid #ececf0; padding-top: 20px; }
+.model-connection-options { display: flex; flex-direction: column; gap: 10px; }
+.model-connection-row { display: flex; align-items: stretch; gap: 10px; }
+.model-connection-option { display: flex; align-items: center; text-align: left; flex: 1; min-width: 0; gap: 12px; border: 1px solid #e4e4e9; border-radius: 10px; padding: 12px 14px; background: #fff; color: #252529; font: inherit; cursor: pointer; transition: background .15s, border-color .15s; }
+.model-connection-option:hover:not(:disabled) { background: #f8f7ff; border-color: #bdb7ed; }
+.model-connection-option:focus-visible { outline: 2px solid var(--fm-accent, #6965db); outline-offset: 2px; }
+.model-connection-option:disabled { opacity: .42; cursor: default; background: #fafafa; }
+.model-connection-option.active:disabled { opacity: 1; color: #4f48b4; border-color: #c8c3f0; background: #f5f3ff; }
+.model-connection-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 9px; font-size: 15px; font-weight: 600; background: #f0f0f3; color: #52525b; }
+.model-connection-icon.gpt { color: #146956; background: #e9f4ef; }
+.model-connection-icon.claude { color: #aa6144; background: #faf0ea; }
+.model-connection-icon.gateway { color: #6552b8; background: #f0ecfa; }
+.model-connection-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.model-connection-copy strong { font-size: 13px; font-weight: 600; }
+.model-connection-copy > span { font-size: 11px; color: #777; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-connection-check { margin-left: auto; color: #6965db; font-size: 16px; }
+.model-disconnect { border: 1px solid #e0dfe8; border-radius: 10px; background: #fff; color: #565363; font: inherit; font-size: 12px; padding: 0 14px; flex: 0 0 auto; cursor: pointer; }
+.model-disconnect:hover:not(:disabled) { color: #4f48b4; border-color: #bdb7ed; background: #faf9ff; }
+.model-disconnect:disabled { opacity: .5; cursor: default; }
+.model-connection-notice, .model-login-pending { margin: 14px 0 0; padding: 12px; border-radius: 8px; background: #f6f6fa; font-size: 12px; line-height: 1.6; color: #666; }
+.model-login-pending { display: flex; gap: 12px; align-items: center; }
+.model-login-pending span { flex: 1; }
+.model-login-pending button { border: 1px solid #ddd; background: #fff; border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+.gateway-connection-form { background: #f9f9fc; border: 1px solid #ececf2; border-radius: 10px; padding: 16px; margin-top: 12px; }
+.settings-field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+.settings-field label { color: #666; font-size: 12px; }
+.settings-field input { font-size: 13px; }
+.gateway-no-auth { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #666; cursor: pointer; }
+.gateway-no-auth input { accent-color: var(--fm-accent, #6965db); }
+.gateway-connection-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+.gateway-connection-actions button { background: var(--fm-accent, #6965db); border: 0; color: #fff; padding: 8px 18px; border-radius: 8px; font: inherit; font-size: 13px; cursor: pointer; }
+.gateway-connection-actions button:disabled { opacity: .5; cursor: default; }
+.settings-footer { margin-top: 22px; }
+.settings-error { color: #b42318; font-size: 12px; line-height: 1.5; margin: 14px 0 0; overflow-wrap: anywhere; }
+.chat-model-connection { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fm-text-muted, #777); margin-top: 8px; }
+.connection-status-dot { height: 6px; width: 6px; flex: 0 0 6px; background: #aaa; border-radius: 50%; }
+.connection-status-dot.online { background: #35a577; }
+@media (max-width: 520px) {
+  .settings-modal { padding: 20px; }
+  .model-connection-row { gap: 7px; }
+  .model-connection-option { padding: 11px; gap: 9px; }
+  .model-disconnect { padding: 0 10px; }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Excalidraw-style alignment. Tokens pulled from @excalidraw/excalidraw's bundled

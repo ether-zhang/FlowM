@@ -35,6 +35,7 @@ export function PickerBar({
   onRename,
   onDelete,
   text,
+  disabled = false,
 }: {
   items: PickerItem[]
   activeId: string | null
@@ -49,6 +50,7 @@ export function PickerBar({
   /** Delete routes through the caller's confirm dialog. */
   onDelete: (id: string, name: string) => void
   text: UiText
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -70,11 +72,12 @@ export function PickerBar({
   }, [open])
 
   const startEdit = (it: PickerItem) => {
+    if (disabled) return
     setDraft(it.name)
     setEditingId(it.id)
   }
   const commitEdit = () => {
-    if (editingId && draft.trim()) onRename(editingId, draft.trim())
+    if (!disabled && editingId && draft.trim()) onRename(editingId, draft.trim())
     setEditingId(null)
   }
   const editorProps = {
@@ -102,10 +105,10 @@ export function PickerBar({
             {active ? active.name : placeholder}
           </span>
         )}
-        <button className="picker-icon" title={text.picker.history} onClick={() => setOpen((o) => !o)} disabled={!hasItems}>
+        <button className="picker-icon" title={text.picker.history} onClick={() => setOpen((o) => !o)} disabled={disabled || !hasItems}>
           <ClockIcon />
         </button>
-        <button className="picker-icon" title={newTitle} onClick={onNew} disabled={!hasItems}>
+        <button className="picker-icon" title={newTitle} onClick={onNew} disabled={disabled || !hasItems}>
           <PlusIcon />
         </button>
       </div>
@@ -118,6 +121,7 @@ export function PickerBar({
                 key={it.id}
                 className={`picker-row${it.id === activeId ? ' active' : ''}`}
                 onClick={() => {
+                  if (disabled) return
                   onSelect(it.id)
                   setOpen(false)
                 }}
@@ -137,6 +141,7 @@ export function PickerBar({
                 )}
                 <button
                   className="picker-row-btn"
+                  disabled={disabled}
                   title={text.picker.rename}
                   onClick={(e) => {
                     e.stopPropagation()
@@ -147,6 +152,7 @@ export function PickerBar({
                 </button>
                 <button
                   className="picker-row-btn"
+                  disabled={disabled}
                   title={text.picker.delete}
                   onClick={(e) => {
                     e.stopPropagation()

@@ -19,9 +19,9 @@ import {
   resolveStructureRelationReferences,
   toolCallToOp,
 } from '../protocol'
-import type { LlmAdapter, RunTurnParams } from './adapter'
+import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
 import type { AgentActivityEvent, AgentQuestionAnswer } from '../agent'
-import type { LlmMessage, LlmQuestion, LlmToolCall } from './types'
+import type { LlmMessage, LlmQuestion, LlmToolCall, LlmTurn } from './types'
 import {
   FLOWM_CANVAS_FINALIZE_PROMPT,
   FLOWM_CANVAS_REVIEW_PROMPT,
@@ -246,6 +246,7 @@ export class Conversation {
    * soon as every referenced shape exists.
    */
   private pendingRelations: StructureRelation[] = []
+  private cancelled = false
 
   constructor(adapter: LlmAdapter) {
     this.adapter = adapter
@@ -267,12 +268,29 @@ export class Conversation {
     await this.adapter.dispose?.()
   }
 
+  async cancel(): Promise<void> {
+    this.cancelled = true
+    await this.adapter.cancel?.()
+  }
+
+  private checkCancelled(): void {
+    if (this.cancelled) throw new Error('Canvas request cancelled')
+  }
+
+  private async runTurn(params: RunTurnParams, callbacks: TurnCallbacks): Promise<LlmTurn> {
+    this.checkCancelled()
+    const turn = await this.adapter.runTurn(params, callbacks)
+    this.checkCancelled()
+    return turn
+  }
+
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
     if (!this.adapter.answerQuestion) throw new Error('This agent does not support in-flight questions')
     await this.adapter.answerQuestion(answer)
   }
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
+    this.cancelled = false
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn
     this.diagramPlan = null
@@ -284,6 +302,7 @@ export class Conversation {
     const marks = nodeMarks(shapes)
     const context = formatCanvas(shapes, marks)
     const image = await port.exportImage('selection', marks)
+    this.checkCancelled()
 
     // Keep only the newest turn's image: vision tokens are costly and stale
     // snapshots add little once the canvas has moved on.
@@ -324,7 +343,7 @@ export class Conversation {
         tools: ALL_TOOLS,
       }
       cb.onRequest?.(params, i)
-      const turn = await this.adapter.runTurn(params, {
+      const turn = await this.runTurn(params, {
         onSystem: cb.onToolsApplied,
         onDebug: cb.onDebug,
         onQuestion: cb.onQuestion,
@@ -384,7 +403,7 @@ export class Conversation {
       tools: REVIEW_TOOLS,
     }
     cb.onRequest?.(params, MAX_ITERATIONS)
-    const turn = await this.adapter.runTurn(params, {
+    const turn = await this.runTurn(params, {
       onSystem: cb.onToolsApplied,
       onDebug: cb.onDebug,
       onQuestion: cb.onQuestion,
@@ -421,7 +440,7 @@ export class Conversation {
       tools: [],
     }
     cb.onRequest?.(params, MAX_ITERATIONS + 1)
-    const turn = await this.adapter.runTurn(params, {
+    const turn = await this.runTurn(params, {
       onSystem: cb.onToolsApplied,
       onDebug: cb.onDebug,
       onQuestion: cb.onQuestion,

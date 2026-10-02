@@ -74,6 +74,22 @@ const callbacks = () => ({
   onQuestion: vi.fn(),
 })
 
+describe('canvas request cancellation boundary', () => {
+  it('discards a late model result before it reaches CanvasPort', async () => {
+    let resolveTurn!: (turn: LlmTurn) => void
+    const adapter: LlmAdapter = { runTurn: () => new Promise((resolve) => { resolveTurn = resolve }), cancel: vi.fn(async () => {}) }
+    const conversation = new Conversation(adapter)
+    const { port, apply } = createPort()
+    const send = conversation.send('Draw', port, callbacks())
+    const cancelled = expect(send).rejects.toThrow('cancelled')
+    await vi.waitFor(() => expect(resolveTurn).toBeTypeOf('function'))
+    await conversation.cancel()
+    resolveTurn({ text: 'late', toolCalls: [{ id: 'late', name: 'create_text', args: { text: 'late', x: 0, y: 0 } }] })
+    await cancelled
+    expect(apply).not.toHaveBeenCalled()
+  })
+})
+
 describe('Conversation turn contract', () => {
   it('keeps structure and freeze constraints across build batches before running intent repair', async () => {
     const adapter = new ScriptedAdapter([

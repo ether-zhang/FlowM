@@ -27,7 +27,7 @@ export function QuestionCard({ messageId, context, question, onAnswer, text }: Q
   const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({})
   const [otherText, setOtherText] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
-  const answered = question.answer
+  const answered = question.answer ?? (question.expired ? { text: text.harness.cancelledQuestion } : undefined)
   const needsSubmit = items.length > 1 || items.some((item) => item.multiSelect)
   const complete = items.length > 0 && items.every((item) => (answers[item.id]?.length ?? 0) > 0)
 

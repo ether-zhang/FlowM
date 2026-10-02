@@ -17,6 +17,9 @@ export interface SessionMeta {
   sessionId?: string
   /** Codex thread id (`codex exec resume` handle); captured after the first turn. */
   codexSessionId?: string
+  /** FlowM-owned runtime bindings. Old CLI IDs above are retained only as historical references. */
+  harnessThreads?: Record<string, string>
+  harnessImports?: Record<string, string>
 }
 
 /** A drawing surface (its scene is persisted separately, keyed by id). */

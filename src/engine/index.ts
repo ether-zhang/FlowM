@@ -1,7 +1,3 @@
 export type { ChatEngine, ChatCallbacks } from './chatEngine'
 export { CanvasEngine } from './canvasEngine'
-export { ClaudeEngine } from './claudeEngine'
-export { CodexEngine } from './codexEngine'
-export { codexRun, defaultCodexBin, type CodexEvent } from './codexCli'
-export { interpretCodexLine, extractCodexThreadId } from './codexStream'
-export { buildBuildPrompt } from './prompt'
+export { HarnessProjectEngine } from './harnessProjectEngine'

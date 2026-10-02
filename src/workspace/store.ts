@@ -25,6 +25,7 @@ export const listDir = (path: string) => invoke<FsEntry[]>('list_dir', { path })
 
 /** Native folder picker; resolves to the chosen absolute path, or null if cancelled. */
 export const pickFolder = () => invoke<string | null>('pick_folder')
+export const pickHarnessHistory = () => invoke<string | null>('pick_harness_history')
 
 /** Read a file's text (for the floating editor); rejects on >2MB / binary / missing. */
 export const readFile = (path: string) => invoke<string>('read_file', { path })
