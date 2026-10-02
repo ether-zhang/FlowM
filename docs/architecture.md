@@ -174,18 +174,18 @@ content and freehand strokes are not included globally.
 
 ## 4. Provider adapters and transports
 
-`LlmAdapter` exposes `runTurn`, optional in-flight question answering, an
-optional provider session ID, and optional disposal. `HarnessAdapter` connects
-the Conversation state machine and output projection to private, resumable FlowM
-threads, inline images, per-turn strict output schema, and the exact caller-owned
-canvas system instruction. The old browser/HTTP adapters, API key proxy, and
+`CanvasTurnRuntime` exposes FlowM canvas turns, question answering, cancellation,
+and disposal. `CanvasTurnProjection` builds the canvas output contract and validates
+the returned envelope. It depends on an opaque `HarnessTurnPort`; `HarnessTurn`
+owns delivery, inline images, private resumable threads and acknowledged-input cursors.
+The exact caller-owned canvas system instruction is preserved. The old browser/HTTP adapters, API key proxy, and
 standalone `Canvas · API` engine have been removed.
 
 `harness/` translates FlowM runtime events into neutral activity,
 questions, tool lifecycle events, and final provider output. It does not apply
 canvas operations and does not classify build/review/finalize phases.
 
-HarnessAdapter sends only new user/tool feedback and resumes the private kernel
+HarnessTurn sends only new user/tool feedback and resumes the private kernel
 history. Delivery acknowledgement and output validation are separate: completed
 input is not sent twice because its JSON was invalid. The service saves a receipt
 before native submission and flushes history before completion. A disconnected
@@ -193,11 +193,16 @@ client queries that receipt; it never blindly submits the same task again.
 
 ### Model selection and discovery
 
-Settings selects one FlowM-owned connection at a time; the session bar selects its model. OpenAI API-key
+`HarnessConnections` owns account state, live discovery and the validated model/credential
+selection. React subscribes to a single snapshot. Runtime restarts refresh accounts and
+models together; delayed results after logout, refresh or credential changes are discarded.
+Only model preferences are persisted. `ModelDirectory` is the shared native discovery
+service used by both `models/list` and kernel thread creation; authentication is supplied
+by `AuthService`. Settings selects one FlowM-owned connection at a time; the session bar selects its model. OpenAI API-key
 discovery uses `/v1/models`; ChatGPT discovery uses the plan-aware `models` array
-and `visibility: list`. Gateway aliases are explicitly configured, rather than
-presented as an OpenAI entitlement catalog. The kernel's bundled metadata is used
-for request/tool construction only. Unknown gateway models omit reasoning and
+and `visibility: list`. Gateway discovery uses its authenticated `/v1/models`
+response (`data[].id`). Model choices and kernel metadata are projected from the
+same authenticated provider directory. Discovered gateway models omit reasoning and
 context-window claims until their route is verified. UI language stays in UI files.
 
 ## 5. Runtime ownership
@@ -350,3 +355,27 @@ mixed into provider or canvas behavior work.
   bounded greedy batch rather than a complete global graph optimizer. Further
   quality work belongs in canvas geometry and must not become provider-specific
   prompt or UI patches.
+
+## Runtime cleanup audit (2026-10-02)
+
+The version 4 handshake requires the caller's validated credential version on thread creation. Older clients are rejected. `models/list` returns a profile- and credential-scoped catalog, including its source and a real default model. Account and gateway choices and kernel metadata originate from the same native directory service. The upstream bundled model catalog is never used for FlowM model selection or another model’s capability claims. Unlisted or hidden models are rejected by native thread creation, including obsolete saved preferences.
+
+FlowM constrains model metadata to direct tools. Upstream `tool_mode` can override feature switches, so it is normalized alongside the disabled Code Mode/host flags. Legacy API/Claude debug switches, optional activity channels, CLI resume handles and standalone Codex-history import are removed from live execution. Saved FlowM data and private thread resume remain supported. Canvas build/review/finalize and CanvasPort operations are unchanged.
+
+### Live catalog refresh
+
+Discovery uses the pinned Codex `ModelsClient` request construction and raw-response transport, with FlowM-owned authentication and provider routing. OpenAI catalog requests send the schema compatibility `client_version=0.155.0` and no-cache/no-store headers. The pinned source workspace declares `0.0.0`; that build placeholder is not the shipped client compatibility level. A missing version parameter hid GPT-6-Sol and GPT-6-Luna from the returned list. The native catalog TTL cache has been removed; application startup, native-runtime restart and manual refresh fetch current server data. Runtime restarts invalidate UI snapshots. Only the user’s model preference is persisted. There is no manual model-ID entry or directory bypass.
+
+The 2026-10-02 native audit used the existing FlowM SIWC account without exposing OAuth tokens. The public `/v1/models` response contained five visible models with no version, `0.0.0`, `0.153.0` or `0.154.0`; versions `0.155.0`, `0.156.0` and `0.157.0` returned seven. Reusing Codex `ModelsClient` and its default client headers still returned seven. GPT-6.1-Sol was absent from the complete raw responses, rather than hidden by the UI visibility filter. Prior minimal inference probes using the same credentials completed for GPT-6.1-Sol, GPT-6-Sol and GPT-6-Luna; that evidence establishes those requests only, not agent-tool conformance.
+
+Codex’s default discovery instead targets `https://chatgpt.com/backend-api/codex/models` and can use a bundled or cached catalog. Its pinned bundled directory contains eight visible models, including GPT-6.1-Sol. SIWC explicitly requires the public API, so reproducing Codex backend routing or merging its bundled model names is not a valid way to fill this account’s public directory. The discrepancy is confirmed at the public catalog boundary; the server-side reason for omitting GPT-6.1-Sol is not established by client source or published documentation. See [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+
+### Model interaction ownership review
+
+The application no longer maintains separate profile and catalog hooks or mutates a profile's model field to create runtime bindings. `useHarnessConnection` only subscribes to the harness-owned controller. Workspace code requests role-specific handles through harness factories; binding keys, historical context filtering, model delivery, input acknowledgement, streamed/final text reconciliation and model lifecycle events belong to `src/harness`. Canvas schema validation, build/review/finalize orchestration and CanvasPort execution remain in the domain layer.
+
+Review fixes include rejecting stale credential versions before thread creation, preventing submission after disposal during opening, and distinguishing preparation failure from uncertain delivery. A lost or interrupted submitted request still cannot be automatically replayed. Kernel managers are keyed by normalized model metadata as well as credential, role and model, so a fresh directory response cannot silently reuse an older manager's static capability catalog for a new thread.
+
+`harness/src/provider.rs` owns the application identity, public OpenAI resource and pinned catalog compatibility version. SIWC registration previously used `FlowM` while requests used `flowm_harness`; discovery and inference now use the same `FlowM` identity. A paired native public-catalog check using both identities still returned seven visible models and omitted GPT-6.1-Sol in both complete responses, ruling out this identity mismatch as the explanation for this account's missing directory entry.
+
+Validation: 228 frontend tests across 34 files, 16 native harness tests, TypeScript/Vite build, and local kernel integration with a discovered `claude-offline-fixture` model ID. A loopback test service returns this ID and preset Responses events; it does not run Claude or use Anthropic's native protocol. FlowM harness, the embedded Codex kernel, tools and OS sandbox run normally against that simulated downstream service. Real providers use the same harness path. Canvas, protocol and the canvas system prompt match all 31 protected baseline hashes. Real gateway/Claude inference remains unverified until a gateway is configured.

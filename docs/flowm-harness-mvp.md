@@ -8,7 +8,7 @@
 
 正式替换采用单一路径：删除旧 Claude/Codex CLI 执行、控制客户端、路径发现与 fallback，不保留“旧 CLI 高级模式”。向后兼容针对用户数据和任务历史，不要求继续执行旧程序。新 harness 尚未可用前不删除唯一仍在工作的实现；它们只用于替换期间的开发对照，最终发行物不得保留执行入口。
 
-当前已实现 `harness/`、`src/harness/`、HarnessAdapter、HarnessProjectEngine、认证/配置 UI 和 Tauri 随包进程监督；旧 CLI 执行、路径发现、控制协议与 fallback 已移除。以下要求仍是完整 MVP 的验收标准，不因为代码已接入就全部标记为通过。
+当前已实现 `harness/`、`src/harness/`、CanvasTurnProjection + HarnessTurn、HarnessProjectEngine、认证/配置 UI 和 Tauri 随包进程监督；旧 CLI 执行、路径发现、控制协议与 fallback 已移除。以下要求仍是完整 MVP 的验收标准，不因为代码已接入就全部标记为通过。
 
 ## 当前实现与验证记录
 
@@ -58,7 +58,7 @@
 | 现有模块 | 职责 | 迁移处理 |
 | --- | --- | --- |
 | [Conversation](../src/llm/conversation.ts) | build、review、finalize，操作校验、符号引用、复核范围和最终说明。 | 保留业务所有权。 |
-| [LlmAdapter](../src/llm/adapter.ts) | 接收业务请求，返回中立的 `LlmTurn`，提供询问和生命周期接口。 | 增加 harness 实现。 |
+| [CanvasTurnRuntime](../src/llm/canvasTurn.ts) | 接收业务请求，返回中立的 `LlmTurn`，提供询问和生命周期接口。 | 增加 harness 实现。 |
 | [输出契约](../src/llm/outputContract.ts) | 生成 portable、strict schema，并投影为同一个 `LlmTurn`。 | 继续由 FlowM 维护。 |
 | [CanvasPort](../src/protocol/port.ts) 与 [画布实现](../src/canvas/excalidrawPort.ts) | 应用经过校验的画布操作与布局意图。 | 保留。 |
 | [CodexAdapter](https://github.com/ether-zhang/FlowM/blob/b792d234751aa6a78d479f2522b90e5872241448/src/llm/codexAdapter.ts) 与 [Codex 客户端](https://github.com/ether-zhang/FlowM/blob/b792d234751aa6a78d479f2522b90e5872241448/src/agentControl/codexAppServer.ts) | 已使用 app-server JSON-RPC；增加超时、输出保护、失败后重新启动和发送游标保护。 | 保留已验证的行为与测试，迁移到 FlowM 协议；不再把这些问题列成完全未处理。 |
@@ -97,8 +97,12 @@
 
 ```mermaid
 flowchart TD
-    C["FlowM Conversation<br/>画布规划、校验、复核"] --> A["HarnessAdapter / HarnessProjectEngine"]
+    C["FlowM Conversation<br/>画布规划、校验、复核"] <--> P["CanvasTurnProjection<br/>画布输出契约"]
+    P <--> A["HarnessTurn<br/>输入确认、私有模型历史"]
+    E["HarnessProjectEngine<br/>工程请求与画布上下文"] <--> Q["HarnessSession<br/>模型正文、询问与活动"]
     A <--> H["HarnessClient<br/>FlowM 协议"]
+    Q <--> H
+    D["HarnessConnections<br/>连接状态、实时目录、模型选择"] <--> H
     H <--> S["随包 flowm-harness"]
     S --> K["固定版本 Codex 内核"]
     S --> U["FlowM 认证、配置与状态"]
@@ -106,14 +110,14 @@ flowchart TD
     K --> O["OpenAI"]
     K --> G["Responses gateway"]
     G --> M["Claude / 其他模型"]
-    A --> P["输出投影 → 操作校验 → CanvasPort"]
+    C --> V["操作校验 → CanvasPort"]
 ```
 
 `Conversation` 控制画布工作的外层循环：决定本轮允许的操作、执行校验、应用操作、限定复核范围，并生成最终说明。Harness 控制一次请求内部的项目工具循环、模型上下文、询问与生命周期。保留这些业务职责不意味着冻结所有接口；迁移需要在调用边界补充取消、上下文归属与输入确认，避免重写画布语义和布局算法。
 
 画布请求中的 harness 返回 `{ reply, question, operations }` 结构化结果。它不直接调用 `CanvasPort`，不解释 `declare_diagram`、`create_geo`、`place_region` 等画布语义。首版不把画布操作注册为可随时执行的内核工具，避免改变现有批次校验和复核权限。
 
-两种模式分别由 `HarnessAdapter` 和 `HarnessProjectEngine` 接入同一个 `HarnessClient`。画布模式继续返回 `LlmTurn`；工程模式通过中立事件显示工具执行、权限询问与最终正文。
+画布模式由 `CanvasTurnProjection` 连接 `HarnessTurn`，继续返回 `LlmTurn`。工程模式由 `HarnessProjectEngine` 准备业务上下文，交给 `HarnessSession` 处理模型正文、工具活动、权限询问和完成事件。两条路径由同一个 `HarnessClient` 承载；engine 和 workspace 不直接调用原生模型协议。
 
 UI 翻译和显示语言保持在 UI 层。FlowM 保留唯一的画布语义指令，provider 差异仅处理请求编码、schema 方言和运行时能力，不产生按模型分叉的绘图规则。
 
@@ -190,7 +194,7 @@ ChatGPT 计划额度请求有独立限制，包括 HTTP 下的 `store: false`、
 
 ### Gateway 凭据
 
-首版支持 `none` 和 `bearer`。Profile 保存 `baseUrl`、模型路由、协议类型和 credential reference；bearer token 进入原生 secret store。Gateway 请求不得自动混入 OpenAI 用户凭据。
+首版支持 `none` 和 `bearer`。Profile 保存 `baseUrl`、模型偏好、协议类型和 credential reference；bearer token 进入原生 secret store。设置只输入 URL 与凭据，模型从 gateway 实时返回的目录选择。Gateway 请求不得自动混入 OpenAI 用户凭据。
 
 本地 [provider 认证](https://github.com/openai/codex/blob/67727e7cf114cf3e1b71db368d74b24e32f6cb12/codex-rs/model-provider/src/auth.rs)会区分显式 provider 凭据和 ambient auth；配置为不要求 OpenAI 认证的自定义 provider 不会自动获得 AuthManager 的 headers。Gateway 认证必须在 provider 级明确装配，不能只设置一个全局登录对象。内存中的 credential 传递方式也要验证不会将明文写入配置、rollout、IPC 或日志。
 
@@ -223,7 +227,7 @@ LiteLLM 有公开的 [Codex 接入示例](https://docs.litellm.ai/docs/proxy/cli
 
 Codex 对未知模型可能使用 [默认元数据](https://github.com/openai/codex/blob/67727e7cf114cf3e1b71db368d74b24e32f6cb12/codex-rs/models-manager/src/model_info.rs)。不能据此推定 Claude 路由的上下文窗口、reasoning 参数、工具形态或视觉支持。
 
-模型目录同样需要单独装配。自定义 baseUrl 下的内核模型管理器不一定自动发现 gateway 路由；`model_catalog_url` 要求 Codex-native catalog，不能将普通 `/v1/models` 响应直接当作该格式。FlowM 的 model/list 应区分实际发现的模型、用户明确登记的路由与尚未验证的能力，禁止把 bundled OpenAI fallback catalog 显示为 gateway 的已授权目录。
+模型目录由 harness 统一装配。请求复用 Codex `ModelsClient`，ChatGPT 公共目录读取 `models[].slug` 与 `visibility: list`，API Key/Gateway 读取 `/v1/models` 的 `data[].id`，然后装配内核需要的模型元数据。`model_catalog_url` 原生格式要求不能直接套用到普通 `/v1/models` 数据。应用启动、运行时重启与手动刷新均访问上游；不缓存目录、不提供手填模型入口、不把 bundled OpenAI fallback 显示为已授权目录。目录外的模型在原生线程创建时也被拒绝。网关必须同时支持模型列表和 Responses，模型出现在列表中不代替工具能力的真实验收。
 
 FlowM 公开协议保留请求协议与 capability 描述，首版仅实现 Responses，不把这一实现约束永久写入上层业务类型。后续增加原生 Messages 或 Chat Completions 时，使用新的后端适配器。
 
@@ -257,7 +261,7 @@ Project agent 可在明确的 workspace roots 中编辑和执行命令。正常�
 
 ## FlowM 协议
 
-公开协议由 FlowM 定义，首版版本标识为 `flowm.harness/1`。连接使用 stdio 上的 JSON-RPC 和 JSONL framing；stdout 只承载协议消息，诊断进入 stderr，并去除 secret。
+公开协议由 FlowM 定义，当前版本标识为 `flowm.harness/4`。连接使用 stdio 上的 JSON-RPC 和 JSONL framing；stdout 只承载协议消息，诊断进入 stderr，并去除 secret。
 
 下表定义首版接口范围，具体参数 schema 在实现阶段冻结：
 
@@ -295,7 +299,7 @@ FlowM 的项目、会话身份、名称、显示消息和画布场景属于产�
 | 历史来源 | 首版处理 | 兼容边界 |
 | --- | --- | --- |
 | FlowM 项目元数据、显示消息、场景 | 兼容读取现有文件，版本化新增运行时绑定。 | 保留用户可见数据；显示消息本身不是完整的模型执行历史。 |
-| 旧 Codex rollout 或完整模型上下文 | 一次性导入私有存储，检查版本、项目和 provider 后尝试原生恢复。 | 内核有恢复入口，但不能仅凭旧 ID 跨 home 续用；加密上下文、分页存储和 backend 差异仍需验证。 |
+| 外部 Codex rollout | 当前版本不提供导入入口。 | 保留原始数据，日常执行只使用 FlowM 私有线程。 |
 | 旧 Claude session | 转换可识别的用户消息、回答及必要任务摘要，建立新 harness thread。 | Claude ID 不作为 Codex thread ID；不声称保留 Claude Code 的全部私有状态或未完成工具。 |
 | 缺少、损坏或不兼容的原生历史 | 保留可见记录和当前画布，在新线程中以有界摘要继续；明确提示导入方式。 | 不静默假装原生续接，也不回退执行旧 CLI。 |
 
@@ -309,7 +313,7 @@ FlowM 的项目、会话身份、名称、显示消息和画布场景属于产�
 
 模型所需的当前画布、操作反馈、错误和复核约束保持现有契约。会话隔离不要求重设计模型上下文、原生工具调用或 JSON 清理与压缩，也不因此修改 protocol/canvas。迁移只做新接口所必需的请求与输出适配，保留现有 reply、活动和调试展示分工。
 
-旧历史仅通过用户明确发起的数据导入进入私有存储。正常运行不自动发现外部 Codex 会话，不向原历史继续追加，也不要求保留旧 CLI 执行路径。
+当前版本已移除外部 Codex 历史导入入口与执行分支。FlowM 可见对话与画布继续兼容，模型历史只在 FlowM 私有线程中恢复；旧 CLI ID 仅作为未执行的历史数据保留。
 
 ## 输出和故障恢复
 
@@ -344,7 +348,8 @@ harness/
   Cargo.toml
   src/
     main.rs
-    server.rs     FlowM RPC、请求回执与历史导入
+    server.rs     FlowM RPC 与持久化请求回执
+    models.rs     连接模型目录与直接工具模式约束
     kernel.rs     ThreadManager、工具、权限和事件适配
     auth.rs       官方授权、加密凭据、刷新和退出
     state.rs      profile、线程绑定、私有持久化和 home 锁
@@ -377,7 +382,7 @@ third_party/
 
 ### 画布路径
 
-以 `HarnessAdapter` 接入现有 `Conversation`，保留输出契约、符号引用、复核和布局行为。迁移模型发现，消除系统配置及环境 CLI fallback。通过输出一致性和完整画布流程测试。
+以 `CanvasTurnProjection + HarnessTurn` 接入现有 `Conversation`，保留输出契约、符号引用、复核和布局行为。迁移模型发现，消除系统配置及环境 CLI fallback。通过输出一致性和完整画布流程测试。
 
 ### 工程开发路径
 
@@ -403,7 +408,7 @@ third_party/
 | 4 | 退出登录由 FlowM harness 执行，并与其他应用隔离。 | 清理 FlowM 凭据和内存状态，禁止该账号后续调用，前端状态一致；其他应用凭据不变。 |
 | 5 | Canvas Assistant 以真实 read-only 工程权限运行。 | 正常读代码和更新画布成功，直接及命令间接写工程文件均被阻止；不能经审批升级为工程可写线程。 |
 | 6 | Project Agent 以 workspace-write 运行，额外权限操作受真实审批控制。 | 合法工作区编辑成功；需审批操作在批准前未执行，批准后按范围执行，拒绝后不执行。 |
-| 7 | 配置 gateway 的 baseUrl、model 和 bearer token 后，经 `/v1/responses` 完成同一流程。 | 具体 Claude 路由完成读取工具、图片复核和结构化结果；验证错误与完成事件，不只测试普通聊天文本。 |
+| 7 | 配置 gateway 的 baseUrl 和 bearer token，从 `/v1/models` 返回的目录选择模型，经 `/v1/responses` 完成同一流程。 | 具体 Claude 路由完成读取工具、图片复核和结构化结果；验证目录刷新、目录外模型拒绝、错误与完成事件，不只测试普通聊天文本。 |
 | 8 | OpenAI 与 gateway 共享 `LlmTurn / CanvasOp` conformance tests，并各通过真实集成流程；protocol/canvas 默认无内容改动。 | 输出投影、非法操作、跨批次 ref、review 越界拒绝、finalize 无操作及最终说明一次的测试结果，以及相对迁移基线的受保护目录比对。 |
 | 9 | 日常运行不读取或写入系统 `~/.codex` 的配置、凭据及会话存储；用户指定的一次性历史导入单独记录。 | 文件访问与 secret namespace 检查；导入不读取 auth/config 或改写原始记录，之后私有存储独立运行，外部 Codex 列表不混入新内部线程。 |
 | 10 | 不调用环境 `codex` 或 `claude` executable，正式发行不保留旧 CLI 执行和 fallback。 | 检查启动、目录发现、登录、任务、历史导入和恢复的进程调用；旧入口、路径设置与后台发现已删除，CLI 未安装时正常工作。 |
@@ -429,3 +434,18 @@ third_party/
 验证分为可重复的离线契约测试、受控进程与故障测试、两条 provider 的真实集成测试，以及每个支持平台的新机器发布测试。网络集成测试由明确配置的测试凭据执行，普通本地测试不隐式发起付费模型请求。
 
 本轮已验证 Windows 内核嵌入、随包构建配置、helper 隐藏入口、每轮 schema、真实 OS 权限、审批、询问、取消、私有恢复、指定历史导入、加密 bearer 与退出，以及未知 gateway 模型别名的离线请求。仍需真实 OpenAI 授权/刷新/推理、具体 gateway 的 Claude/视觉/schema 流程、新机器安装、其他平台和依赖裁剪后的复验。没有这些证据时，对应完整 MVP 条件继续保持待验收。
+
+## 本轮运行时清理（2026-10-02）
+
+协议升级到 `flowm.harness/4`，模型目录携带连接身份、凭据版本、来源与真实默认模型。UI 与内核使用同一认证目录；GPT 登录不再写死模型名，Gateway 也从上游发现模型。显式输入模型及目录外模型放行已移除，旧协议客户端被拒绝。请求复用 Codex `ModelsClient`，启动/运行时重启/手动刷新都重新请求，不读取模型缓存。模型元数据中的 `tool_mode` 会覆盖内核功能开关，因此 FlowM 强制直接工具模式并清理不交付的 Code Mode、插件、应用及实验工具元数据。旧 adapter 调试双通道、可选活动开关、CLI resume getter 与外部历史导入链路已移除。画布业务循环与 CanvasPort 操作保持不变。
+
+本轮回归通过 228 项前端测试、16 项原生 harness 测试与 19 次本地 Responses 集成请求，覆盖实时目录更新、旧偏好/目录外模型拒绝、权限、审批、取消与冷恢复。桌面 debug 构建完成。真实 SIWC 公共目录在兼容版本 `0.155.0` 下返回 7 个可见模型；复用 Codex 请求代码后 GPT-6.1-Sol 仍不在原始响应中。之前同凭据的最小 GPT-6.1-Sol 推理已完成，但目录缺失的服务端原因尚未确认。路由、版本对照与证据边界见 [architecture.md](architecture.md#live-catalog-refresh)。真实 gateway/Claude 验收仍待用户配置。
+
+这里的 `claude-offline-fixture` 是本地模拟服务返回的模型 ID。模拟服务按预设事件响应 `/v1/responses`，没有调用真实 Claude，也没有额外的 Claude 专用执行路径。FlowM harness、Codex 内核、工具、审批和 OS 沙箱均真实执行；模拟的是统一 harness 下游的模型服务。接入真实 Responses-compatible gateway 后，仍使用同一条 harness 路径。
+
+
+## 模型交互统一归属审查
+
+连接选择、认证状态、实时目录与模型偏好由 src/harness/HarnessConnections 统一管理；UI 仅订阅，workspace 通过 harness 工厂取得模型会话。原生 ModelDirectory 负责模型发现及内核元数据，AuthService 只负责凭据。私有绑定、历史过滤、发送游标、流式正文与最终正文合并、模型活动结束和取消/恢复统一在 harness 内。CanvasTurnProjection 保留画布输出契约校验，Conversation 和 CanvasPort 的业务职责保持。
+
+线程创建必须携带目录验证过的 credentialVersion；关闭中的会话不提交模型请求；准备阶段失败不会误标成已提交的不确定请求。已提交且中断的请求仍禁止自动重放。内核模型元数据变化时，新线程使用对应的新 manager。SIWC 注册、目录与推理统一使用 FlowM 应用标识；实测新旧标识的公共目录都仍不返回 GPT-6.1-Sol，服务端目录缺失原因仍待确认。
