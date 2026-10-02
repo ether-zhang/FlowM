@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/openai/codex",
+  "revision": "67727e7cf114cf3e1b71db368d74b24e32f6cb12",
+  "source": "git submodule",
+  "license": "Apache-2.0",
+  "localChanges": []
+}
