@@ -2,7 +2,7 @@
 
 中文 | [English](README.md)
 
-FlowM 是一个面向 AI 协作的画布工具，用来理解代码、绘制技术图、把自由草图继续推进成工程任务。它把类似 Excalidraw 的无限画布和具备项目感知能力的助手结合起来：你可以让模型阅读代码仓库，解释工作原理，直接在画布上绘制或修正图形，并基于已有画布继续开发。FlowM 可以接入 Claude Code 和 Codex agent，用于具备项目感知能力的本地工作流。
+FlowM 是一个面向 AI 协作的画布工具，用来理解代码、绘制技术图、把自由草图推进成工程任务。桌面端自带的 `flowm-harness` 嵌入固定版本的 Codex 内核，连接 OpenAI 或 Responses-compatible gateway，也可由 gateway 路由至 Claude。画布助手以只读权限阅读工程；工程 Agent 使用独立的工作区可写线程，并处理真实审批。
 
 以下演示展示一条连续工作流：FlowM 从读取代码并生成图表开始，逐步扩展、理解自由草图，最终把画布上下文用于实际项目开发。
 
@@ -49,16 +49,23 @@ FlowM 可以把画布内容作为上下文，继续推进工程开发，把图�
 前置要求：
 
 - Node.js 和 npm
-- Rust 工具链，用于 Tauri 桌面应用
-- 可选：Claude Code、Codex CLI 等本地 Agent，用于项目感知的本地助手模式
+- Rust 1.96.0，以及对应平台的 Tauri 构建依赖
+
+FlowM 仅支持桌面应用。所有模型连接统一经过随包 harness，不使用已安装的 Codex/Claude executable 或它们的凭据。开发中的 Vite 服务用于桌面 webview，不再提供独立浏览器应用。
 
 安装依赖：
 
 ```bash
+git submodule update --init --recursive
 npm install
 ```
 
-启动 Web 开发服务：
+`third_party/codex` 是关联官方 `openai/codex` 的 submodule，固定在
+`third_party/codex-source.json` 记录的已验证提交。新克隆可使用
+`git clone --recurse-submodules`。普通子模块更新使用 FlowM 记录的提交，
+不会自动跟随上游 HEAD。
+
+需要单独开发界面时，启动前端开发服务：
 
 ```bash
 npm run dev
@@ -83,6 +90,17 @@ npm run tauri -- dev
 npm run tauri -- build
 ```
 
+桌面端开发与构建会先编译固定版本 harness，再随应用打包。单独构建或检查运行时：
+
+```bash
+npm run harness:build
+npm run harness:test
+```
+
+集成检查使用本地模拟 Responses 服务和临时工程，不发起付费模型调用。Windows 应在普通宿主终端运行；已有受限进程中的嵌套沙箱可能无法创建测试用的 Windows 令牌。
+
+在设置中通过 **GPT 登录** 完成 ChatGPT 授权，或通过 **Gateway** 配置 Responses-compatible 接口（`https://your-gateway/v1`、模型别名、可选 bearer token）。OpenAI API Key 也通过 Gateway 使用，地址为 `https://api.openai.com/v1`。Claude 账号直接登录尚未实现，可通过 Gateway 路由到 Claude 模型。同一时间启用一个连接，旁边显示退出登录按钮。认证由原生 harness 管理。原有 FlowM 对话、画布文件和 `.flowm.json` 导入导出继续保留，旧 CLI ID 仅作为历史引用。可以显式导入已完成、独立的 Codex `.jsonl` 历史；否则以可见对话作为继续工作的上下文。实现进度和验收记录见[方案文档](docs/flowm-harness-mvp.md)。
+
 ## 主要开源项目
 
 FlowM 基于多个重要开源项目构建：
@@ -90,8 +108,8 @@ FlowM 基于多个重要开源项目构建：
 - [Excalidraw](https://github.com/excalidraw/excalidraw)：画布、绘图基础能力和导出流程
 - [React](https://react.dev/) 和 [TypeScript](https://www.typescriptlang.org/)：应用界面和类型化前端代码
 - [Tauri](https://tauri.app/)：桌面外壳和原生系统集成
+- [Codex](https://github.com/openai/codex)：固定版本的 agent 内核、工具执行和沙箱；保留 Apache-2.0 许可证与 NOTICE
 - [Vite](https://vite.dev/)：前端开发和构建工具
-- [OpenAI JavaScript SDK](https://github.com/openai/openai-node)：OpenAI 兼容 API 接入
 - [Zod](https://zod.dev/)：画布操作和协议数据的运行时校验
 - [React Markdown](https://github.com/remarkjs/react-markdown) 和 [remark-gfm](https://github.com/remarkjs/remark-gfm)：助手面板中的 Markdown 渲染
 - [Vitest](https://vitest.dev/)：单元测试
@@ -104,4 +122,4 @@ FlowM 使用 [MIT License](LICENSE) 开源。
 
 FlowM 仍在持续开发中。稳定版本发布前，API、界面行为、Agent 集成方式和文件格式都可能继续调整。
 
-注：项目级开发工作流需要结合具体项目目录使用，目前要求本机已安装 Claude Code 或 Codex；如果只有 API Key，也可以使用画布助手 API 模式进行画布绘制和编辑。
+首版 harness 已在 Windows 通过本地内核、权限、恢复和输出契约检查。真实 ChatGPT 授权、具体 gateway/Claude 路由、新机器安装及 macOS/Linux 验收仍是发布前待完成项；本地模拟测试不证明这些结果。

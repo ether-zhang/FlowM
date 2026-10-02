@@ -1,6 +1,6 @@
 # FlowM Architecture
 
-> Updated on 2026-08-23. Historical decisions and experiments remain in
+> Updated on 2026-10-02. Historical decisions and experiments remain in
 > [FlowM.md](../FlowM.md); geometry-specific details live in
 > [structured-refine.md](structured-refine.md),
 > [structure-schema.md](structure-schema.md), and
@@ -8,8 +8,8 @@
 
 ## 1. System boundary
 
-FlowM combines an Excalidraw canvas with project-aware local agents and an
-OpenAI-compatible API path. The stable product contract is not a provider's
+FlowM is a desktop application combining an Excalidraw canvas with project-aware
+agents. All model connections use the packaged harness. The stable product contract is not a provider's
 wire format. It is:
 
 1. serialize the current canvas and user intent;
@@ -26,21 +26,23 @@ app/ + workspace/                         composition and persistence ownership
         v                    v
      engine/              llm/            chat facade and turn orchestration
                               | \
-                              |  +-------> agentControl/   local transports
+                              |  +-------> harness/        FlowM RPC client
                               v
                            protocol/       canvas operation contract
 
 canvas/ --------------------> protocol/    Excalidraw implementation of CanvasPort
-llm/ + agentControl/ -------> agent/       neutral question/activity contracts
+llm/ + harness/ -----------> agent/       neutral question/activity contracts
+
+src/harness/ <-> Tauri supervisor <-> flowm-harness (Rust) <-> pinned Codex core / Responses
 ```
 
 The enforced rules are:
 
 - `protocol/` imports no outer FlowM layer.
-- `agent/` owns provider-neutral question/activity types and project artifacts.
-- `agentControl/` owns Claude/Codex process protocols and imports neither `llm`
+- `agent/` owns provider-neutral question/activity types.
+- `harness/` owns FlowM's versioned runtime protocol and imports neither `llm`
   nor UI/engine modules.
-- `llm/` may depend on `protocol`, `agent`, and `agentControl`, but not on
+- `llm/` may depend on `protocol`, `agent`, and `harness`, but not on
   `engine`, UI, or workspace implementations.
 - `canvas/` is the only layer that knows Excalidraw element details.
 
@@ -67,12 +69,11 @@ change the canvas.
 ### `src/agent/`
 
 `types.ts` defines provider-neutral user questions, answers, activity events,
-and tool statuses. UI, engines, LLM orchestration, and both local transports all
+and tool statuses. UI, engines, LLM orchestration, and the harness client all
 consume these types without depending on a specific control protocol.
 
-`projectFiles.ts` is the single owner of the Tauri commands that write
-`.flowm/claude-canvas.md`, `.flowm/codex-canvas.md`, and `.flowm/design.png`.
-This keeps project artifact I/O out of provider adapters and chat engines.
+Images cross the harness boundary inline. Canvas instructions are supplied by
+`Conversation`; adapters no longer write provider guide files into the project.
 
 ## 3. Conversation state machine
 
@@ -148,9 +149,8 @@ classification is semantic, and detail follows the user request. Supporting
 refs are reserved for region containers or essential context, not a way to
 hide low-value implementation detail.
 
-Claude and Codex may use different project guide filenames and schema profiles,
-but the guide contents come from the same `RunTurnParams.system`. Provider
-differences are transport encoding concerns, not diagram-selection policy.
+OpenAI and gateway use the same `RunTurnParams.system` and strict output contract.
+Provider differences are transport encoding concerns, not diagram-selection policy.
 
 Canvas operations use symbolic create refs as their model-facing identity. The
 protocol owns pure ref resolution; `Conversation` compiles one logical batch in
@@ -175,64 +175,71 @@ content and freehand strokes are not included globally.
 ## 4. Provider adapters and transports
 
 `LlmAdapter` exposes `runTurn`, optional in-flight question answering, an
-optional provider session ID, and optional disposal. The implementations share
-the Conversation state machine and output projection:
+optional provider session ID, and optional disposal. `HarnessAdapter` connects
+the Conversation state machine and output projection to private, resumable FlowM
+threads, inline images, per-turn strict output schema, and the exact caller-owned
+canvas system instruction. The old browser/HTTP adapters, API key proxy, and
+standalone `Canvas · API` engine have been removed.
 
-- `PoeAdapter` / `TauriAdapter`: OpenAI-compatible stateless requests;
-- `ClaudeAdapter`: Claude Agent SDK control protocol, with a one-shot CLI
-  compatibility transport for wrappers that cannot complete the handshake;
-- `CodexAdapter`: Codex app-server JSON-RPC and resumable threads.
-
-`agentControl/` translates native process events into neutral activity,
+`harness/` translates FlowM runtime events into neutral activity,
 questions, tool lifecycle events, and final provider output. It does not apply
 canvas operations and does not classify build/review/finalize phases.
 
-Local adapters send only the new Conversation delta and resume the provider's
-own stored session. The canvas guide stays under the active project's `.flowm`
-directory and is referenced by a short invocation-scoped instruction. Both
-local adapters write the caller-owned `RunTurnParams.system`; neither owns a
-provider-specific canvas behavior prompt.
+HarnessAdapter sends only new user/tool feedback and resumes the private kernel
+history. Delivery acknowledgement and output validation are separate: completed
+input is not sent twice because its JSON was invalid. The service saves a receipt
+before native submission and flushes history before completion. A disconnected
+client queries that receipt; it never blindly submits the same task again.
 
 ### Model selection and discovery
 
-The session bar contains a model picker for Claude and Codex. Only the selected
-model ID is persisted, separately for each provider; catalogs are never hard-coded
-or restored from localStorage. At desktop startup, after resolving both executable
-paths, `list_agent_models` queries both configured programs. Executable/project
-changes and the refresh button trigger a new query.
-
-Discovery is a short-lived metadata process, independent of workspace conversations:
-Codex uses initialize + paginated `model/list`; Claude uses the `models` field of
-its control initialize response. It sends no user prompt, starts no Codex thread,
-and writes no FlowM guide/image artifacts. Before a project opens, the process uses
-the user's home directory for configuration discovery. Queries have a timeout and
-their child process is terminated after the response. Unsupported wrappers report
-an unavailable catalog; the user may still enter a model ID explicitly.
-
-The selected Codex model travels in `turn/start.model`. Claude's control and legacy
-CLI paths both receive `--model`; a selection change recreates the transport using
-the latest resume handle. UI labels and translations remain outside those paths.
-Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server#models)
-and [Claude model configuration](https://code.claude.com/docs/en/model-config).
+Settings selects one FlowM-owned connection at a time; the session bar selects its model. OpenAI API-key
+discovery uses `/v1/models`; ChatGPT discovery uses the plan-aware `models` array
+and `visibility: list`. Gateway aliases are explicitly configured, rather than
+presented as an OpenAI entitlement catalog. The kernel's bundled metadata is used
+for request/tool construction only. Unknown gateway models omit reasoning and
+context-window claims until their route is verified. UI language stays in UI files.
 
 ## 5. Runtime ownership
 
 `useWorkspace` is the owner of project-scoped local canvas-agent runtimes:
 
 ```text
-project -> FlowM session -> { Claude Conversation?, Codex Conversation? }
+project -> FlowM session -> connection + credential version + role + model -> private thread
 ```
 
-One runtime is created lazily per provider and FlowM session. Its provider
-session ID is persisted into project metadata. The runtime is disposed when the
+One runtime is created lazily per binding. Its FlowM harness thread ID is
+persisted before its first model request. The runtime is disposed when the
 session is deleted, another project is opened, or the workspace unmounts.
 
-There is no projectless Claude/Codex canvas fallback. Without an open project,
+There is no projectless harness fallback. Without an open project,
 `activeConv()` returns `null`; this prevents a local agent from running with an
-ambiguous working directory or writing `.flowm` artifacts outside the selected
+ambiguous working directory or permission scope outside the selected
 project.
 
-API mode remains independent and may operate without a local project.
+Both Canvas Assistant and Project Agent require an open project and use the
+active harness connection. Standalone browser mode is no longer supported.
+
+`harness/` at the repository root is a standalone Rust sidecar. Its private home
+is in FlowM's app-data directory, set before Codex's helper dispatch. A home lock
+prevents concurrent writers. Config/auth/session discovery never falls back to
+the user's `~/.codex`. Secrets are encrypted with AES-256-GCM; per-profile keys
+live in FlowM's OS credential namespace. Browser OAuth, refresh, and logout stay
+native. The frontend receives account information and status, not OAuth tokens.
+
+Canvas threads combine a read-only managed permission profile, no escalation,
+and an immutable tool ceiling. Project threads use workspace-write with explicit
+approval responses. This Windows build uses the embedded unelevated restricted
+token backend. Unsupported managed backends fail explicitly. The Tauri supervisor
+uses bounded queues and a Windows Job Object (process group on Unix), so forced
+shutdown includes descendants. Its executable path comes from bundled resources.
+
+Legacy CLI IDs remain in metadata as references. Visible conversation and scene
+data remain usable. Explicitly selected, completed standalone Codex histories
+can be forked into private storage; importing submits no task and does not read
+the source application's auth/config. Switching contexts is blocked during a send,
+and sending is blocked while an asynchronous context switch is in progress. Dead
+native interactions expire. Interrupted receipts persist a blocked thread state.
 
 ## 6. Canvas implementation
 
@@ -297,8 +304,9 @@ are not uploaded or written to project files; export them manually when retainin
 ## 7. UI and activity
 
 `engine/` presents provider implementations through `ChatEngine`.
-`CanvasEngine` delegates canvas turns to `Conversation`; legacy build engines
-compose project-development prompts without participating in canvas orchestration.
+`CanvasEngine` delegates canvas turns to `Conversation`; `HarnessProjectEngine`
+attaches selected canvas context to an independent engineering thread without
+participating in canvas orchestration.
 
 `chat/` renders neutral messages, questions, reasoning/commentary activity,
 tool lifecycle, diagnostics, and final text. It consumes `agent/` types and does
@@ -316,6 +324,10 @@ The required checks for changes to the canvas-agent path are:
 npm.cmd test -- --run
 npm.cmd run build
 cargo test --manifest-path src-tauri/Cargo.toml
+cd harness
+cargo +stable test --locked --offline
+cd ..
+npm run harness:test
 ```
 
 Targeted lint should pass for newly added or isolated modules. The repository
@@ -325,8 +337,10 @@ mixed into provider or canvas behavior work.
 
 ## 9. Known boundaries
 
-- Claude and Codex expose different public reasoning/commentary event detail;
-  FlowM preserves real provider events but does not fabricate hidden reasoning.
+- The harness preserves public provider events and does not fabricate hidden reasoning.
+- Real ChatGPT sign-in, a chosen gateway/Claude route, clean-machine installation,
+  and macOS/Linux acceptance remain integration checks. Runtime feature disabling
+  does not establish dependency pruning or a small binary.
 - Build and review commentary share one activity timeline; clearer phase labels
   remain a presentation task and must not alter model output roles.
 - Review is deliberately limited to changed IDs. Moving a larger existing user

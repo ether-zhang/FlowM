@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md) | English
 
-FlowM is an AI-native canvas for understanding code, drawing technical diagrams, and turning sketches into project work. It combines an Excalidraw-style infinite canvas with local/code-aware assistants, so you can ask the model to read a repository, explain how something works, draw or refine the diagram directly, and continue from that visual context. FlowM can connect to Claude Code and Codex agents for project-aware local workflows.
+FlowM is an AI-native canvas for understanding code, drawing technical diagrams, and turning sketches into project work. Its desktop model runtime, `flowm-harness`, embeds a pinned Codex kernel and connects to OpenAI or a Responses-compatible gateway, including gateways that route to Claude. Canvas Assistant reads project files with read-only permissions; Project Agent uses a separate workspace-write thread with approvals.
 
 The demos below show one continuous workflow: FlowM starts by reading code and generating a diagram, then progressively expands it, understands free-form sketches, and finally uses the canvas context for real project development.
 
@@ -49,16 +49,23 @@ Download the latest desktop build from the GitHub Releases page:
 Prerequisites:
 
 - Node.js and npm
-- Rust toolchain, required for the Tauri desktop app
-- Optional local agents such as Claude Code or Codex CLI, if you want project-aware local assistant modes
+- Rust 1.96.0 and the platform's Tauri build prerequisites
+
+FlowM supports the desktop application only. All model connections use its packaged harness; installed Codex/Claude executables and their credentials are not used. The Vite server serves the desktop webview during development, rather than a standalone browser application.
 
 Install dependencies:
 
 ```bash
+git submodule update --init --recursive
 npm install
 ```
 
-Run the web dev server:
+`third_party/codex` is a submodule of the official `openai/codex` repository, pinned
+to the tested commit recorded in `third_party/codex-source.json`. A fresh clone
+may use `git clone --recurse-submodules`. Ordinary submodule updates use FlowM's
+recorded commit; they do not follow upstream HEAD automatically.
+
+Run the frontend dev server separately when needed for UI development:
 
 ```bash
 npm run dev
@@ -83,6 +90,17 @@ Build the desktop app:
 npm run tauri -- build
 ```
 
+Desktop development/build first builds the pinned harness and packages it with the application. To build or test the runtime separately:
+
+```bash
+npm run harness:build
+npm run harness:test
+```
+
+The harness integration test uses a local mock Responses server and temporary projects, never a paid model. On Windows it must run from an ordinary host terminal: nesting a restricted-token sandbox inside a restricted development runner can prevent Windows from creating the test token.
+
+In Settings, use **GPT sign in** for ChatGPT authorization, or **Gateway** for a Responses-compatible endpoint (`https://your-gateway/v1`, model alias, optional bearer token). An OpenAI API key can use Gateway with `https://api.openai.com/v1`. Claude account sign-in is not implemented; Claude models can be routed through Gateway. One connection is active at a time, with sign-out beside it. Credentials belong to FlowM's native runtime. Existing FlowM chat/scene files and portable `.flowm.json` imports/exports remain usable; old CLI IDs are historical references. A completed, standalone Codex `.jsonl` history can be explicitly imported into the private runtime; otherwise the visible conversation supplies continuation context. See [the implementation and acceptance record](docs/flowm-harness-mvp.md).
+
 ## Built With
 
 FlowM is built on top of several major open-source projects:
@@ -90,8 +108,8 @@ FlowM is built on top of several major open-source projects:
 - [Excalidraw](https://github.com/excalidraw/excalidraw): the canvas, drawing primitives, and export pipeline
 - [React](https://react.dev/) and [TypeScript](https://www.typescriptlang.org/): the application UI and typed frontend code
 - [Tauri](https://tauri.app/): the desktop shell and native system integration
+- [Codex](https://github.com/openai/codex): the pinned agent kernel, tool execution, and sandbox, distributed under Apache-2.0 with its NOTICE
 - [Vite](https://vite.dev/): frontend development and build tooling
-- [OpenAI JavaScript SDK](https://github.com/openai/openai-node): OpenAI-compatible API access
 - [Zod](https://zod.dev/): runtime validation for canvas operations and protocol data
 - [React Markdown](https://github.com/remarkjs/react-markdown) and [remark-gfm](https://github.com/remarkjs/remark-gfm): Markdown rendering in the assistant panel
 - [Vitest](https://vitest.dev/): unit testing
@@ -104,4 +122,4 @@ FlowM is released under the [MIT License](LICENSE).
 
 FlowM is still under active development. APIs, UI behavior, agent integrations, and file formats may change before a stable release.
 
-Note: project-level development workflows should be used inside a project directory and currently require Claude Code or Codex to be installed locally. If you only have an API key, you can still use Canvas Assistant API mode for canvas drawing and editing.
+The first harness implementation has passed local kernel, permission, recovery, and output-contract checks on Windows. Real ChatGPT authorization, a specific gateway/Claude route, clean-machine installation, and macOS/Linux acceptance remain release checks; local mock tests do not establish those results.
