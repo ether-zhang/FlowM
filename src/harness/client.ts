@@ -1,4 +1,6 @@
-import type { AgentModel, AgentQuestionAnswer } from '../agent'
+import type { AgentQuestionAnswer } from '../agent'
+import type { HarnessModelCatalog } from './types'
+import { parseModelCatalog } from './models'
 import { startHarness } from './process'
 import { HARNESS_PROTOCOL, type HarnessBinding, type HarnessEvent, type HarnessNotification, type HarnessProfile, type HarnessTransport, type HarnessTransportFactory, type TurnReceipt } from './types'
 
@@ -10,6 +12,11 @@ interface Pending {
 
 export class HarnessDisconnectedError extends Error {
   constructor() { super('FlowM harness disconnected. The last request was not replayed; check its status before continuing.') }
+}
+
+/** A preparation failure happened before turn/start could be sent. */
+export class HarnessNotSubmittedError extends Error {
+  constructor(error: unknown) { super(error instanceof Error ? error.message : String(error), { cause: error }) }
 }
 
 /** One multiplexed connection, with request and thread routing instead of a global active turn. */
@@ -45,6 +52,8 @@ export class HarnessClient {
       this.process = process
       const result = await this.raw<{ protocolVersion: string }>('initialize', { protocolVersion: HARNESS_PROTOCOL }, 60_000)
       if (result.protocolVersion !== HARNESS_PROTOCOL) throw new Error('FlowM harness protocol version does not match this application')
+      // A restarted native process invalidates UI directory snapshots as well as turn state.
+      for (const listener of this.listeners) listener({ method: 'runtime/ready', params: { generation } })
     })().catch(async (error) => {
       const process = this.process
       this.disconnected()
@@ -61,6 +70,7 @@ export class HarnessClient {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new HarnessDisconnectedError()) }
     this.pending.clear()
     this.turns.clear()
+    for (const listener of this.listeners) listener({ method: 'runtime/disconnected', params: { generation: this.generation } })
     if (stopProcess) void process?.stop().catch(() => {})
   }
 
@@ -114,8 +124,7 @@ export class HarnessClient {
     delete saved.signedIn
     return this.request('profiles/save', { profile: saved, ...(token ? { token } : {}) })
   }
-  models(profileId: string): Promise<AgentModel[]> { return this.request('models/list', { profileId }) }
-  importHistory(filePath: string, projectRoot: string): Promise<{ importId: string; mode: 'native-history' }> { return this.request('history/import', { filePath, projectRoot }) }
+  async models(profileId: string): Promise<HarnessModelCatalog> { return parseModelCatalog(await this.request('models/list', { profileId })) }
   login(profileId: string): Promise<{ attemptId: string }> { return this.request('auth/start', { profileId }) }
   cancelLogin(attemptId: string): Promise<void> { return this.request('auth/cancel', { attemptId }) }
   logout(profileId: string): Promise<void> { return this.request('auth/logout', { profileId }) }
@@ -126,7 +135,7 @@ export class HarnessClient {
   status(requestId: string): Promise<TurnReceipt> { return this.request('turn/status', { requestId }) }
 
   async runTurn(threadId: string, requestId: string, prompt: string, images: string[], outputSchema: unknown, onEvent: (event: HarnessEvent) => void): Promise<TurnReceipt> {
-    await this.ready()
+    try { await this.ready() } catch (error) { throw new HarnessNotSubmittedError(error) }
     if (this.turns.has(requestId)) throw new Error('This request is already in flight')
     this.turns.set(requestId, { threadId, onEvent })
     try {

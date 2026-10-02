@@ -2,16 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import type { LlmMessage, LlmQuestion, RunTurnParams } from '../llm'
+import type { LlmMessage, LlmQuestion } from '../llm'
 import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { ModelPicker } from './ModelPicker'
-import { useAgentModels } from './useAgentModels'
-import { useHarnessProfiles } from './useHarnessProfiles'
+import { useHarnessConnection } from './useHarnessConnection'
 import { HarnessSettings } from './HarnessSettings'
 import { resolveEngineId } from './engineSelection'
-import type { HarnessProfile } from '../harness'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
 import { CanvasEngine, type ChatEngine } from '../engine'
 import { HarnessProjectEngine } from '../engine/harnessProjectEngine'
@@ -30,35 +28,6 @@ const ACTIVITY_VIEW_STORAGE = 'flowm.activityView'
 const numFromStorage = (k: string, fallback: number) => {
   const n = Number(localStorage.getItem(k))
   return Number.isFinite(n) && n > 0 ? n : fallback
-}
-
-/** Render one outgoing model request as readable text for the debug panel. */
-function formatRequest(params: RunTurnParams, iteration: number): string {
-  const lines = [`# 第 ${iteration + 1} 轮请求`, '', 'SYSTEM:', params.system, '', `MESSAGES (${params.messages.length}):`]
-  for (const m of params.messages) {
-    if (m.role === 'tool') {
-      lines.push(`[tool ${m.toolCallId}] ${m.content}`)
-    } else if (m.role === 'assistant') {
-      const calls = m.toolCalls?.length
-        ? '\n  ↳ ' + m.toolCalls.map((t) => `${t.name}(${JSON.stringify(t.args)})`).join('\n  ↳ ')
-        : ''
-      lines.push(`[assistant] ${m.content}${calls}`)
-    } else {
-      const img = m.role === 'user' && m.image ? ' [+image ↓]' : ''
-      lines.push(`[${m.role}]${img} ${m.content}`)
-    }
-  }
-  lines.push('', `TOOLS (${params.tools.length}): ${params.tools.map((t) => t.name).join(', ')}`)
-  return lines.join('\n')
-}
-
-/** The image (if any) attached to the latest user message of a request. */
-function requestImage(params: RunTurnParams): string | undefined {
-  for (let i = params.messages.length - 1; i >= 0; i--) {
-    const m = params.messages[i]
-    if (m.role === 'user') return m.image
-  }
-  return undefined
 }
 
 export function App() {
@@ -88,12 +57,7 @@ export function App() {
   // Harness roles use the folder selected by Open Project, rather than a restored shell path.
   const cwdRef = useRef('')
   const [cwd, setCwd] = useState('')
-  const connections = useHarnessProfiles(true)
-  const profileRef = useRef<HarnessProfile | null>(null)
-  useEffect(() => {
-    profileRef.current = connections.profile ? { ...connections.profile, model: connections.model } : null
-  }, [connections.profile, connections.model])
-  const catalog = useAgentModels(connections.profile, true)
+  const connections = useHarnessConnection()
 
   // Shell pane geometry. Panels are data-driven (side + width + shown) so a future VSCode-style
   // rearrange only changes this state, not the render — the seam is here. Defaults keep the centre
@@ -142,7 +106,7 @@ export function App() {
     getMessages: () => messagesRef.current,
     setMessages,
     getCwd: () => cwdRef.current,
-    getProfile: () => profileRef.current,
+    getConnection: connections.getConnection,
     isBusy: () => busyRef.current,
     setFolder,
   })
@@ -152,7 +116,7 @@ export function App() {
   // Constructors store getters and read them only during send/cancel, outside render.
   // eslint-disable-next-line react-hooks/refs
   const [engines] = useState<ChatEngine[]>(() => [
-    new CanvasEngine(() => ws.activeConv(), () => portRef.current, { id: 'canvas-harness', label: 'Canvas Assistant', debugViaAdapter: true, structuredActivity: true }),
+    new CanvasEngine(() => ws.activeConv(), () => portRef.current),
     new HarnessProjectEngine(() => ws.activeProject(), () => portRef.current),
   ])
   const [engineId, setEngineId] = useState(() => resolveEngineId(localStorage.getItem(ENGINE_STORAGE)))
@@ -163,8 +127,10 @@ export function App() {
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+  const persistActiveRef = useRef(ws.persistActive)
+  useEffect(() => { persistActiveRef.current = ws.persistActive }, [ws.persistActive])
   useEffect(() => {
-    if (!busy && ws.activeSessionId) void ws.persistActive()
+    if (!busy && ws.activeSessionId) void persistActiveRef.current()
   }, [busy, ws.activeSessionId])
 
   const onReady = useCallback(
@@ -237,10 +203,6 @@ export function App() {
             if (!assistantId) assistantId = addMessage('assistant', '')
             appendToMessage(assistantId, delta)
           },
-          onSystem: (note) => {
-            addMessage('system', note)
-            assistantId = null
-          },
           onQuestion: (question) => {
             addQuestionMessage(question, targetEngineId)
             assistantId = null
@@ -264,9 +226,6 @@ export function App() {
                 : message,
             ))
           },
-          onRequest: debug
-            ? (params, i) => addMessage('debug', formatRequest(params, i), requestImage(params))
-            : undefined,
           onDebug: debug ? (t) => addMessage('debug', t) : undefined,
         })
       } catch (e) {
@@ -363,7 +322,7 @@ export function App() {
     await ws.persistActive()
   }, [ws])
 
-  const canSend = !ws.changing && !!cwd.trim() && !!connections.profile?.signedIn && !!connections.model
+  const canSend = !ws.changing && !!cwd.trim() && !!connections.connection
   const placeholder = canSend
     ? text.app.placeholderReady
     : cwd.trim() ? text.harness.configureFirst : text.app.openProjectFirst
@@ -386,19 +345,16 @@ export function App() {
         <span>{connections.profile ? connections.profile.kind === 'gateway' ? 'Gateway' : 'GPT' : text.harness.configureFirst}</span>
       </div>
       <ModelPicker
-        key={engineId}
+        key={`${connections.profile?.id ?? ''}:${engineId}`}
         value={connections.model}
-        models={catalog.models}
+        catalog={connections.catalog}
         onChange={connections.selectModel}
-        disabled={busy || ws.changing}
-        loading={catalog.loading}
-        error={catalog.error}
-        onRefresh={catalog.refresh}
+        disabled={busy || ws.changing || connections.loading || !connections.profile}
+        loading={connections.loading}
+        error={connections.catalogError}
+        onRefresh={connections.refresh}
         text={text}
       />
-      {engineId === 'canvas-harness' && <button disabled={busy || ws.changing || !connections.profile} onClick={() => {
-        void ws.importHistory().catch((error) => addMessage('system', `出错：${error instanceof Error ? error.message : String(error)}`))
-      }}>{text.harness.importHistory}</button>}
       </>
     )
   const activeActivityLabel = text.activity.labels[activeActivity]
@@ -538,7 +494,7 @@ export function App() {
               profiles={connections.profiles}
               profile={connections.profile}
               disabled={busy || ws.changing || connections.loading}
-              loginPending={!!connections.loginAttempt}
+              loginPending={connections.loginPending}
               onSave={connections.save}
               onLogin={connections.login}
               onLogout={connections.logout}

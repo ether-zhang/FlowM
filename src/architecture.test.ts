@@ -6,6 +6,9 @@ const sources = import.meta.glob(
     './agent/**/*.{ts,tsx}',
     './harness/**/*.{ts,tsx}',
     './llm/**/*.{ts,tsx}',
+    './app/**/*.{ts,tsx}',
+    './workspace/**/*.{ts,tsx}',
+    './engine/**/*.{ts,tsx}',
   ],
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>
@@ -41,7 +44,13 @@ describe('module dependency direction', () => {
   })
 
   it('keeps agent transports independent of orchestration and UI layers', () => {
-    expect(forbiddenImports('harness', /^\.\.\/(?:app|canvas|chat|engine|llm|workspace)(?:\/|$)/)).toEqual([])
+    expect(forbiddenImports('harness', /^\.\.\/(?:app|canvas|chat|engine|llm|protocol|workspace)(?:\/|$)/)).toEqual([])
+  })
+
+  it('keeps private model transport APIs out of domain, UI and workspace modules', () => {
+    const violations = ['llm', 'engine', 'app', 'workspace'].flatMap((folder) =>
+      forbiddenImports(folder, /^\.\.\/harness\/(?:client|process|session|connections|models|events)(?:\/|$)/))
+    expect(violations).toEqual([])
   })
 
   it('keeps LLM orchestration independent of UI, workspace, and engine implementations', () => {
@@ -50,7 +59,7 @@ describe('module dependency direction', () => {
 
   it('keeps provider adapters independent of canvas behavior policy', () => {
     const violations = sourceFiles('llm')
-      .filter(([path]) => /harnessAdapter\.ts$/.test(path))
+      .filter(([path]) => /canvasRuntime\.ts$/.test(path))
       .flatMap(([path, source]) => importsOf(source)
         .filter((specifier) => specifier === './canvasPrompt')
         .map((specifier) => `${path} -> ${specifier}`))

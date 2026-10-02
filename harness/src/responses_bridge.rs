@@ -31,7 +31,12 @@ struct BridgeState {
 
 impl ResponsesBridge {
     pub async fn start(auth: Arc<AuthService>, profile: Profile) -> Result<Self> {
-        Self::bind(auth, profile, "https://api.openai.com/v1/responses".into()).await
+        Self::bind(
+            auth,
+            profile,
+            format!("{}/responses", crate::provider::OPENAI_RESOURCE),
+        )
+        .await
     }
 
     async fn bind(auth: Arc<AuthService>, profile: Profile, upstream: String) -> Result<Self> {
@@ -123,6 +128,7 @@ async fn forward(
     let upstream = state
         .client
         .post(&state.upstream)
+        .headers(crate::provider::request_headers())
         .header(header::AUTHORIZATION, authorization)
         .json(&body)
         .send()
@@ -363,6 +369,7 @@ mod tests {
                             .await
                             .push(headers[header::AUTHORIZATION].to_str().unwrap().to_owned());
                         assert_eq!(body["store"], false);
+                        assert_eq!(headers["originator"], crate::provider::ORIGINATOR);
                         assert_eq!(body["stream"], true);
                         (
                             [(header::CONTENT_TYPE, "text/event-stream")],

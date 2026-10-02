@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, writeFile, stat, access, copyFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, stat, access } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -24,8 +24,17 @@ await writeFile(join(foreignHome, 'config.toml'), 'INVALID EXTERNAL CONFIG: MUST
 const responses = []
 const requests = []
 const authorizations = []
+const discoveredModel = process.env.FLOWM_TEST_MODEL || 'gpt-5.5'
+let availableModels = [discoveredModel]
+let catalogRequests = 0
 let heldRequests = 0
 const server = createServer(async (request, response) => {
+  if (request.method === 'GET' && request.url === '/v1/models') {
+    catalogRequests++
+    assert.equal(request.headers['cache-control'], 'no-cache, no-store')
+    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: availableModels.map((id) => ({ id })) }))
+    return
+  }
   let content = ''
   for await (const chunk of request) content += chunk
   if (request.method !== 'POST' || request.url !== '/v1/responses') {
@@ -86,11 +95,26 @@ const tool = (name, args) => ({ type: 'response.output_item.done', item: { type:
 const envelope = JSON.stringify({ reply: 'checked', question: null, operations: [] })
 
 try {
-  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/1' })).protocolVersion, 'flowm.harness/1')
+  await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/2' }), /protocol/i)
+  await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/3' }), /protocol/i)
+  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/4' })).protocolVersion, 'flowm.harness/4')
   const profileId = randomUUID()
-  const profile = { id: profileId, name: 'Offline gateway', kind: 'gateway', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: process.env.FLOWM_TEST_MODEL || 'gpt-5.5', authKind: 'none', credentialVersion: 0, account: null, subject: null, clientId: null }
-  await rpc('profiles/save', { profile })
-  const binding = { projectRoot: project, flowSessionId: 'flowm-test', profileId, role: 'canvas', model: profile.model, system: 'Test harness. Return JSON when given a schema.' }
+  const profile = { id: profileId, name: 'Offline gateway', kind: 'gateway', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: '', authKind: 'none', credentialVersion: 0, account: null, subject: null, clientId: null }
+  const savedProfile = await rpc('profiles/save', { profile })
+  const catalog = await rpc('models/list', { profileId })
+  assert.equal(catalog.profileId, profileId)
+  assert.equal(catalog.source, 'gateway')
+  assert.deepEqual(catalog.models.map((model) => model.id), [discoveredModel], 'gateway picker included an upstream bundled model')
+  assert.equal(catalog.defaultModel, discoveredModel)
+  const binding = { projectRoot: project, flowSessionId: 'flowm-test', profileId, credentialVersion: savedProfile.credentialVersion, role: 'canvas', model: discoveredModel, system: 'Test harness. Return JSON when given a schema.' }
+  await assert.rejects(rpc('thread/open', { ...binding, credentialVersion: 0 }), /credentials changed/)
+  await assert.rejects(rpc('thread/open', { ...binding, model: 'not-returned-by-gateway' }), /absent from.*catalog/)
+  availableModels = ['newly-returned-route']
+  const refreshed = await rpc('models/list', { profileId })
+  assert.deepEqual(refreshed.models.map((model) => model.id), availableModels, 'model listing reused a stale snapshot')
+  await assert.rejects(rpc('thread/open', binding), /absent from.*catalog/)
+  availableModels = [discoveredModel]
+  assert.ok(catalogRequests >= 4, 'model discovery did not reach the upstream')
   const { threadId } = await rpc('thread/open', binding)
   const schemas = ['build', 'review', 'finalize'].map((phase) => ({ type: 'object', additionalProperties: false, properties: { reply: { type: 'string', description: phase }, question: { type: 'null' }, operations: { type: 'array', items: { type: 'object', properties: {}, additionalProperties: false }, maxItems: 0 } }, required: ['reply', 'question', 'operations'] }))
   for (const schema of schemas) {
@@ -164,21 +188,6 @@ try {
   assert.ok(JSON.stringify(requests.at(-1).input).includes('Return the checked JSON envelope'), 'cold resume lost previous history')
   await rpc('thread/close', { threadId })
 
-  const privateState = JSON.parse(await readFile(join(home, 'state.json'), 'utf8'))
-  const historyFile = join(foreignHome, 'selected-history.jsonl')
-  await copyFile(privateState.bindings[threadId].rolloutPath, historyFile)
-  const sourceBefore = await readFile(historyFile)
-  const beforeImport = requests.length
-  const imported = await rpc('history/import', { filePath: historyFile, projectRoot: project })
-  assert.equal((await rpc('history/import', { filePath: historyFile, projectRoot: project })).importId, imported.importId, 'history import is not idempotent')
-  assert.equal(requests.length, beforeImport, 'import submitted an old task')
-  assert.deepEqual(await readFile(historyFile), sourceBefore, 'import changed the source history')
-  const { threadId: importedThread } = await rpc('thread/open', { ...binding, flowSessionId: 'imported-history', importId: imported.importId })
-  responses.push(message(envelope))
-  await rpc('turn/start', { threadId: importedThread, requestId: randomUUID(), prompt: 'A new request after import', images: [], outputSchema: schemas[0] })
-  assert.ok(JSON.stringify(requests.at(-1).input).includes('Return the checked JSON envelope'))
-  await rpc('thread/close', { threadId: importedThread })
-
   const { threadId: failureThread } = await rpc('thread/open', { ...binding, flowSessionId: 'auth-failure' })
   const beforeError = requests.length
   responses.push({ status: 401 })
@@ -226,7 +235,7 @@ try {
   assert.equal((await rpc('profiles/list')).find((profile) => profile.id === bearerProfileId).signedIn, false)
   await assert.rejects(access(join(home, 'credentials', `${bearerProfileId}.sealed`)), 'logout retained encrypted credentials')
   assert.equal(await readFile(join(foreignHome, 'config.toml'), 'utf8'), 'INVALID EXTERNAL CONFIG: MUST NEVER BE READ')
-  console.log(`Harness integration passed: ${requests.length} local Responses requests, schema changes, receipts, binding isolation, native questions, encrypted bearer/logout, provider failure, cold resume, selected-history import, cancellation${process.platform === 'win32' ? ', Windows read-only/workspace-write, approval allow/deny' : ''}.`)
+  console.log(`Harness integration passed: ${requests.length} local Responses requests, schema changes, receipts, binding isolation, native questions, encrypted bearer/logout, provider failure, cold resume, cancellation${process.platform === 'win32' ? ', Windows read-only/workspace-write, approval allow/deny' : ''}.`)
   console.log(`Evidence directory: ${testRoot}`)
 } finally {
   await writeFile(join(testRoot, 'evidence.json'), JSON.stringify({ requests, events, diagnostics }, null, 2))

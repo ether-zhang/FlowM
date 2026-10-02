@@ -1,14 +1,12 @@
-import { useId, useState } from 'react'
-import type { AgentModel } from '../agent'
+import { useId } from 'react'
+import type { HarnessModelCatalog } from '../harness'
 import type { UiText } from './uiText'
 
-const CUSTOM = '__flowm_custom_model__'
-
 export function ModelPicker({
-  value, models, onChange, disabled, loading = false, error, onRefresh, text,
+  value, catalog, onChange, disabled, loading = false, error, onRefresh, text,
 }: {
   value: string
-  models: readonly AgentModel[]
+  catalog: HarnessModelCatalog | null
   onChange: (model: string) => void
   disabled: boolean
   loading?: boolean
@@ -17,44 +15,32 @@ export function ModelPicker({
   text: UiText
 }) {
   const id = useId()
-  const [customOpen, setCustomOpen] = useState(false)
-  const selected = value === 'default' ? '' : value
-  const custom = customOpen || !!selected && !models.some((model) => model.id === selected)
+  const models = catalog?.models ?? []
+  const selected = models.some((model) => model.id === value) ? value : ''
   return (
     <div className="model-picker">
       <div className="model-picker-row">
         <label htmlFor={id}>{text.model.label}</label>
-        <select
-          id={id}
-          value={custom ? CUSTOM : selected}
-          disabled={disabled}
-          onChange={(event) => {
-            const next = event.target.value
-            setCustomOpen(next === CUSTOM)
-            if (next !== CUSTOM) onChange(next)
-          }}
-        >
-          <option value="">{models.find((model) => model.id === 'default')?.label ?? text.model.default}</option>
-          {models.filter((model) => model.id !== 'default').map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-          <option value={CUSTOM}>{text.model.custom}</option>
-        </select>
+        <span className="model-picker-source">{catalog?.source === 'gateway' ? text.model.gatewayCatalog : catalog?.source === 'openai-api' ? text.model.apiCatalog : catalog ? text.model.accountCatalog : ''}</span>
         {onRefresh && (
           <button type="button" disabled={disabled || loading} title={text.model.refresh} aria-label={text.model.refresh} onClick={onRefresh}>
             {loading ? '…' : '↻'}
           </button>
         )}
       </div>
-      {custom && (
-        <input
-          className="model-custom-input"
-          aria-label={text.model.custom}
-          placeholder={text.model.placeholder}
-          value={value}
-          disabled={disabled}
-          spellCheck={false}
-          onChange={(event) => onChange(event.target.value.trim())}
-        />
-      )}
+      <div className="model-picker-control">
+        <select
+          id={id}
+          value={selected}
+          disabled={disabled || loading || !models.length}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="" disabled>{text.model.select}</option>
+          {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+        </select>
+        <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
+      </div>
+      {selected && <div className="model-picker-id" title={selected}>{selected}</div>}
       {loading ? <div className="model-picker-note" role="status">{text.model.loading}</div>
         : error ? <div className="model-picker-note" title={error}>{text.model.loadFailed}</div> : null}
     </div>

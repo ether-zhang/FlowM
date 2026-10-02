@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { HarnessClient } from './client'
 import { HarnessSession } from './session'
+import { HARNESS_PROTOCOL } from './types'
 import type { HarnessProcessEvent, HarnessTransportFactory } from './types'
 
 function transport() {
@@ -13,7 +14,7 @@ function transport() {
       write: async (value) => {
         const request = value as (typeof sent)[number]
         sent.push(request)
-        if (request.method === 'initialize') queueMicrotask(() => respond(connection, { id: request.id, result: { protocolVersion: 'flowm.harness/1' } }))
+        if (request.method === 'initialize') queueMicrotask(() => respond(connection, { id: request.id, result: { protocolVersion: HARNESS_PROTOCOL } }))
         if (request.method === 'turn/status') queueMicrotask(() => respond(connection, { id: request.id, result: { status: 'uncertain' } }))
       },
       stop: async () => {},
@@ -23,6 +24,18 @@ function transport() {
 }
 
 describe('FlowM harness connection', () => {
+  it('invalidates UI catalog snapshots every time the native runtime starts', async () => {
+    const { client, listeners } = transport()
+    const onRuntime = vi.fn()
+    client.subscribe(onRuntime)
+    await client.request('turn/status', { requestId: 'one' })
+    expect(onRuntime).toHaveBeenCalledWith(expect.objectContaining({ method: 'runtime/ready' }))
+    listeners[0]({ kind: 'exit', code: 0 })
+    await client.request('turn/status', { requestId: 'two' })
+    expect(onRuntime.mock.calls.filter(([event]) => event.method === 'runtime/ready')).toHaveLength(2)
+    await client.dispose()
+  })
+
   it('routes simultaneous turns by request AND thread and ignores cross-thread events', async () => {
     const { client, sent, respond } = transport()
     const first = vi.fn()
@@ -60,7 +73,7 @@ describe('harness session recovery', () => {
   it('honors cancellation while a thread is still opening', async () => {
     let opened!: (value: { threadId: string }) => void
     const client = { openThread: vi.fn(() => new Promise((resolve) => { opened = resolve })), runTurn: vi.fn(), status: vi.fn().mockResolvedValue({ status: 'not-received' }) } as unknown as HarnessClient
-    const session = new HarnessSession({ projectRoot: '/project', profileId: 'p', model: 'm', flowSessionId: 's', role: 'canvas', system: '' }, client)
+    const session = new HarnessSession({ projectRoot: '/project', profileId: "p", credentialVersion: 1, model: 'm', flowSessionId: 's', role: 'canvas', system: '' }, client)
     const run = session.run('draw', [], null, () => {})
     const rejected = expect(run).rejects.toThrow('cancelled before model submission')
     await session.cancel()
@@ -74,7 +87,7 @@ describe('harness session recovery', () => {
       runTurn: vi.fn().mockRejectedValue(new Error('broken pipe')),
       status: vi.fn().mockResolvedValue({ status: 'uncertain' }),
     } as unknown as HarnessClient
-    const session = new HarnessSession({ projectRoot: '/project', profileId: 'p', model: 'm', flowSessionId: 's', role: 'project', system: '' }, client)
+    const session = new HarnessSession({ projectRoot: '/project', profileId: "p", credentialVersion: 1, model: 'm', flowSessionId: 's', role: 'project', system: '' }, client)
     await expect(session.run('modify files', [], null, () => {})).rejects.toThrow('broken pipe')
     await expect(session.run('retry', [], null, () => {})).rejects.toThrow('did not settle')
     expect(client.runTurn).toHaveBeenCalledTimes(1)
@@ -86,7 +99,7 @@ describe('harness session recovery', () => {
       status: vi.fn().mockResolvedValue({ status: 'completed', text: 'saved result' }),
     } as unknown as HarnessClient
     const persisted = vi.fn().mockResolvedValue(undefined)
-    const session = new HarnessSession({ projectRoot: '/project', profileId: 'p', model: 'm', flowSessionId: 's', role: 'canvas', system: '' }, client, persisted)
+    const session = new HarnessSession({ projectRoot: '/project', profileId: "p", credentialVersion: 1, model: 'm', flowSessionId: 's', role: 'canvas', system: '' }, client, persisted)
     expect((await session.run('draw', [], null, () => {})).text).toBe('saved result')
     expect(persisted).toHaveBeenCalledWith('t')
     expect(client.runTurn).toHaveBeenCalledTimes(1)

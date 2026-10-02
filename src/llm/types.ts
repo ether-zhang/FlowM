@@ -2,7 +2,7 @@ import type { AgentQuestion } from '../agent'
 
 /**
  * Provider-neutral conversation types. The conversation loop and the rest of the
- * app speak only these; each adapter translates them to/from its provider's wire
+ * app speak only these; the harness canvas boundary maps native results into this
  * format. This keeps FlowM independent of any single LLM API.
  */
 

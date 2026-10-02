@@ -1,6 +1,19 @@
 import type { AgentActivityEvent, AgentQuestion } from '../agent'
 
-export const HARNESS_PROTOCOL = 'flowm.harness/1'
+export const HARNESS_PROTOCOL = 'flowm.harness/4'
+
+export interface HarnessModel {
+  id: string
+  label: string
+}
+
+export interface HarnessModelCatalog {
+  profileId: string
+  credentialVersion: number
+  source: 'openai-account' | 'openai-api' | 'gateway'
+  models: HarnessModel[]
+  defaultModel: string | null
+}
 
 export interface HarnessProfile {
   id: string
@@ -17,14 +30,21 @@ export interface HarnessProfile {
 }
 
 export interface HarnessBinding {
-  importId?: string
   threadId?: string
   projectRoot: string
   flowSessionId: string
   profileId: string
+  credentialVersion: number
   role: 'canvas' | 'project'
   model: string
   system: string
+}
+
+/** A model selection validated against the current connection's live catalog. */
+export interface HarnessConnection {
+  profileId: string
+  credentialVersion: number
+  model: string
 }
 
 export interface TurnReceipt {

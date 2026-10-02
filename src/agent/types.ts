@@ -1,9 +1,3 @@
-export interface AgentModel {
-  id: string
-  label: string
-  isDefault?: boolean
-}
-
 export interface AgentQuestionOption {
   label: string
   description?: string
@@ -23,7 +17,7 @@ export interface AgentQuestionItem {
 /**
  * A user-input request emitted by an agent. `requestId` is present only when the provider has
  * paused an in-flight turn and expects a protocol response. Without it, the answer starts the
- * next turn through the legacy structured-output fallback.
+   * next FlowM canvas turn through a structured design question.
  */
 export interface AgentQuestion {
   requestId?: string

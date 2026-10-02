@@ -13,13 +13,16 @@ anyhow = "1"
 aes-gcm = "0.10"
 axum = "0.8"
 base64 = "0.22"
+codex-api = { path = "../third_party/codex/codex-rs/codex-api" }
 codex-core-api = { path = "../third_party/codex/codex-rs/core-api" }
 codex-core = { path = "../third_party/codex/codex-rs/core" }
 codex-config = { path = "../third_party/codex/codex-rs/config" }
 codex-extension-api = { path = "../third_party/codex/codex-rs/ext/extension-api" }
 codex-history = { path = "../third_party/codex/codex-rs/history" }
+codex-http-client = { path = "../third_party/codex/codex-rs/http-client" }
 codex-login = { path = "../third_party/codex/codex-rs/login" }
 codex-model-provider-info = { path = "../third_party/codex/codex-rs/model-provider-info" }
+codex-models-manager = { path = "../third_party/codex/codex-rs/models-manager" }
 codex-protocol = { path = "../third_party/codex/codex-rs/protocol" }
 codex-rollout = { path = "../third_party/codex/codex-rs/rollout" }
 dirs = "6"

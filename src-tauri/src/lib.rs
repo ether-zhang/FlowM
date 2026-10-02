@@ -368,19 +368,6 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
     rx.await.ok().flatten().map(|p| p.to_string())
 }
 
-#[tauri::command]
-async fn pick_harness_history(app: AppHandle) -> Option<String> {
-    use tauri_plugin_dialog::DialogExt;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .add_filter("Codex history", &["jsonl"])
-        .pick_file(move |file| {
-            let _ = tx.send(file);
-        });
-    rx.await.ok().flatten().map(|path| path.to_string())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -398,7 +385,6 @@ pub fn run() {
             git_graph,
             git_diff,
             pick_folder,
-            pick_harness_history,
             read_file,
             write_file
         ])

@@ -1,6 +1,7 @@
 //! The fixed Codex API is confined to this module; FlowM's canvas semantics stay in the caller.
 use crate::{
     auth::{AuthBridge, AuthService},
+    models::ModelDirectory,
     state::{Binding, Profile, Role, Store, payload_hash},
 };
 use anyhow::{Context, Result, bail};
@@ -34,12 +35,11 @@ use uuid::Uuid;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenThread {
-    #[serde(default)]
-    pub import_id: Option<String>,
     pub thread_id: Option<String>,
     pub project_root: PathBuf,
     pub flow_session_id: String,
     pub profile_id: String,
+    pub credential_version: u64,
     pub role: Role,
     pub model: String,
     pub system: String,
@@ -83,6 +83,7 @@ pub struct LiveThread {
 pub struct Registry {
     store: Arc<Store>,
     auth: Arc<AuthService>,
+    models: Arc<ModelDirectory>,
     paths: Arg0DispatchPaths,
     groups: Mutex<HashMap<String, Arc<ThreadManager>>>,
     pub threads: RwLock<HashMap<String, Arc<LiveThread>>>,
@@ -102,12 +103,14 @@ impl Registry {
     pub fn new(
         store: Arc<Store>,
         auth: Arc<AuthService>,
+        models: Arc<ModelDirectory>,
         paths: Arg0DispatchPaths,
         events: mpsc::Sender<Value>,
     ) -> Self {
         Self {
             store,
             auth,
+            models,
             paths,
             groups: Mutex::new(HashMap::new()),
             threads: RwLock::new(HashMap::new()),
@@ -129,6 +132,9 @@ impl Registry {
             bail!("Session and model must be specified");
         }
         let profile = self.store.profile(&request.profile_id).await?;
+        if request.credential_version != profile.credential_version {
+            bail!("Connection credentials changed; refresh the connection before opening a thread");
+        }
         self.auth.headers(&profile, false).await?;
         let mut binding = if let Some(id) = &request.thread_id {
             self.store
@@ -158,25 +164,10 @@ impl Registry {
         if self.threads.read().await.contains_key(&binding.id) {
             return Ok(binding_result(&binding));
         }
-        if profile.auth_kind == crate::state::AuthKind::Chatgpt {
-            let models = self.auth.models(&profile.id).await?;
-            if !models.as_array().is_some_and(|models| {
-                models
-                    .iter()
-                    .any(|model| model["id"].as_str() == Some(&binding.model))
-            }) {
-                bail!("This model is not listed for the selected ChatGPT account");
-            }
-        }
-        let config = self.config(&binding, &profile).await?;
-        let key = format!(
-            "{}:{}:{}:{:?}:{}",
-            profile.id,
-            profile.credential_version,
-            payload_hash(&json!(binding.project_root)),
-            binding.role,
-            binding.model
-        );
+        let catalog = self.models.catalog(&profile).await?;
+        let model_info = catalog.model_info(&profile, &binding.model)?;
+        let key = manager_key(&binding, &model_info)?;
+        let config = self.config(&binding, &profile, model_info).await?;
         let manager = {
             let mut groups = self.groups.lock().await;
             if let Some(manager) = groups.get(&key) {
@@ -203,24 +194,6 @@ impl Registry {
             options.initial_history = codex_rollout::RolloutRecorder::get_rollout_history(&path)
                 .await
                 .context("Private thread history could not be recovered")?;
-        } else if let Some(import_id) = &request.import_id {
-            if import_id.len() != 64
-                || !import_id
-                    .chars()
-                    .all(|character| character.is_ascii_hexdigit())
-            {
-                bail!("Invalid history import ID");
-            }
-            let bytes = tokio::fs::read(
-                self.store
-                    .home
-                    .join("imports")
-                    .join(format!("{import_id}.json")),
-            )
-            .await
-            .context("Imported history snapshot is missing")?;
-            options.initial_history = serde_json::from_slice(&bytes)?;
-            binding.imported_from = Some(import_id.clone());
         }
         let NewThread {
             thread,
@@ -258,7 +231,12 @@ impl Registry {
         Ok(binding_result(&binding))
     }
 
-    async fn config(&self, binding: &Binding, profile: &Profile) -> Result<Config> {
+    async fn config(
+        &self,
+        binding: &Binding,
+        profile: &Profile,
+        model_info: codex_protocol::openai_models::ModelInfo,
+    ) -> Result<Config> {
         let home = self
             .store
             .home
@@ -303,6 +281,14 @@ impl Registry {
                     }
                     .into(),
                     base_url: Some(base_url),
+                    http_headers: Some(
+                        crate::provider::request_headers()
+                            .iter()
+                            .map(|(name, value)| {
+                                (name.to_string(), value.to_str().unwrap().to_owned().into())
+                            })
+                            .collect(),
+                    ),
                     requires_openai_auth: true,
                     request_max_retries: Some(0),
                     stream_max_retries: Some(0),
@@ -333,6 +319,9 @@ impl Registry {
             "plugin_hooks",
             "code_mode",
             "code_mode_host",
+            "code_mode_only",
+            "code_mode_buffered_exec",
+            "code_mode_interrupt",
             "code_mode_prewarm",
             "collab",
             "multi_agent_v2",
@@ -350,6 +339,8 @@ impl Registry {
             "skill_env_var_dependency_prompt",
             "standalone_web_search",
             "request_permissions_tool",
+            "tool_search",
+            "image_generation",
         ] {
             overrides.push((format!("features.{key}"), toml::Value::Boolean(false)));
         }
@@ -378,7 +369,11 @@ impl Registry {
             } else {
                 PermissionProfile::workspace_write()
             }),
-            base_instructions: (!binding.system.is_empty()).then(|| binding.system.clone()),
+            base_instructions: Some(if binding.system.is_empty() {
+                "You are FlowM's project agent. Work within the selected project and follow the user's request. Use the provided direct tools to read code, edit files, and verify changes. Respect the workspace-write sandbox and request explicit approval when required. Treat the attached canvas as design context. Report completed changes and validation accurately; do not claim unexecuted actions.".into()
+            } else {
+                binding.system.clone()
+            }),
             ephemeral: Some(false),
             codex_self_exe: self.paths.codex_self_exe.clone(),
             codex_linux_sandbox_exe: self.paths.codex_linux_sandbox_exe.clone(),
@@ -419,6 +414,9 @@ impl Registry {
             Feature::PluginHooks,
             Feature::CodeMode,
             Feature::CodeModeHost,
+            Feature::CodeModeOnly,
+            Feature::CodeModePrewarm,
+            Feature::CodeModeInterrupt,
             Feature::Collab,
             Feature::MultiAgentV2,
             Feature::MemoryTool,
@@ -426,6 +424,7 @@ impl Registry {
             Feature::RealtimeConversation,
             Feature::SkillMcpDependencyInstall,
             Feature::SkillSearch,
+            Feature::ImageGeneration,
         ] {
             if config.features.enabled(feature) {
                 bail!(
@@ -434,36 +433,9 @@ impl Registry {
             }
         }
         config.suppress_unstable_features_warning = true;
-        // This is request/tool metadata, not an entitlement catalog. The UI's model discovery is
-        // owned by AuthService, and never refreshes through Codex's backend or user configuration.
-        let mut catalog: codex_protocol::openai_models::ModelsResponse = serde_json::from_str(
-            include_str!("../../third_party/codex/codex-rs/models-manager/models.json"),
-        )?;
-        if profile.kind == crate::state::ProviderKind::Gateway
-            && !catalog
-                .models
-                .iter()
-                .any(|model| model.slug == binding.model)
-        {
-            let mut model = catalog
-                .models
-                .first()
-                .cloned()
-                .context("Missing kernel model metadata")?;
-            model.slug = binding.model.clone();
-            model.display_name = binding.model.clone();
-            model.default_reasoning_level = None;
-            model.supported_reasoning_levels.clear();
-            model.supports_reasoning_summary_parameter = false;
-            model.support_verbosity = false;
-            model.context_window = None;
-            model.max_context_window = None;
-            model.auto_compact_token_limit = None;
-            model.experimental_supported_tools.clear();
-            model.model_messages = None;
-            catalog.models = vec![model];
-        }
-        config.model_catalog = Some(catalog);
+        config.model_catalog = Some(codex_protocol::openai_models::ModelsResponse {
+            models: vec![model_info],
+        });
         let permission = config.permissions.permission_profile();
         let read_only = permission
             .intersect_with_read_only()
@@ -845,6 +817,22 @@ impl Registry {
 fn binding_result(binding: &Binding) -> Value {
     json!({"threadId":binding.id,"role":binding.role,"model":binding.model,"credentialVersion":binding.credential_version})
 }
+fn manager_key(
+    binding: &Binding,
+    model: &codex_protocol::openai_models::ModelInfo,
+) -> Result<String> {
+    // A manager owns a static catalog. New threads must not inherit obsolete capabilities
+    // merely because their model ID and credentials match an older manager's snapshot.
+    Ok(format!(
+        "{}:{}:{}:{:?}:{}:{}",
+        binding.profile_id,
+        binding.credential_version,
+        payload_hash(&json!(binding.project_root)),
+        binding.role,
+        binding.model,
+        payload_hash(&serde_json::to_value(model)?)
+    ))
+}
 fn validate_binding(binding: &Binding, request: &OpenThread, profile: &Profile) -> Result<()> {
     if binding.project_root != request.project_root
         || binding.flow_session_id != request.flow_session_id
@@ -893,7 +881,8 @@ mod tests {
         let store = Arc::new(Store::open(directory.path().join("private")).await?);
         let (events, _receiver) = mpsc::channel(16);
         let auth = AuthService::new(store.clone(), events.clone())?;
-        let registry = Registry::new(store, auth, Arg0DispatchPaths::default(), events);
+        let models = ModelDirectory::new(store.clone(), auth.clone());
+        let registry = Registry::new(store, auth, models, Arg0DispatchPaths::default(), events);
         for auth_kind in [
             crate::state::AuthKind::Bearer,
             crate::state::AuthKind::Chatgpt,
@@ -923,7 +912,29 @@ mod tests {
                 imported_from: None,
                 blocked_request_id: None,
             };
-            let config = registry.config(&binding, &profile).await?;
+            let catalog = crate::models::ModelCatalog::from_response(
+                &profile,
+                if auth_kind == crate::state::AuthKind::Chatgpt {
+                    json!({"models":[{"slug":profile.model,"display_name":"Config fixture","visibility":"list","tool_mode":"code_mode_only"}]})
+                } else {
+                    json!({"data":[{"id":profile.model}]})
+                },
+            )?;
+            let model_info = catalog.model_info(&profile, &binding.model)?;
+            let previous_key = manager_key(&binding, &model_info)?;
+            let mut updated = model_info.clone();
+            updated.context_window = Some(64_000);
+            assert_ne!(
+                manager_key(&binding, &updated)?,
+                previous_key,
+                "updated metadata must create a manager with the current catalog"
+            );
+            let config = registry.config(&binding, &profile, model_info).await?;
+            assert_eq!(
+                config.model_catalog.as_ref().unwrap().models[0].tool_mode,
+                Some(codex_protocol::openai_models::ToolMode::Direct)
+            );
+            assert!(!config.features.enabled(Feature::CodeModeOnly));
             assert_eq!(config.model_provider_id, "flowm-openai");
             assert_eq!(config.model_provider.name, "FlowM OpenAI");
             assert!(config.model_provider.requires_openai_auth);

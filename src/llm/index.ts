@@ -1,5 +1,5 @@
-export type { LlmAdapter, TurnCallbacks, RunTurnParams } from './adapter'
+export type { CanvasTurnRuntime, TurnCallbacks, RunTurnParams } from './canvasTurn'
 export type { LlmMessage, LlmQuestion, LlmToolCall, LlmTurn } from './types'
-export { HarnessAdapter } from './harnessAdapter'
+export { CanvasTurnProjection } from './canvasRuntime'
 export { buildCanvasTurnOutputSchema, projectCanvasTurn } from './outputContract'
 export { Conversation, type SendCallbacks } from './conversation'

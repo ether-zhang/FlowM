@@ -1,13 +1,7 @@
 import { useId, useState } from 'react'
-import type { HarnessProfile } from '../harness'
+import { createHarnessProfile, type HarnessProfile } from '../harness'
 import { connectionOption, type ModelConnectionOption } from './modelConnectionState'
 import type { UiText } from './uiText'
-
-function defaultProfile(kind: 'openai' | 'gateway'): HarnessProfile {
-  return { id: crypto.randomUUID(), name: kind === 'openai' ? 'OpenAI' : 'Gateway', kind,
-    baseUrl: kind === 'openai' ? 'https://api.openai.com/v1' : '', model: kind === 'openai' ? 'gpt-5.5' : '',
-    authKind: kind === 'openai' ? 'chatgpt' : 'bearer', credentialVersion: 0, account: null, subject: null, clientId: null }
-}
 
 export function HarnessSettings({ profiles, profile, disabled, loginPending, onSave, onLogin, onLogout, onConnect, onCancelLogin, text }: {
   profiles: HarnessProfile[]
@@ -22,7 +16,7 @@ export function HarnessSettings({ profiles, profile, disabled, loginPending, onS
   text: UiText
 }) {
   const [expanded, setExpanded] = useState<ModelConnectionOption | null>(null)
-  const [gateway, setGateway] = useState<HarnessProfile>(() => profiles.find((item) => item.kind === 'gateway') ?? defaultProfile('gateway'))
+  const [gateway, setGateway] = useState<HarnessProfile>(() => profiles.find((item) => item.kind === 'gateway') ?? createHarnessProfile('gateway'))
   const [token, setToken] = useState('')
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
@@ -48,7 +42,7 @@ export function HarnessSettings({ profiles, profile, disabled, loginPending, onS
       setExpanded(null)
       void run(async () => {
         const existing = profiles.find((item) => item.kind === 'openai' && item.authKind === 'chatgpt')
-        const saved = existing ?? await onSave(defaultProfile('openai'))
+        const saved = existing ?? await onSave(createHarnessProfile('openai'))
         await onLogin(saved.id)
       })
     } else {
@@ -68,7 +62,7 @@ export function HarnessSettings({ profiles, profile, disabled, loginPending, onS
       <div className="model-connection-options">
         {options.map((option) => {
           const selected = active === option.id
-          const detail = selected ? profile?.account || (option.id === 'gateway' ? profile?.model : t.connected) : option.description
+          const detail = selected ? profile?.account || (option.id === 'gateway' ? profile?.baseUrl : t.connected) : option.description
           return (
             <div className={`model-connection-row${selected ? ' connected' : ''}`} key={option.id}>
               <button type="button" className={`model-connection-option${selected ? ' active' : ''}`}
@@ -95,12 +89,11 @@ export function HarnessSettings({ profiles, profile, disabled, loginPending, onS
       }}>
         <div className="settings-field"><label htmlFor={`${id}-url`}>{t.url}</label>
           <input id={`${id}-url`} className="modal-input" value={gateway.baseUrl} placeholder="https://gateway.example/v1" disabled={locked} spellCheck={false} onChange={(event) => setGateway({ ...gateway, baseUrl: event.target.value })} required /></div>
-        <div className="settings-field"><label htmlFor={`${id}-model`}>{text.model.label}</label>
-          <input id={`${id}-model`} className="modal-input" value={gateway.model} placeholder={text.model.placeholder} disabled={locked} spellCheck={false} onChange={(event) => setGateway({ ...gateway, model: event.target.value })} required /></div>
         {gateway.authKind !== 'none' && <div className="settings-field"><label htmlFor={`${id}-token`}>Bearer token</label>
           <input id={`${id}-token`} className="modal-input" type="password" autoComplete="off" value={token} disabled={locked} placeholder={t.tokenPlaceholder} onChange={(event) => setToken(event.target.value)} /></div>}
         <label className="gateway-no-auth"><input type="checkbox" checked={gateway.authKind === 'none'} disabled={locked} onChange={(event) => setGateway({ ...gateway, authKind: event.target.checked ? 'none' : 'bearer' })} />{t.noAuthentication}</label>
-        <div className="gateway-connection-actions"><button type="submit" disabled={locked || !gateway.baseUrl.trim() || !gateway.model.trim()}>{working ? t.connecting : t.connect}</button></div>
+        <p className="model-connection-notice">{t.gatewayModels}</p>
+        <div className="gateway-connection-actions"><button type="submit" disabled={locked || !gateway.baseUrl.trim()}>{working ? t.connecting : t.connect}</button></div>
       </form>}
       {loginPending && <div className="model-login-pending" role="status"><span>{t.loginPending}</span><button type="button" disabled={disabled || working} onClick={() => void run(onCancelLogin)}>{text.common.cancel}</button></div>}
       {error && <p className="settings-error" role="alert">{error}</p>}

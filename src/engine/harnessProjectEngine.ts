@@ -1,5 +1,4 @@
 import type { HarnessSession } from '../harness'
-import { routeHarnessEvent } from '../llm/harnessAdapter'
 import type { AgentQuestionAnswer } from '../agent'
 import { formatCanvas, type CanvasPort } from '../protocol'
 import type { ChatCallbacks, ChatEngine } from './chatEngine'
@@ -21,21 +20,14 @@ export class HarnessProjectEngine implements ChatEngine {
     const session = this.getSession()
     if (!session) throw new Error('Open a project and configure a harness provider first')
     this.active = session
-    const port = this.getPort()
-    const shapes = port?.snapshot('selection') ?? []
-    const image = shapes.length ? await port?.exportImage('selection') : undefined
-    const prompt = shapes.length
-      ? `${text}\n\nThe current FlowM canvas design is attached. Use it as context for work in this project:\n${formatCanvas(shapes)}`
-      : text
-    let streamed = ''
-    cb.onActivity?.({ type: 'status', status: 'working' })
     try {
-      const result = await session.run(prompt, image ? [image] : [], null, (event) => {
-        if (event.kind === 'text') streamed += event.text
-        routeHarnessEvent(event, cb)
-      })
-      if (result.text && !streamed.endsWith(result.text)) cb.onText(result.text.startsWith(streamed) ? result.text.slice(streamed.length) : result.text)
-      cb.onActivity?.({ type: 'status', status: 'completed' })
+      const port = this.getPort()
+      const shapes = port?.snapshot('selection') ?? []
+      const image = shapes.length ? await port?.exportImage('selection') : undefined
+      const prompt = shapes.length
+        ? `${text}\n\nThe current FlowM canvas design is attached. Use it as context for work in this project:\n${formatCanvas(shapes)}`
+        : text
+      await session.send({ prompt, images: image ? [image] : [] }, cb)
     } finally { this.active = null }
   }
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {

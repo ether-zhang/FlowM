@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import type { HarnessProfile } from '../harness'
-import { activeModelConnection } from './modelConnectionState'
+import { activeModelConnection } from '../harness/connections'
 import { HarnessSettings } from './HarnessSettings'
 import { uiText } from './uiText'
 

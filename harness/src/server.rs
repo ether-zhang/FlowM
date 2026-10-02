@@ -1,6 +1,7 @@
 use crate::{
     auth::AuthService,
     kernel::{OpenThread, Registry, StartTurn},
+    models::ModelDirectory,
     state::{
         AuthKind, PROTOCOL_VERSION, Profile, Receipt, Store, UPSTREAM_REVISION, now, payload_hash,
     },
@@ -28,6 +29,7 @@ struct Request {
 struct Service {
     store: Arc<Store>,
     auth: Arc<AuthService>,
+    models: Arc<ModelDirectory>,
     registry: Registry,
     settings: Mutex<()>,
 }
@@ -124,12 +126,11 @@ impl Service {
                 self.auth.logout(&id).await?;
                 Ok(json!({}))
             }
-            "models/list" => {
-                self.auth
-                    .models(&required_string(&params, "profileId")?)
-                    .await
-            }
-            "history/import" => self.import_history(params).await,
+            "models/list" => Ok(serde_json::to_value(
+                self.models
+                    .list(&required_string(&params, "profileId")?)
+                    .await?,
+            )?),
             "thread/open" => {
                 self.registry
                     .open(serde_json::from_value::<OpenThread>(params)?)
@@ -172,50 +173,6 @@ impl Service {
             }
             _ => bail!("Unknown FlowM harness method: {method}"),
         }
-    }
-
-    async fn import_history(&self, params: Value) -> Result<Value> {
-        use codex_core_api::EventMsg;
-        let path = tokio::fs::canonicalize(required_string(&params, "filePath")?).await?;
-        if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
-            bail!("Select a standalone Codex .jsonl history file");
-        }
-        if tokio::fs::metadata(&path).await?.len() > 128 * 1024 * 1024 {
-            bail!("History file exceeds the 128 MiB import limit");
-        }
-        let history = codex_rollout::RolloutRecorder::get_rollout_history(&path).await.context("This history format cannot be imported; visible FlowM history can still be used for continuation")?;
-        let root = tokio::fs::canonicalize(required_string(&params, "projectRoot")?).await?;
-        if let Some(cwd) = history.session_cwd() {
-            if tokio::fs::canonicalize(cwd).await? != root {
-                bail!("This history belongs to a different project");
-            }
-        }
-        let events = history.get_event_msgs().unwrap_or_default();
-        let boundary = events.iter().rev().find(|event| {
-            matches!(
-                event,
-                EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-            )
-        });
-        if !matches!(boundary, Some(EventMsg::TurnComplete(done)) if done.error.is_none()) {
-            bail!(
-                "Only completed history can be imported; interrupted history may contain uncertain side effects"
-            );
-        }
-        let snapshot = codex_history::InitialHistory::Forked(history.get_rollout_items().to_vec());
-        let snapshot_value = serde_json::to_value(&snapshot)?;
-        let import_id = payload_hash(&snapshot_value);
-        crate::state::atomic_json(
-            &self
-                .store
-                .home
-                .join("imports")
-                .join(format!("{import_id}.json")),
-            &snapshot,
-        )
-        .await?;
-        // No auth/config files, default-home scan, task submission, or source writes occur here.
-        Ok(json!({"importId":import_id,"mode":"native-history"}))
     }
 
     async fn start_turn(&self, params: Value) -> Result<Value> {
@@ -320,10 +277,18 @@ pub async fn serve(home: PathBuf, paths: Arg0DispatchPaths) -> Result<()> {
     store.recover_receipts().await?;
     let (output, mut frames) = mpsc::channel::<Value>(64);
     let auth = AuthService::new(store.clone(), output.clone())?;
+    let models = ModelDirectory::new(store.clone(), auth.clone());
     let service = Arc::new(Service {
-        registry: Registry::new(store.clone(), auth.clone(), paths, output.clone()),
+        registry: Registry::new(
+            store.clone(),
+            auth.clone(),
+            models.clone(),
+            paths,
+            output.clone(),
+        ),
         store,
         auth,
+        models,
         settings: Mutex::new(()),
     });
     let writer = tokio::spawn(async move {

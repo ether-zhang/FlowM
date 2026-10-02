@@ -19,7 +19,7 @@ import {
   resolveStructureRelationReferences,
   toolCallToOp,
 } from '../protocol'
-import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
+import type { CanvasTurnRuntime, RunTurnParams, TurnCallbacks } from './canvasTurn'
 import type { AgentActivityEvent, AgentQuestionAnswer } from '../agent'
 import type { LlmMessage, LlmQuestion, LlmToolCall, LlmTurn } from './types'
 import {
@@ -200,26 +200,18 @@ export interface SendCallbacks {
   onText(text: string): void
   /** Fired after a batch of canvas ops is applied, with a short human summary. */
   onToolsApplied(summary: string): void
-  /**
-   * Debug hook: fired right before each model call with the exact request
-   * (system + message history + tools) for that loop iteration. `iteration` is
-   * 0-based. Used by the UI's debug mode to show what was sent to the model.
-   * Accurate for stateless adapters (Poe); a transforming adapter (Claude Code) reports its
-   * REAL send via `onDebug` below instead, and the engine suppresses this logical view.
-   */
-  onRequest?(params: RunTurnParams, iteration: number): void
-  /** Debug: a transforming adapter's REAL outgoing request (forwarded to runTurn's onDebug). */
+  /** Harness request/response trace. */
   onDebug?(text: string): void
   /** The assistant needs a yes/no/other user decision before continuing. */
   onQuestion?(question: LlmQuestion): void
-  /** Provider-neutral progress emitted by local agent adapters. */
+  /** Activity emitted by the harness and FlowM's canvas orchestration. */
   onActivity?(event: AgentActivityEvent): void
 }
 
 /** Holds the provider-neutral message history and runs the tool-use loop for one user turn. */
 export class Conversation {
   private history: LlmMessage[] = []
-  private adapter: LlmAdapter
+  private runtime: CanvasTurnRuntime
   /**
    * Structure scope declared so far in THIS user turn (build loop + review), accumulated.
    * A flow's `declare_structure` and the `connect_shapes` forming its edges often land in
@@ -248,8 +240,8 @@ export class Conversation {
   private pendingRelations: StructureRelation[] = []
   private cancelled = false
 
-  constructor(adapter: LlmAdapter) {
-    this.adapter = adapter
+  constructor(runtime: CanvasTurnRuntime) {
+    this.runtime = runtime
   }
 
   reset(messages: LlmMessage[] = []) {
@@ -260,17 +252,13 @@ export class Conversation {
     return this.history
   }
 
-  get sessionId(): string | null {
-    return this.adapter.sessionId ?? null
-  }
-
   async dispose(): Promise<void> {
-    await this.adapter.dispose?.()
+    await this.runtime.dispose?.()
   }
 
   async cancel(): Promise<void> {
     this.cancelled = true
-    await this.adapter.cancel?.()
+    await this.runtime.cancel?.()
   }
 
   private checkCancelled(): void {
@@ -279,14 +267,14 @@ export class Conversation {
 
   private async runTurn(params: RunTurnParams, callbacks: TurnCallbacks): Promise<LlmTurn> {
     this.checkCancelled()
-    const turn = await this.adapter.runTurn(params, callbacks)
+    const turn = await this.runtime.runTurn(params, callbacks)
     this.checkCancelled()
     return turn
   }
 
   async answerQuestion(answer: AgentQuestionAnswer): Promise<void> {
-    if (!this.adapter.answerQuestion) throw new Error('This agent does not support in-flight questions')
-    await this.adapter.answerQuestion(answer)
+    if (!this.runtime.answerQuestion) throw new Error('This agent does not support in-flight questions')
+    await this.runtime.answerQuestion(answer)
   }
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
@@ -342,9 +330,7 @@ export class Conversation {
         messages: this.history,
         tools: ALL_TOOLS,
       }
-      cb.onRequest?.(params, i)
       const turn = await this.runTurn(params, {
-        onSystem: cb.onToolsApplied,
         onDebug: cb.onDebug,
         onQuestion: cb.onQuestion,
         onActivity: cb.onActivity,
@@ -402,9 +388,7 @@ export class Conversation {
       messages: this.history,
       tools: REVIEW_TOOLS,
     }
-    cb.onRequest?.(params, MAX_ITERATIONS)
     const turn = await this.runTurn(params, {
-      onSystem: cb.onToolsApplied,
       onDebug: cb.onDebug,
       onQuestion: cb.onQuestion,
       onActivity: cb.onActivity,
@@ -439,9 +423,7 @@ export class Conversation {
       messages: this.history,
       tools: [],
     }
-    cb.onRequest?.(params, MAX_ITERATIONS + 1)
     const turn = await this.runTurn(params, {
-      onSystem: cb.onToolsApplied,
       onDebug: cb.onDebug,
       onQuestion: cb.onQuestion,
       onActivity: cb.onActivity,

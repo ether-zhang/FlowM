@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "flowm.harness/1";
+pub const PROTOCOL_VERSION: &str = "flowm.harness/4";
 pub const UPSTREAM_REVISION: &str = "67727e7cf114cf3e1b71db368d74b24e32f6cb12";
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl Profile {
             bail!("Use HTTPS, or HTTP for a loopback gateway");
         }
         if self.kind == ProviderKind::Openai
-            && self.base_url.trim_end_matches('/') != "https://api.openai.com/v1"
+            && self.base_url.trim_end_matches('/') != crate::provider::OPENAI_RESOURCE
         {
             bail!("OpenAI profiles must use https://api.openai.com/v1");
         }
@@ -71,9 +71,6 @@ impl Profile {
         }
         if self.kind == ProviderKind::Openai && self.auth_kind == AuthKind::None {
             bail!("OpenAI requires an API key or ChatGPT sign-in");
-        }
-        if self.model.trim().is_empty() {
-            bail!("Choose a model before saving the profile");
         }
         self.base_url = self.base_url.trim().trim_end_matches('/').to_owned();
         self.model = self.model.trim().to_owned();
@@ -314,6 +311,26 @@ mod tests {
         p.base_url = "https://user:password@gateway.test/v1".into();
         assert!(p.validate().is_err());
         p.base_url = "http://127.0.0.1:3000/v1".into();
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn connections_save_without_a_hardcoded_model() {
+        let mut p = Profile {
+            id: Uuid::new_v4().to_string(),
+            name: "OpenAI".into(),
+            kind: ProviderKind::Openai,
+            base_url: "https://api.openai.com/v1".into(),
+            model: String::new(),
+            auth_kind: AuthKind::Chatgpt,
+            credential_version: 0,
+            account: None,
+            subject: None,
+            client_id: None,
+        };
+        assert!(p.validate().is_ok());
+        p.kind = ProviderKind::Gateway;
+        p.auth_kind = AuthKind::Bearer;
         assert!(p.validate().is_ok());
     }
 }

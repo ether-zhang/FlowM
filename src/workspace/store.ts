@@ -7,7 +7,7 @@ import type { ProjectMeta, Workspace } from './types'
  * commands (desktop only). Layout:
  *   workspace.json                     — the project index
  *   <projectId>/project.json           — a project's sessions + canvases + bound folder
- *   <projectId>/sess-<sessId>.json     — a session's UI bubbles (Claude's session holds the history)
+ *   <projectId>/sess-<sessId>.json     — a session's UI bubbles (the harness stores private model history)
  *   <projectId>/canvas-<canvasId>.json — a canvas's scene (CanvasPort.serialize output)
  */
 
@@ -25,7 +25,6 @@ export const listDir = (path: string) => invoke<FsEntry[]>('list_dir', { path })
 
 /** Native folder picker; resolves to the chosen absolute path, or null if cancelled. */
 export const pickFolder = () => invoke<string | null>('pick_folder')
-export const pickHarnessHistory = () => invoke<string | null>('pick_harness_history')
 
 /** Read a file's text (for the floating editor); rejects on >2MB / binary / missing. */
 export const readFile = (path: string) => invoke<string>('read_file', { path })
@@ -79,7 +78,7 @@ export async function openProject(folder: string): Promise<{ id: string; meta: P
 export const saveProject = (id: string, meta: ProjectMeta): Promise<void> =>
   write(projMetaPath(id), JSON.stringify(meta, null, 2))
 
-/** A session's UI bubbles (the model history lives in Claude's session, reached via --resume). */
+/** A session's UI bubbles (model history belongs to the private harness thread). */
 export async function loadSessionDisplay(projId: string, sessId: string): Promise<DisplayMessage[] | null> {
   const raw = await read(sessPath(projId, sessId))
   return raw ? (JSON.parse(raw) as { display: DisplayMessage[] }).display : null
@@ -106,9 +105,9 @@ export function folderName(p: string): string {
 }
 
 /**
- * The project's dir name under ~/.flowm — the same escaping Claude Code uses for ~/.claude/projects:
+ * The project's dir name under ~/.flowm — the stable escaping used by earlier FlowM versions:
  * the absolute folder with every non-alphanumeric char turned into '-' (so `D:\Episodes\The-Office`
- * → `D--Episodes-The-Office`). Deterministic + human-readable, and lines up with Claude's own dir.
+ * → `D--Episodes-The-Office`). Keep this mapping unchanged so existing workspace data remains reachable.
  */
 export function projectDirName(folder: string): string {
   return folder.replace(/[/\\]+$/, '').replace(/[^a-zA-Z0-9]/g, '-')

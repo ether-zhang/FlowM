@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { HarnessAdapter, parseCanvasResult } from './harnessAdapter'
-import { HarnessSession } from '../harness'
-import type { RunTurnParams } from './adapter'
+import { CanvasTurnProjection, parseCanvasResult } from './canvasRuntime'
+import { HarnessTurn, HarnessSession } from '../harness'
+import type { RunTurnParams } from './canvasTurn'
 import { canvasTools } from '../protocol'
 
 const params = (phase: RunTurnParams['phase'] = 'build'): RunTurnParams => ({ phase, system: 'ONE CALLER-OWNED CANVAS CONTRACT', messages: [{ role: 'user', content: 'Draw it' }], tools: phase === 'finalize' ? [] : canvasTools })
@@ -10,7 +10,7 @@ describe.each(['openai', 'gateway'])('%s canvas conformance', (profileId) => {
   it('passes the exact caller prompt, per-phase schema and inline image to the same runtime contract', async () => {
     const run = vi.fn().mockResolvedValue({ requestId: 'r1', status: 'completed', text: '{"reply":"done","question":null,"operations":[]}' })
     const create = vi.fn(() => ({ run }) as unknown as HarnessSession)
-    const adapter = new HarnessAdapter({ projectRoot: '/p', flowSessionId: 's', profileId, model: 'model' }, '', create)
+    const adapter = new CanvasTurnProjection(new HarnessTurn({ projectRoot: '/p', flowSessionId: 's', profileId, model: 'model', role: 'canvas', credentialVersion: 1 }, create))
     const build = params()
     build.messages = [{ role: 'user', content: 'Draw it', image: 'data:image/png;base64,test' }]
     await adapter.runTurn(build, {})
@@ -31,7 +31,7 @@ describe.each(['openai', 'gateway'])('%s canvas conformance', (profileId) => {
   })
   it('does not resend completed input after invalid model output', async () => {
     const run = vi.fn().mockResolvedValueOnce({ requestId: 'r1', status: 'completed', text: 'invalid' }).mockResolvedValueOnce({ requestId: 'r2', status: 'completed', text: '{"reply":"done","question":null,"operations":[]}' })
-    const adapter = new HarnessAdapter({ projectRoot: '/p', flowSessionId: 's', profileId, model: 'model' }, '', () => ({ run }) as unknown as HarnessSession)
+    const adapter = new CanvasTurnProjection(new HarnessTurn({ projectRoot: '/p', flowSessionId: 's', profileId, model: 'model', role: 'canvas', credentialVersion: 1 }, () => ({ run }) as unknown as HarnessSession))
     await expect(adapter.runTurn(params(), {})).rejects.toThrow('valid canvas JSON')
     await adapter.runTurn({ ...params(), messages: [...params().messages, { role: 'user', content: 'Try again' }] }, {})
     expect(run.mock.calls[1][0]).toBe('Try again')

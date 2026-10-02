@@ -6,7 +6,6 @@ import { CanvasEngine } from './canvasEngine'
 describe('CanvasEngine activity routing', () => {
   it('routes local-agent canvas batches into structured activity', async () => {
     const onActivity = vi.fn()
-    const onSystem = vi.fn()
     const conversation = {
       send: vi.fn(async (_text, _port, callbacks) => {
         callbacks.onToolsApplied('已对画布执行 2/2 个操作')
@@ -15,12 +14,11 @@ describe('CanvasEngine activity routing', () => {
     const engine = new CanvasEngine(
       () => conversation,
       () => ({}) as CanvasPort,
-      { structuredActivity: true },
     )
 
-    await engine.send('draw', { onText: vi.fn(), onSystem, onActivity })
+    await engine.send('draw', { onText: vi.fn(), onActivity })
 
-    expect(onSystem).not.toHaveBeenCalled()
+    expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'completed' })
     expect(onActivity).toHaveBeenCalledWith({
       type: 'tool',
       id: 'flowm-canvas-1',
@@ -30,19 +28,13 @@ describe('CanvasEngine activity routing', () => {
     })
   })
 
-  it('keeps API canvas summaries on the legacy system channel', async () => {
+  it('ends a failed harness request and propagates its original error', async () => {
     const onActivity = vi.fn()
-    const onSystem = vi.fn()
-    const conversation = {
-      send: vi.fn(async (_text, _port, callbacks) => {
-        callbacks.onToolsApplied('Applied 1/1 canvas operations')
-      }),
-    } as unknown as Conversation
+    const failure = new Error('Harness request failed')
+    const conversation = { send: vi.fn().mockRejectedValue(failure) } as unknown as Conversation
     const engine = new CanvasEngine(() => conversation, () => ({}) as CanvasPort)
 
-    await engine.send('draw', { onText: vi.fn(), onSystem, onActivity })
-
-    expect(onSystem).toHaveBeenCalledWith('Applied 1/1 canvas operations')
-    expect(onActivity).not.toHaveBeenCalled()
+    await expect(engine.send('draw', { onText: vi.fn(), onActivity })).rejects.toBe(failure)
+    expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'failed' })
   })
 })

@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CanvasOp, CanvasPort, CanvasShape, LayoutScope, OpResult } from '../protocol'
-import type { LlmAdapter, RunTurnParams, TurnCallbacks } from './adapter'
+import type { CanvasTurnRuntime, RunTurnParams, TurnCallbacks } from './canvasTurn'
 import { Conversation } from './conversation'
 import type { LlmMessage, LlmTurn } from './types'
 
-class ScriptedAdapter implements LlmAdapter {
-  readonly sessionId = 'scripted-session'
+class ScriptedRuntime implements CanvasTurnRuntime {
   readonly requests: Array<RunTurnParams & { messages: LlmMessage[] }> = []
   readonly dispose = vi.fn(async () => undefined)
   private readonly turns: LlmTurn[]
@@ -77,7 +76,7 @@ const callbacks = () => ({
 describe('canvas request cancellation boundary', () => {
   it('discards a late model result before it reaches CanvasPort', async () => {
     let resolveTurn!: (turn: LlmTurn) => void
-    const adapter: LlmAdapter = { runTurn: () => new Promise((resolve) => { resolveTurn = resolve }), cancel: vi.fn(async () => {}) }
+    const adapter: CanvasTurnRuntime = { runTurn: () => new Promise((resolve) => { resolveTurn = resolve }), cancel: vi.fn(async () => {}) }
     const conversation = new Conversation(adapter)
     const { port, apply } = createPort()
     const send = conversation.send('Draw', port, callbacks())
@@ -92,7 +91,7 @@ describe('canvas request cancellation boundary', () => {
 
 describe('Conversation turn contract', () => {
   it('keeps structure and freeze constraints across build batches before running intent repair', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       { text: '', toolCalls: [{ id: 'flow', name: 'declare_structure', args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] } }] },
       { text: '', toolCalls: [{ id: 'protect', name: 'declare_structure', args: { relations: [
         { kind: 'align', nodes: ['b', 'c'], axis: 'row' }, { kind: 'freeze', nodes: ['a'] },
@@ -112,7 +111,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('returns layout conflicts only after all tool results have been paired', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       { text: '', toolCalls: [
         { id: 'move', name: 'move_shape', args: { id: 'a', x: 0, y: 10 } },
         { id: 'structure', name: 'declare_structure', args: { relations: [{ kind: 'flow', nodes: ['a', 'b'], dir: 'down' }] } },
@@ -135,17 +134,15 @@ describe('Conversation turn contract', () => {
     expect(messages[feedbackIndex].content).toContain('cannot accommodate b')
   })
   it('exposes and disposes the adapter-owned session lifecycle', async () => {
-    const adapter = new ScriptedAdapter([])
+    const adapter = new ScriptedRuntime([])
     const conversation = new Conversation(adapter)
-
-    expect(conversation.sessionId).toBe('scripted-session')
     await conversation.dispose()
 
     expect(adapter.dispose).toHaveBeenCalledOnce()
   })
 
   it('continues after successful operations, then reviews the changed region', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: 'Creating the node.',
         toolCalls: [{
@@ -198,7 +195,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('returns invalid operation errors to the adapter for self-correction', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [{ id: 'bad-move', name: 'move_shape', args: { id: 'missing-y', x: 10 } }],
@@ -223,7 +220,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('resolves create refs used by a later operation batch', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -257,7 +254,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('compiles a diagram plan before materializing same-batch create refs', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -313,7 +310,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('requires a semantic plan for a structured create batch without using a shape-count threshold', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -343,7 +340,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('rejects an undeclared create ref without partially applying the planned batch', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -382,7 +379,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('keeps a plan active across build batches and requests missing refs before completion', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -438,7 +435,7 @@ describe('Conversation turn contract', () => {
         primaryRefs: ['existing-a', 'existing-b'],
       }],
     }
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -463,7 +460,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('resolves same-batch refs before realizing a structure declaration', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -510,7 +507,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('resolves same-batch refs before placing a newly created region', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [
@@ -541,7 +538,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('keeps a declaration pending when its refs are created in a later build batch', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [{
@@ -581,7 +578,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('surfaces a structured question without applying or reviewing', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [],
@@ -603,7 +600,7 @@ describe('Conversation turn contract', () => {
   })
 
   it('shows neighboring context during review but rejects edits outside editable ids', async () => {
-    const adapter = new ScriptedAdapter([
+    const adapter = new ScriptedRuntime([
       {
         text: '',
         toolCalls: [{

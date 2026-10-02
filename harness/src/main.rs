@@ -1,5 +1,7 @@
 mod auth;
 mod kernel;
+mod models;
+mod provider;
 mod responses_bridge;
 mod server;
 mod state;
@@ -43,7 +45,7 @@ async fn run(paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .with_max_level(tracing::Level::WARN)
         .try_init()
         .ok();
-    codex_core_api::set_default_originator("flowm_harness".to_owned()).ok();
+    codex_core_api::set_default_originator(provider::ORIGINATOR.to_owned()).ok();
     server::serve(
         PathBuf::from(std::env::var_os("FLOWM_HARNESS_HOME").unwrap()),
         paths,

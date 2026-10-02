@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CanvasPort } from '../protocol'
-import { Conversation } from '../llm'
-import { HarnessAdapter } from '../llm/harnessAdapter'
-import { HarnessSession, harnessClient, type HarnessProfile } from '../harness'
-import { continuationContext, harnessBindingKey } from './harnessBindings'
+import { Conversation, CanvasTurnProjection } from '../llm'
+import { createCanvasTurn, createProjectSession, harnessBindingKey, type HarnessConnection, type HarnessSession } from '../harness'
 import type { DisplayMessage } from '../chat/types'
 import {
   deleteCanvasScene,
@@ -13,7 +11,6 @@ import {
   loadSessionDisplay,
   openProject,
   pickFolder,
-  pickHarnessHistory,
   saveCanvasScene,
   saveProject,
   saveSessionDisplay,
@@ -34,7 +31,7 @@ export interface WorkspaceApi {
   changing: boolean
   isChanging: () => boolean
   projectName: string | null
-  // Sessions = chat threads (each its own Claude session).
+  // Sessions are FlowM-owned threads with separate canvas/project bindings.
   sessions: SessionMeta[]
   activeSessionId: string | null
   newSession: () => Promise<void>
@@ -55,28 +52,16 @@ export interface WorkspaceApi {
   /** The active session's Conversation, for local-agent canvas engines (null = no project). */
   activeConv: () => Conversation | null
   activeProject: () => HarnessSession | null
-  importHistory: () => Promise<void>
 }
 
-/**
- * The project layer for the shell. Sits ABOVE the engines and is active only once a folder is opened;
- * until then `activeConv()` is null. Local canvas agents are project-scoped and are created only
- * for a concrete FlowM session.
- *
- * Canvases and sessions are DECOUPLED: a session is a Claude chat thread (每对话一条 session), a canvas
- * is a drawing surface, and they are separate lists. The active session drives whatever the active
- * canvas currently is — creating one never creates the other. FlowM persists bubbles per session and
- * the scene per canvas to ~/.flowm; Claude's own session holds the model history (via --resume).
- *
- * Decoupling: this hook knows only CanvasPort + the store + the LLM Conversation — never Excalidraw or
- * App's widgets. App feeds it accessors (get/set messages, get port/cwd/bin, set folder).
- */
+/** Owns project-scoped FlowM conversations and private harness threads. Canvases and
+ * sessions remain separate; the active session operates on the selected canvas. */
 export function useWorkspace(opts: {
   getPort: () => CanvasPort | null
   getMessages: () => DisplayMessage[]
   setMessages: (m: DisplayMessage[]) => void
   getCwd: () => string
-  getProfile: () => HarnessProfile | null
+  getConnection: () => HarnessConnection | null
   isBusy: () => boolean
   setFolder: (folder: string) => void
 }): WorkspaceApi {
@@ -103,9 +88,9 @@ export function useWorkspace(opts: {
 
   const ensureRuntime = useCallback(
     (sm: SessionMeta, role: 'canvas' | 'project'): Runtime | null => {
-      const profile = opts.getProfile()
-      if (!profile) return null
-      const bindingKey = harnessBindingKey(profile, role)
+      const connection = opts.getConnection()
+      if (!connection) return null
+      const bindingKey = harnessBindingKey(connection, role)
       const runtimeKey = `${sm.id}\0${bindingKey}`
       let rt = runtimes.current.get(runtimeKey)
       if (!rt) {
@@ -114,17 +99,15 @@ export function useWorkspace(opts: {
       }
       if (!rt[role]) {
         const threadId = sm.harnessThreads?.[bindingKey]
-        const importId = sm.harnessImports?.[bindingKey]
-        const binding = { projectRoot: opts.getCwd(), flowSessionId: sm.id, profileId: profile.id, model: profile.model, ...(threadId ? { threadId } : {}), ...(importId && !threadId ? { importId } : {}) }
         const saveBinding = async (id: string) => {
           sm.harnessThreads = { ...sm.harnessThreads, [bindingKey]: id }
           if (projIdRef.current && metaRef.current) await saveProject(projIdRef.current, metaRef.current)
         }
         if (role === 'canvas') {
-          const adapter = new HarnessAdapter(binding, threadId ? '' : continuationContext(opts.getMessages()), (request) => new HarnessSession(request, harnessClient, saveBinding))
-          rt.canvas = new Conversation(adapter)
+          const turn = createCanvasTurn(connection, { projectRoot: opts.getCwd(), flowSessionId: sm.id, threadId, history: opts.getMessages(), onOpened: saveBinding })
+          rt.canvas = new Conversation(new CanvasTurnProjection(turn))
         } else {
-          rt.project = new HarnessSession({ ...binding, role: 'project', system: '' }, harnessClient, saveBinding, threadId ? '' : continuationContext(opts.getMessages()))
+          rt.project = createProjectSession(connection, { projectRoot: opts.getCwd(), flowSessionId: sm.id, threadId, history: opts.getMessages(), onOpened: saveBinding })
         }
       }
       return rt
@@ -137,7 +120,7 @@ export function useWorkspace(opts: {
     setCanvases(metaRef.current ? [...metaRef.current.canvases] : [])
   }, [])
 
-  /** Write project.json, first folding each live adapter's captured session id into its meta. */
+  /** Persist project metadata and FlowM-owned thread bindings. */
   const persistMeta = useCallback(async () => {
     if (!projIdRef.current || !metaRef.current) return
     // A native binding is persisted before its first model request, through saveBinding above.
@@ -349,21 +332,6 @@ export function useWorkspace(opts: {
     return sm ? ensureRuntime(sm, 'project')?.project ?? null : null
   }, [ensureRuntime])
 
-  const importHistory = async () => {
-    const profile = opts.getProfile()
-    const sm = metaRef.current?.sessions.find((session) => session.id === activeSessRef.current)
-    if (!profile || !sm || !projIdRef.current) return
-    const filePath = await pickHarnessHistory()
-    if (!filePath || opts.isBusy()) return
-    const result = await harnessClient.importHistory(filePath, opts.getCwd())
-    const key = harnessBindingKey(profile, 'canvas')
-    if (sm.harnessImports?.[key] === result.importId) return
-    await disposeRuntime(runtimes.current.get(`${sm.id}\0${key}`))
-    runtimes.current.delete(`${sm.id}\0${key}`)
-    if (sm.harnessThreads) delete sm.harnessThreads[key]
-    sm.harnessImports = { ...sm.harnessImports, [key]: result.importId }
-    await persistMeta()
-  }
 
   return {
     changing,
@@ -385,6 +353,5 @@ export function useWorkspace(opts: {
     persistActive,
     activeConv,
     activeProject,
-    importHistory: () => transition(importHistory),
   }
 }

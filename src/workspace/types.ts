@@ -2,24 +2,19 @@
  * The workspace model for the VSCode-plugin-style shell. Decisions (confirmed):
  *  - 工程 = 代码文件夹: a project binds to one code folder; FlowM's own state lives under ~/.flowm,
  *    while per-invocation canvas artifacts live under the project's gitignored .flowm folder.
- *  - 每对话一条 session: each local agent stores its own resume id on the session. FlowM keeps no
+ *  - 每对话一条 session: each role has its own private harness thread. FlowM keeps no
  *    parallel model history; the agent session is the history, FlowM persists only the UI bubbles.
  *  - 画布 ⊥ session: canvases and sessions are INDEPENDENT lists under a project. A new canvas does
  *    NOT create a session and vice-versa; the active session (a chat thread) drives whatever the
  *    active canvas (a drawing surface) currently is.
  */
 
-/** A chat thread, with per-agent resume handles. */
+/** A FlowM conversation with private role/model bindings. */
 export interface SessionMeta {
   id: string
   name: string
-  /** Claude Code session id (the --resume handle); captured after the first turn. */
-  sessionId?: string
-  /** Codex thread id (`codex exec resume` handle); captured after the first turn. */
-  codexSessionId?: string
-  /** FlowM-owned runtime bindings. Old CLI IDs above are retained only as historical references. */
+  /** Private FlowM bindings. Unknown historical fields are preserved by storage parsing. */
   harnessThreads?: Record<string, string>
-  harnessImports?: Record<string, string>
 }
 
 /** A drawing surface (its scene is persisted separately, keyed by id). */

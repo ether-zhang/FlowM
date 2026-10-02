@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 const ISSUER: &str = "https://auth.openai.com";
 const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
 const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
-const RESOURCE: &str = "https://api.openai.com/v1";
+use crate::provider::OPENAI_RESOURCE as RESOURCE;
 const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 
@@ -419,7 +419,7 @@ impl AuthService {
                 .append_pair("code_challenge_method", "S256")
                 .append_pair("code_challenge", &pkce_challenge(&attempt.verifier));
             if attempt.client_id == "dynamic_agent_client" {
-                query.append_pair("agent_name_hint", "FlowM");
+                query.append_pair("agent_name_hint", crate::provider::ORIGINATOR);
             } else if let Some(email) = &profile.account {
                 query.append_pair("login_hint", email);
             }
@@ -571,55 +571,6 @@ impl AuthService {
         if let Some(cancel) = self.attempts.lock().await.remove(id) {
             let _ = cancel.send(());
         }
-    }
-
-    pub async fn models(&self, id: &str) -> Result<Value> {
-        let profile = self.store.profile(id).await?;
-        if profile.kind == crate::state::ProviderKind::Gateway {
-            // Gateway aliases are explicit. An OpenAI bundled catalog is never presented as its entitlement list.
-            return Ok(json!([{ "id": profile.model, "label": profile.model, "isDefault": true }]));
-        }
-        let auth = self.headers(&profile, false).await?;
-        let CodexAuth::Headers(auth) = auth else {
-            bail!("Unexpected authentication type");
-        };
-        let response = self
-            .client
-            .get(format!("{}/models", profile.base_url))
-            .headers(auth.headers().clone())
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            bail!(
-                "Model discovery returned HTTP {}",
-                response.status().as_u16()
-            );
-        }
-        let body: Value = response.json().await?;
-        let mut models = Vec::new();
-        if profile.auth_kind == AuthKind::Chatgpt {
-            for model in body["models"]
-                .as_array()
-                .context("Invalid ChatGPT model catalog")?
-            {
-                if model["visibility"].as_str() != Some("list") {
-                    continue;
-                }
-                if let Some(slug) = model["slug"].as_str() {
-                    models.push(json!({"id":slug,"label":model["display_name"].as_str().unwrap_or(slug),"isDefault":slug == profile.model}));
-                }
-            }
-        } else {
-            for model in body["data"]
-                .as_array()
-                .context("Invalid OpenAI model catalog")?
-            {
-                if let Some(id) = model["id"].as_str() {
-                    models.push(json!({"id":id,"label":id,"isDefault":id == profile.model}));
-                }
-            }
-        }
-        Ok(json!(models))
     }
 }
 
