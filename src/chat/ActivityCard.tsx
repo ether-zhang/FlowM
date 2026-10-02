@@ -14,6 +14,8 @@ export function ActivityCard({ activity, text }: ActivityCardProps) {
   const title = activity.label || (
     activity.status === 'working'
       ? text.chat.activityWorking
+      : activity.status === 'interrupted'
+        ? text.chat.activityStopped
       : activity.status === 'failed'
         ? text.chat.activityFailed
         : text.chat.activityComplete

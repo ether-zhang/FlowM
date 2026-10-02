@@ -22,7 +22,7 @@ export type DisplayActivityEntry =
   | { kind: 'warning'; id: string }
 
 export interface DisplayActivity {
-  status: 'working' | 'completed' | 'failed'
+  status: 'working' | 'completed' | 'failed' | 'interrupted'
   label?: string
   thinking: Record<string, string>
   commentary: Record<string, string>

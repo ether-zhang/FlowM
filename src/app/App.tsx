@@ -4,6 +4,7 @@ import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
 import type { LlmMessage, LlmQuestion } from '../llm'
 import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
+import { finishActivity } from '../chat/activityLifecycle'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { ModelPicker } from './ModelPicker'
@@ -197,6 +198,8 @@ export function App() {
       // text starts a fresh bubble below — keeps Claude's "progress then prose" ordering readable.
       let assistantId: string | null = null
       let activityId: string | null = null
+      let outcome: 'completed' | 'failed' = 'completed'
+      let settled = false
       try {
         await engine.send(text, {
           onText: (delta) => {
@@ -208,6 +211,7 @@ export function App() {
             assistantId = null
           },
           onActivity: (event) => {
+            if (settled) return
             if (!activityId) {
               activityId = crypto.randomUUID()
               const id = activityId
@@ -229,20 +233,14 @@ export function App() {
           onDebug: debug ? (t) => addMessage('debug', t) : undefined,
         })
       } catch (e) {
-        if (activityId) {
-          const id = activityId
-          setMessages((items) => items.map((message) =>
-            message.id === id && message.activity
-              ? { ...message, activity: reduceActivity(message.activity, { type: 'status', status: 'failed' }) }
-              : message,
-          ))
-        }
+        outcome = 'failed'
         // Not every throw is an Error: a Tauri command rejects with its Rust Err string, which
         // has no `.message` (it showed as "undefined"). Surface whatever it actually is.
         const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e)
         addMessage('system', `出错：${msg || '(空错误)'}`)
       } finally {
-        setMessages((items) => items.map((message) => message.question?.requestId && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message))
+        settled = true
+        setMessages((items) => finishActivity(items, activityId, outcome).map((message) => message.question?.requestId && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message))
         activeEngineRef.current = null
         busyRef.current = false
         setBusy(false)

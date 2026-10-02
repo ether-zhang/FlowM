@@ -29,6 +29,14 @@ describe('ActivityCard', () => {
     expect(html).not.toContain(' open=""')
   })
 
+  it('shows restored unfinished work as stopped without a spinner or open group', () => {
+    const html = renderToStaticMarkup(<ActivityCard activity={{ ...createDisplayActivity(), status: 'interrupted' }} text={uiText.en} />)
+    expect(html).toContain('activity-interrupted')
+    expect(html).toContain('Stopped')
+    expect(html).not.toContain('activity-working')
+    expect(html).not.toContain(' open=""')
+  })
+
   it('collapses a consecutive mixed-tool stage behind one summary', () => {
     let activity = reduceActivity(createDisplayActivity(), {
       type: 'tool', id: 'glob', name: 'Glob', status: 'completed',

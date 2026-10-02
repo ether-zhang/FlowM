@@ -629,6 +629,7 @@
 .activity-status-completed { background: #2f9e44; }
 .activity-failed .activity-state,
 .activity-status-failed { background: #e03131; }
+.activity-interrupted .activity-state { background: #868e96; }
 .activity-status-declined { background: #868e96; }
 .activity-title { min-width: 0; flex: 1; font-weight: 600; }
 .activity-count {

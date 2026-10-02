@@ -5,6 +5,7 @@ import type { DisplayMessage } from './types'
 import { QuestionCard } from './QuestionCard'
 import { ActivityCard } from './ActivityCard'
 import { groupMessages } from './messageGrouping'
+import { displayActivities } from './activityLifecycle'
 import { engineDisplayLabel, isSystemErrorNote, localizeSystemNote, type UiText } from '../app/uiText'
 
 export interface ChatProps {
@@ -193,7 +194,7 @@ export function Chat({
             {uiText.chat.hint}
           </p>
         )}
-        {groupMessages(messages).map((it) => {
+        {groupMessages(displayActivities(messages, busy)).map((it) => {
           if (it.type === 'sysgroup') {
             // A single note renders as one plain system line; a run collapses into one expandable
             // group whose summary tracks the latest note (the ✓ 完成 line once it lands).
