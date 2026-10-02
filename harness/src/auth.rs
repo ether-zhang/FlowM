@@ -626,13 +626,15 @@ impl AuthService {
 pub struct AuthBridge {
     auth: Arc<AuthService>,
     profile: Profile,
+    request_auth: Option<CodexAuth>,
     observed: std::sync::Mutex<Option<String>>,
 }
 impl AuthBridge {
-    pub fn new(auth: Arc<AuthService>, profile: Profile) -> Self {
+    pub fn new(auth: Arc<AuthService>, profile: Profile, request_auth: Option<CodexAuth>) -> Self {
         Self {
             auth,
             profile,
+            request_auth,
             observed: std::sync::Mutex::new(None),
         }
     }
@@ -662,7 +664,9 @@ impl AuthBridge {
             .lock()
             .map_err(|_| std::io::Error::other("Authentication state lock failed"))? =
             Some(auth_fingerprint(&auth));
-        Ok(auth)
+        // The SIWC bridge owns the rotating OAuth header. Its profile-bound local credential
+        // stays stable for the kernel, whose header-auth mode cannot identify token-only changes.
+        Ok(self.request_auth.clone().unwrap_or(auth))
     }
 }
 fn auth_fingerprint(auth: &CodexAuth) -> String {

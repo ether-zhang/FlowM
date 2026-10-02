@@ -281,7 +281,11 @@ impl Registry {
             if !bridges.contains_key(&key) {
                 bridges.insert(
                     key.clone(),
-                    crate::responses_bridge::ResponsesBridge::start().await?,
+                    crate::responses_bridge::ResponsesBridge::start(
+                        self.auth.clone(),
+                        profile.clone(),
+                    )
+                    .await?,
                 );
             }
             bridges[&key].base_url.clone()
@@ -483,8 +487,25 @@ impl Registry {
     async fn manager(&self, config: &Config, profile: Profile) -> Result<Arc<ThreadManager>> {
         let state_db = init_state_db(config).await;
         let auth_manager = AuthManager::shared_from_config(config, false).await?;
+        let request_auth = if profile.auth_kind == crate::state::AuthKind::Chatgpt {
+            let key = format!("{}:{}", profile.id, profile.credential_version);
+            Some(
+                self.bridges
+                    .lock()
+                    .await
+                    .get(&key)
+                    .context("ChatGPT request bridge is missing")?
+                    .request_auth(),
+            )
+        } else {
+            None
+        };
         auth_manager
-            .set_external_auth(Arc::new(AuthBridge::new(self.auth.clone(), profile)))
+            .set_external_auth(Arc::new(AuthBridge::new(
+                self.auth.clone(),
+                profile,
+                request_auth,
+            )))
             .await?;
         let runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
             config.codex_self_exe.clone(),

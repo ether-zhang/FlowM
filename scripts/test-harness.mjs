@@ -24,6 +24,7 @@ await writeFile(join(foreignHome, 'config.toml'), 'INVALID EXTERNAL CONFIG: MUST
 const responses = []
 const requests = []
 const authorizations = []
+let heldRequests = 0
 const server = createServer(async (request, response) => {
   let content = ''
   for await (const chunk of request) content += chunk
@@ -37,7 +38,7 @@ const server = createServer(async (request, response) => {
   if (!next) { response.writeHead(500).end('No response fixture'); return }
   if (next.status) { response.writeHead(next.status).end(JSON.stringify({ error: { message: 'simulated provider failure' } })); return }
   response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
-  if (next.hold) { response.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: randomUUID() } })}\n\n`); return }
+  if (next.hold) { heldRequests++; response.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: randomUUID() } })}\n\n`); return }
   const events = [
     { type: 'response.created', response: { id: randomUUID() } },
     next,
@@ -193,14 +194,18 @@ try {
   await rpc('thread/close', { threadId: failureThread })
 
   const { threadId: cancelThread } = await rpc('thread/open', { ...binding, flowSessionId: 'cancel-test' })
+  const beforeHeldRequest = heldRequests
   responses.push({ hold: true })
   const cancelRequest = { threadId: cancelThread, requestId: randomUUID(), prompt: 'A held model stream', images: [], outputSchema: schemas[0] }
   const cancelled = rpc('turn/start', cancelRequest)
   const cancellationResult = assert.rejects(cancelled, /cancel|interrupt/)
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if ((await rpc('turn/status', { requestId: cancelRequest.requestId })).status === 'running') break
+  // A running receipt precedes the HTTP request. Wait until this stream fixture was actually
+  // consumed so an early cancellation cannot leave it queued for the next bearer test.
+  for (let attempt = 0; attempt < 500; attempt++) {
+    if (heldRequests > beforeHeldRequest) break
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
+  assert.equal(heldRequests, beforeHeldRequest + 1, 'cancellation fixture never reached the provider')
   await rpc('turn/cancel', { threadId: cancelThread })
   await cancellationResult
   assert.notEqual((await rpc('turn/status', { requestId: cancelRequest.requestId })).status, 'completed')
