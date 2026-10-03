@@ -4,7 +4,7 @@ export function parseModelCatalog(value: unknown): HarnessModelCatalog {
   const catalog = value as Partial<HarnessModelCatalog> | null
   if (!catalog || typeof catalog.profileId !== 'string' || !Number.isSafeInteger(catalog.credentialVersion)
     || !['openai-account', 'openai-api', 'gateway'].includes(catalog.source ?? '')
-    || !Array.isArray(catalog.models) || catalog.models.some((model) => !model || typeof model.id !== 'string' || !model.id || typeof model.label !== 'string')
+    || !Array.isArray(catalog.models) || catalog.models.some((model) => !model || typeof model.id !== 'string' || !model.id || typeof model.label !== 'string' || !['remote', 'kernel'].includes(model.origin))
     || (catalog.defaultModel !== null && typeof catalog.defaultModel !== 'string')) {
     throw new Error('Harness returned an invalid connection model catalog')
   }
@@ -12,7 +12,7 @@ export function parseModelCatalog(value: unknown): HarnessModelCatalog {
   return catalog as HarnessModelCatalog
 }
 
-/** A saved selection is only a preference; the connection's current catalog is authoritative. */
+/** A saved selection is a preference within the harness candidates, not an entitlement claim. */
 export function selectedHarnessModel(catalog: HarnessModelCatalog | null, preferred: string): string {
   if (!catalog) return ''
   if (preferred && catalog.models.some((model) => model.id === preferred)) return preferred

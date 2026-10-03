@@ -8,9 +8,9 @@ const catalog = (models: HarnessModelCatalog['models'], source: HarnessModelCata
 describe('connection model picker', () => {
   it('uses the connected account catalog and actual IDs without a CLI default or manual entry', () => {
     const html = renderToStaticMarkup(<ModelPicker value="gpt-account-model" catalog={catalog([
-      { id: 'gpt-account-model', label: 'Account model' },
+      { id: 'gpt-account-model', label: 'Account model', origin: 'remote' },
     ])} disabled={false} onChange={() => {}} text={uiText.en} />)
-    expect(html).toContain('From your GPT account')
+    expect(html).toContain('GPT models')
     expect(html).toContain('value="gpt-account-model" selected=""')
     expect(html).toContain('Account model')
     expect(html).toContain('model-picker-id')
@@ -21,7 +21,7 @@ describe('connection model picker', () => {
 
   it('does not display a saved selection absent from a newly loaded account catalog', () => {
     const html = renderToStaticMarkup(<ModelPicker value="previous-model" catalog={catalog([
-      { id: 'available-model', label: 'Available model' },
+      { id: 'available-model', label: 'Available model', origin: 'remote' },
     ])} disabled={false} onChange={() => {}} text={uiText.en} />)
     expect(html).not.toContain('previous-model')
     expect(html).toContain('Available model')
@@ -37,7 +37,7 @@ describe('connection model picker', () => {
   })
 
   it('excludes a model absent from the upstream response', () => {
-    const current = catalog([{ id: 'listed-model', label: 'Listed model' }])
+    const current = catalog([{ id: 'listed-model', label: 'Listed model', origin: 'remote' }])
     const html = renderToStaticMarkup(<ModelPicker value="gpt-6.1-sol" catalog={current} disabled={false} onChange={() => {}} text={uiText.en} />)
     expect(html).not.toContain('<input')
     expect(html).not.toContain('gpt-6.1-sol')
@@ -45,9 +45,18 @@ describe('connection model picker', () => {
   })
 
   it('keeps default as a valid gateway route rather than a CLI sentinel', () => {
-    const html = renderToStaticMarkup(<ModelPicker value="default" catalog={catalog([{ id: 'default', label: 'Upstream route' }], 'gateway')} disabled={false} onChange={() => {}} text={uiText.en} />)
+    const html = renderToStaticMarkup(<ModelPicker value="default" catalog={catalog([{ id: 'default', label: 'Upstream route', origin: 'remote' }], 'gateway')} disabled={false} onChange={() => {}} text={uiText.en} />)
     expect(html).toContain('value="default" selected=""')
     expect(html).toContain('Upstream route')
     expect(html).not.toContain('model-custom-input')
+  })
+  it('offers an official candidate with an honest access note and no text input', () => {
+    const html = renderToStaticMarkup(<ModelPicker value="gpt-6.1-sol" catalog={catalog([
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', origin: 'kernel' },
+    ])} disabled={false} onChange={() => {}} text={uiText.zh} />)
+    expect(html).toContain('value="gpt-6.1-sol" selected=""')
+    expect(html).toContain('访问待确认')
+    expect(html).toContain('官方候选模型')
+    expect(html).not.toContain('<input')
   })
 })

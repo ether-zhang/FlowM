@@ -6,7 +6,7 @@ import type { HarnessModelCatalog, HarnessNotification, HarnessProfile } from '.
 const profile: HarnessProfile = { id: 'p', name: 'GPT', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'old-model',
   authKind: 'chatgpt', credentialVersion: 1, account: null, subject: null, clientId: null, signedIn: true }
 const catalog = (version = 1, model = 'live'): HarnessModelCatalog => ({ profileId: 'p', credentialVersion: version,
-  source: 'openai-account', models: [{ id: model, label: model }], defaultModel: model })
+  source: 'openai-account', models: [{ id: model, label: model, origin: 'remote' }], defaultModel: model })
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => { resolve = done })
@@ -92,6 +92,15 @@ describe('harness connection ownership', () => {
     await service.refresh()
     expect(service.getConnection()).toBeNull()
     expect(service.getSnapshot().catalogError).toContain('different credentials')
+  })
+  it('selects a harness kernel candidate using the same credential binding', async () => {
+    const { api, service } = fixture()
+    api.models.mockResolvedValue({ ...catalog(), models: [...catalog().models,
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', origin: 'kernel' }] })
+    await service.refresh()
+    service.selectModel('gpt-6.1-sol')
+    expect(service.getConnection()).toEqual({ profileId: 'p', credentialVersion: 1, model: 'gpt-6.1-sol' })
+    expect(api.models).toHaveBeenCalledTimes(1)
   })
   it('does not reconnect from stale profile data after refresh fails', async () => {
     const { api, service, storage } = fixture()

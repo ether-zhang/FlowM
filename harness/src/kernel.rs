@@ -165,9 +165,10 @@ impl Registry {
             return Ok(binding_result(&binding));
         }
         let catalog = self.models.catalog(&profile).await?;
-        let model_info = catalog.model_info(&profile, &binding.model)?;
-        let key = manager_key(&binding, &model_info)?;
-        let config = self.config(&binding, &profile, model_info).await?;
+        catalog.model_info(&profile, &binding.model)?;
+        let runtime_catalog = catalog.runtime_catalog()?;
+        let key = manager_key(&binding, &runtime_catalog)?;
+        let config = self.config(&binding, &profile, runtime_catalog).await?;
         let manager = {
             let mut groups = self.groups.lock().await;
             if let Some(manager) = groups.get(&key) {
@@ -235,7 +236,7 @@ impl Registry {
         &self,
         binding: &Binding,
         profile: &Profile,
-        model_info: codex_protocol::openai_models::ModelInfo,
+        model_catalog: codex_protocol::openai_models::ModelsResponse,
     ) -> Result<Config> {
         let home = self
             .store
@@ -433,9 +434,7 @@ impl Registry {
             }
         }
         config.suppress_unstable_features_warning = true;
-        config.model_catalog = Some(codex_protocol::openai_models::ModelsResponse {
-            models: vec![model_info],
-        });
+        config.model_catalog = Some(model_catalog);
         let permission = config.permissions.permission_profile();
         let read_only = permission
             .intersect_with_read_only()
@@ -819,7 +818,7 @@ fn binding_result(binding: &Binding) -> Value {
 }
 fn manager_key(
     binding: &Binding,
-    model: &codex_protocol::openai_models::ModelInfo,
+    models: &codex_protocol::openai_models::ModelsResponse,
 ) -> Result<String> {
     // A manager owns a static catalog. New threads must not inherit obsolete capabilities
     // merely because their model ID and credentials match an older manager's snapshot.
@@ -830,7 +829,7 @@ fn manager_key(
         payload_hash(&json!(binding.project_root)),
         binding.role,
         binding.model,
-        payload_hash(&serde_json::to_value(model)?)
+        payload_hash(&serde_json::to_value(models)?)
     ))
 }
 fn validate_binding(binding: &Binding, request: &OpenThread, profile: &Profile) -> Result<()> {
@@ -920,16 +919,18 @@ mod tests {
                     json!({"data":[{"id":profile.model}]})
                 },
             )?;
-            let model_info = catalog.model_info(&profile, &binding.model)?;
-            let previous_key = manager_key(&binding, &model_info)?;
-            let mut updated = model_info.clone();
-            updated.context_window = Some(64_000);
+            catalog.model_info(&profile, &binding.model)?;
+            let previous_key = manager_key(&binding, &catalog.runtime_catalog()?)?;
+            let mut updated = catalog.runtime_catalog()?;
+            updated.models[0].context_window = Some(64_000);
             assert_ne!(
                 manager_key(&binding, &updated)?,
                 previous_key,
                 "updated metadata must create a manager with the current catalog"
             );
-            let config = registry.config(&binding, &profile, model_info).await?;
+            let config = registry
+                .config(&binding, &profile, catalog.runtime_catalog()?)
+                .await?;
             assert_eq!(
                 config.model_catalog.as_ref().unwrap().models[0].tool_mode,
                 Some(codex_protocol::openai_models::ToolMode::Direct)

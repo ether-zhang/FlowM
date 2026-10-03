@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseModelCatalog, selectedHarnessModel } from './models'
 import type { HarnessModelCatalog } from './types'
 
-const account: HarnessModelCatalog = { profileId: 'p', credentialVersion: 2, source: 'openai-account', models: [{ id: 'available', label: 'Account model' }], defaultModel: 'available' }
+const account: HarnessModelCatalog = { profileId: 'p', credentialVersion: 2, source: 'openai-account', models: [{ id: 'available', label: 'Account model', origin: 'remote' }], defaultModel: 'available' }
 
 describe('connection-owned model catalog', () => {
   it('rejects the old unscoped adapter list', () => {
@@ -20,5 +20,11 @@ describe('connection-owned model catalog', () => {
   })
   it('refuses an invented default that is absent from the connection catalog', () => {
     expect(() => parseModelCatalog({ ...account, defaultModel: 'bundled-default' })).toThrow('absent')
+  })
+  it('accepts an official kernel candidate without adding a free-form model path', () => {
+    const current = parseModelCatalog({ ...account, models: [...account.models, { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', origin: 'kernel' }] })
+    expect(selectedHarnessModel(current, 'gpt-6.1-sol')).toBe('gpt-6.1-sol')
+    expect(selectedHarnessModel(current, 'invented-model')).toBe('available')
+    expect(() => parseModelCatalog({ ...account, models: [{ id: 'm', label: 'M' }] })).toThrow('invalid')
   })
 })

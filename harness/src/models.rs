@@ -7,11 +7,14 @@ use anyhow::{Context, Result, bail};
 use codex_api::{ModelsClient, Provider, ReqwestTransport};
 use codex_http_client::{ClientRouteClass, HttpClientFactory, OutboundProxyPolicy};
 use codex_login::default_client::{ClientRedirectPolicy, create_client_for_route_async};
-use codex_protocol::openai_models::{ApplyPatchToolType, ConfigShellToolType, ModelInfo, ToolMode};
+use codex_models_manager::manager::{ModelsManager, StaticModelsManager};
+use codex_protocol::openai_models::{
+    ApplyPatchToolType, ConfigShellToolType, ModelInfo, ModelsResponse, ToolMode,
+};
 use http::HeaderMap;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
 // Compatibility level of the pinned model schema, not FlowM's product version. The public
@@ -113,6 +116,14 @@ pub async fn fetch_catalog_response(profile: &Profile, auth: HeaderMap) -> Resul
 pub struct ModelChoice {
     pub id: String,
     pub label: String,
+    pub origin: ModelOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelOrigin {
+    Remote,
+    Kernel,
 }
 
 #[derive(Clone, Serialize)]
@@ -124,7 +135,7 @@ pub struct ModelCatalog {
     pub models: Vec<ModelChoice>,
     pub default_model: Option<String>,
     #[serde(skip)]
-    metadata: HashMap<String, Value>,
+    manager: Arc<StaticModelsManager>,
 }
 
 impl ModelCatalog {
@@ -133,11 +144,17 @@ impl ModelCatalog {
         let entries = body[if chatgpt { "models" } else { "data" }]
             .as_array()
             .context("Invalid connection model catalog")?;
-        let mut seen = HashSet::new();
-        let mut models = Vec::new();
-        let mut metadata = HashMap::new();
+        // The SIWC metadata endpoint may omit callable models. The pinned kernel's official
+        // catalog supplies supported candidates, not an assertion of account entitlement.
+        // Third-party gateways and API-key directories retain only their own discovered IDs.
+        let mut runtime_models = if profile.kind == ProviderKind::Openai && chatgpt {
+            codex_models_manager::bundled_models_response()?.models
+        } else {
+            Vec::new()
+        };
+        let mut remote_ids = HashSet::new();
         for entry in entries {
-            if chatgpt && entry["visibility"].as_str() != Some("list") {
+            if chatgpt && !matches!(entry["visibility"].as_str(), Some("list" | "hide" | "none")) {
                 continue;
             }
             let Some(id) = entry[if chatgpt { "slug" } else { "id" }]
@@ -146,19 +163,46 @@ impl ModelCatalog {
             else {
                 continue;
             };
-            if !seen.insert(id.to_owned()) {
+            if !remote_ids.insert(id.to_owned()) {
                 continue;
             }
-            models.push(ModelChoice {
-                id: id.into(),
-                label: entry["display_name"]
-                    .as_str()
-                    .filter(|label| !label.trim().is_empty())
-                    .unwrap_or(id)
-                    .into(),
-            });
-            metadata.insert(id.into(), entry.clone());
+            let existing = runtime_models.iter().position(|model| model.slug == id);
+            let model = decode_model_info(
+                id,
+                entry,
+                existing.map(|index| runtime_models[index].clone()),
+            )?;
+            if let Some(index) = existing {
+                runtime_models[index] = model;
+            } else {
+                runtime_models.push(model);
+            }
         }
+        for model in &mut runtime_models {
+            constrain_runtime_model(model);
+        }
+        // Codex owns picker order, visibility, defaults and capability definitions. The same
+        // in-process manager provides metadata for native execution; no disk cache is involved.
+        let manager = Arc::new(StaticModelsManager::new(
+            None,
+            ModelsResponse {
+                models: runtime_models,
+            },
+        ));
+        let presets = manager.try_list_models()?;
+        let models = presets
+            .iter()
+            .filter(|model| model.show_in_picker)
+            .map(|model| ModelChoice {
+                id: model.model.clone(),
+                label: model.display_name.clone(),
+                origin: if remote_ids.contains(&model.model) {
+                    ModelOrigin::Remote
+                } else {
+                    ModelOrigin::Kernel
+                },
+            })
+            .collect::<Vec<_>>();
         if models.is_empty() {
             bail!("This connection returned no available models");
         }
@@ -169,6 +213,13 @@ impl ModelCatalog {
                 models
                     .iter()
                     .find(|model| Some(model.id.as_str()) == body["default_model"].as_str())
+            })
+            .or_else(|| {
+                models.iter().find(|model| {
+                    presets
+                        .iter()
+                        .any(|preset| preset.model == model.id && preset.is_default)
+                })
             })
             .or_else(|| models.first())
             .map(|model| model.id.clone());
@@ -184,7 +235,7 @@ impl ModelCatalog {
             },
             models,
             default_model,
-            metadata,
+            manager,
         })
     }
 
@@ -193,47 +244,70 @@ impl ModelCatalog {
             bail!("Model catalog belongs to different credentials");
         }
         if !self.models.iter().any(|model| model.id == id) {
-            bail!("This model is absent from the connection's current catalog");
+            bail!("This model is absent from the harness candidate catalog");
         }
+        self.manager
+            .try_get_remote_models()?
+            .into_iter()
+            .find(|model| model.slug == id)
+            .context("Harness model metadata is missing")
+    }
+
+    pub fn runtime_catalog(&self) -> Result<ModelsResponse> {
+        Ok(ModelsResponse {
+            models: self.manager.try_get_remote_models()?,
+        })
+    }
+}
+
+fn decode_model_info(id: &str, raw: &Value, official: Option<ModelInfo>) -> Result<ModelInfo> {
+    let mut baseline = official.unwrap_or_else(|| {
         let mut baseline = codex_models_manager::model_info::model_info_from_slug(id);
-        // Missing metadata never borrows another model's reasoning or context-window claims.
+        // Undescribed gateway routes never borrow another model's capability claims.
         baseline.context_window = None;
         baseline.max_context_window = None;
         baseline.auto_compact_token_limit = None;
         baseline.supports_reasoning_summary_parameter = false;
         baseline.model_messages = None;
-        let mut value = serde_json::to_value(baseline)?;
-        if let Some(raw) = self.metadata.get(id).and_then(Value::as_object) {
-            value.as_object_mut().unwrap().extend(raw.clone());
-        }
-        value["slug"] = Value::String(id.into());
-        value["display_name"] = Value::String(
-            self.models
-                .iter()
-                .find(|model| model.id == id)
-                .map(|model| model.label.clone())
-                .unwrap_or_else(|| id.into()),
-        );
-        let mut model: ModelInfo =
-            serde_json::from_value(value).context("Invalid model runtime metadata")?;
-        // Model-owned tool_mode takes precedence over feature flags in upstream core. FlowM
-        // ships direct tools, not the optional code-mode host or upstream plugin environment.
-        model.tool_mode = Some(ToolMode::Direct);
-        model.shell_type = ConfigShellToolType::UnifiedExec;
-        model.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
-        model.experimental_supported_tools.clear();
-        model.model_messages = None;
-        model.include_skills_usage_instructions = false;
-        model.include_plugin_usage_instructions = false;
-        model.include_apps_usage_instructions = false;
-        model.supports_search_tool = false;
-        model.supports_experimental_context = false;
-        model.use_responses_lite = false;
-        model.node_repl_disabled = true;
-        model.multi_agent_version = None;
-        model.multi_agent_reasoning_effort = None;
-        Ok(model)
+        baseline
+    });
+    // A standard /v1/models entry advertises an ID without Codex-native visibility metadata.
+    // Mark that returned route as a picker candidate; explicit visibility still takes precedence.
+    if raw.get("visibility").is_none() {
+        baseline.visibility = codex_protocol::openai_models::ModelVisibility::List;
     }
+    if let Some(label) = raw["display_name"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+    {
+        baseline.display_name = label.into();
+    }
+    let mut value = serde_json::to_value(&baseline)?;
+    if let Some(raw) = raw.as_object() {
+        value.as_object_mut().unwrap().extend(raw.clone());
+    }
+    value["slug"] = Value::String(id.into());
+    value["display_name"] = Value::String(baseline.display_name);
+    serde_json::from_value(value).context("Invalid model runtime metadata")
+}
+
+fn constrain_runtime_model(model: &mut ModelInfo) {
+    // Model-owned tool_mode takes precedence over feature flags in upstream core. FlowM
+    // ships direct tools, not the optional code-mode host or upstream plugin environment.
+    model.tool_mode = Some(ToolMode::Direct);
+    model.shell_type = ConfigShellToolType::UnifiedExec;
+    model.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    model.experimental_supported_tools.clear();
+    model.model_messages = None;
+    model.include_skills_usage_instructions = false;
+    model.include_plugin_usage_instructions = false;
+    model.include_apps_usage_instructions = false;
+    model.supports_search_tool = false;
+    model.supports_experimental_context = false;
+    model.use_responses_lite = false;
+    model.node_repl_disabled = true;
+    model.multi_agent_version = None;
+    model.multi_agent_reasoning_effort = None;
 }
 
 #[cfg(test)]
@@ -322,11 +396,11 @@ mod tests {
     }
 
     #[test]
-    fn account_catalog_preserves_server_order_names_and_excludes_hidden_models() -> Result<()> {
+    fn account_catalog_uses_kernel_candidates_and_remote_metadata() -> Result<()> {
         let profile = profile(ProviderKind::Openai);
         let catalog = ModelCatalog::from_response(
             &profile,
-            serde_json::json!({"models":[
+            serde_json::json!({"default_model":"live-b","models":[
                 {"slug":"live-b","display_name":"Live B","visibility":"list","tool_mode":"code_mode_only"},
                 {"slug":"hidden","visibility":"hide"}, {"slug":"live-a","display_name":"Live A","visibility":"list"}
             ]}),
@@ -335,6 +409,7 @@ mod tests {
             catalog
                 .models
                 .iter()
+                .filter(|model| model.origin == ModelOrigin::Remote)
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["live-b", "live-a"]
@@ -379,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_model_does_not_gain_access_from_an_old_preference() -> Result<()> {
+    fn missing_official_model_remains_a_kernel_candidate() -> Result<()> {
         let mut profile = profile(ProviderKind::Openai);
         profile.model = "gpt-6.1-sol".into();
         let catalog = ModelCatalog::from_response(
@@ -388,9 +463,72 @@ mod tests {
                 {"slug":"returned-model","visibility":"list"}
             ]}),
         )?;
-        assert_eq!(catalog.default_model.as_deref(), Some("returned-model"));
-        assert!(catalog.model_info(&profile, "gpt-6.1-sol").is_err());
-        assert!(ModelCatalog::from_response(&profile, serde_json::json!({"models":[]})).is_err());
+        assert_eq!(catalog.default_model.as_deref(), Some("gpt-6.1-sol"));
+        let candidate = catalog
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-6.1-sol")
+            .unwrap();
+        assert_eq!(candidate.origin, ModelOrigin::Kernel);
+        let info = catalog.model_info(&profile, "gpt-6.1-sol")?;
+        assert_eq!(info.slug, "gpt-6.1-sol");
+        assert_eq!(info.tool_mode, Some(ToolMode::Direct));
+        assert!(info.context_window.is_some());
+        assert!(catalog.model_info(&profile, "invented-model").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn live_metadata_overrides_the_same_official_model_and_hidden_models_stay_hidden() -> Result<()>
+    {
+        let profile = profile(ProviderKind::Openai);
+        let catalog = ModelCatalog::from_response(
+            &profile,
+            serde_json::json!({"models":[
+                {"slug":"gpt-6.1-sol","display_name":"Live Sol","visibility":"list","context_window":64000},
+                {"slug":"gpt-6-astra","visibility":"hide"}, {"slug":"gpt-6-sol","visibility":"none"}
+            ]}),
+        )?;
+        let candidate = catalog
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-6.1-sol")
+            .unwrap();
+        assert_eq!(candidate.origin, ModelOrigin::Remote);
+        assert_eq!(candidate.label, "Live Sol");
+        assert_eq!(
+            catalog.model_info(&profile, "gpt-6.1-sol")?.context_window,
+            Some(64000)
+        );
+        assert!(catalog.model_info(&profile, "gpt-6-astra").is_err());
+        assert!(catalog.model_info(&profile, "gpt-6-sol").is_err());
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .filter(|model| model.id == "gpt-6.1-sol")
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_remote_siwc_directory_keeps_official_candidates_without_gateway_fallback() -> Result<()>
+    {
+        let profile = profile(ProviderKind::Openai);
+        let catalog = ModelCatalog::from_response(&profile, serde_json::json!({"models":[]}))?;
+        assert!(catalog.models.iter().any(|model| model.id == "gpt-6.1-sol"));
+        assert!(
+            catalog
+                .models
+                .iter()
+                .all(|model| model.origin == ModelOrigin::Kernel)
+        );
+        let mut gateway = profile;
+        gateway.kind = ProviderKind::Gateway;
+        gateway.auth_kind = AuthKind::Bearer;
+        assert!(ModelCatalog::from_response(&gateway, serde_json::json!({"data":[]})).is_err());
         Ok(())
     }
 }

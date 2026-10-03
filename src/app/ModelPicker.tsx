@@ -16,7 +16,8 @@ export function ModelPicker({
 }) {
   const id = useId()
   const models = catalog?.models ?? []
-  const selected = models.some((model) => model.id === value) ? value : ''
+  const selectedModel = models.find((model) => model.id === value)
+  const selected = selectedModel?.id ?? ''
   return (
     <div className="model-picker">
       <div className="model-picker-row">
@@ -36,11 +37,12 @@ export function ModelPicker({
           onChange={(event) => onChange(event.target.value)}
         >
           <option value="" disabled>{text.model.select}</option>
-          {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+          {models.map((model) => <option key={model.id} value={model.id}>{model.label}{model.origin === 'kernel' ? ` · ${text.model.candidate}` : ''}</option>)}
         </select>
         <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
       </div>
       {selected && <div className="model-picker-id" title={selected}>{selected}</div>}
+      {selectedModel?.origin === 'kernel' && !loading && !error && <div className="model-picker-note">{text.model.candidateNote}</div>}
       {loading ? <div className="model-picker-note" role="status">{text.model.loading}</div>
         : error ? <div className="model-picker-note" title={error}>{text.model.loadFailed}</div> : null}
     </div>

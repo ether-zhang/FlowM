@@ -97,13 +97,15 @@ const envelope = JSON.stringify({ reply: 'checked', question: null, operations: 
 try {
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/2' }), /protocol/i)
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/3' }), /protocol/i)
-  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/4' })).protocolVersion, 'flowm.harness/4')
+  await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/4' }), /protocol/i)
+  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/5' })).protocolVersion, 'flowm.harness/5')
   const profileId = randomUUID()
   const profile = { id: profileId, name: 'Offline gateway', kind: 'gateway', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: '', authKind: 'none', credentialVersion: 0, account: null, subject: null, clientId: null }
   const savedProfile = await rpc('profiles/save', { profile })
   const catalog = await rpc('models/list', { profileId })
   assert.equal(catalog.profileId, profileId)
   assert.equal(catalog.source, 'gateway')
+  assert.ok(catalog.models.every((model) => model.origin === 'remote'), 'gateway inherited kernel candidates')
   assert.deepEqual(catalog.models.map((model) => model.id), [discoveredModel], 'gateway picker included an upstream bundled model')
   assert.equal(catalog.defaultModel, discoveredModel)
   const binding = { projectRoot: project, flowSessionId: 'flowm-test', profileId, credentialVersion: savedProfile.credentialVersion, role: 'canvas', model: discoveredModel, system: 'Test harness. Return JSON when given a schema.' }

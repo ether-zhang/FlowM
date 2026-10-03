@@ -1,10 +1,11 @@
 import type { AgentActivityEvent, AgentQuestion } from '../agent'
 
-export const HARNESS_PROTOCOL = 'flowm.harness/4'
+export const HARNESS_PROTOCOL = 'flowm.harness/5'
 
 export interface HarnessModel {
   id: string
   label: string
+  origin: 'remote' | 'kernel'
 }
 
 export interface HarnessModelCatalog {
