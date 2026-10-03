@@ -1045,19 +1045,17 @@
 }
 .float-editor-note { padding: 12px; color: #999; font-size: 12px; }
 
-/* In-app key dialog (replaces window.prompt, which WKWebView/macOS ignores). */
+/* Connected provider and model selection. */
 .model-picker { margin-top: 12px; }
 .model-picker-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .model-picker-row label { flex: none; font-size: 12px; color: var(--fm-text-muted, #666); }
-.model-picker-source { flex: 1; min-width: 0; text-align: right; color: var(--fm-text-muted, #777); font-size: 11px; }
-.model-picker-row button { flex: none; border: 0; border-radius: 6px; background: transparent; color: var(--fm-text-muted, #777); padding: 2px 6px; cursor: pointer; font-size: 16px; }
-.model-picker-row button:hover:not(:disabled) { background: var(--fm-hover, #f1f0ff); color: var(--fm-accent, #6965db); }
+.model-picker-connection { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fm-text-muted, #777); }
 .model-picker-control { position: relative; }
 .model-picker-control select { appearance: none; width: 100%; min-width: 0; border: 1px solid var(--fm-border, #ddd); border-radius: 8px; background: #fff; padding: 9px 32px 9px 10px; color: var(--fm-text, #252529); font: inherit; font-size: 13px; cursor: pointer; }
 .model-picker-control select:focus-visible { outline: 2px solid var(--fm-accent, #6965db); outline-offset: 1px; }
 .model-picker-control svg { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: #777; stroke-width: 1.5; pointer-events: none; }
-.model-picker-id { margin-top: 5px; font: 11px monospace; color: var(--fm-text-muted, #777); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-picker-note { margin-top: 5px; font-size: 11px; color: var(--fm-text-muted, #666); }
+.model-picker-note[role="alert"] { color: #b42318; white-space: pre-wrap; overflow-wrap: anywhere; }
 .model-picker :disabled { opacity: 0.6; cursor: default; }
 
 .modal-backdrop {
@@ -1159,7 +1157,6 @@
 .gateway-connection-actions button:disabled { opacity: .5; cursor: default; }
 .settings-footer { margin-top: 22px; }
 .settings-error { color: #b42318; font-size: 12px; line-height: 1.5; margin: 14px 0 0; overflow-wrap: anywhere; }
-.chat-model-connection { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fm-text-muted, #777); margin-top: 8px; }
 .connection-status-dot { height: 6px; width: 6px; flex: 0 0 6px; background: #aaa; border-radius: 50%; }
 .connection-status-dot.online { background: #35a577; }
 @media (max-width: 520px) {

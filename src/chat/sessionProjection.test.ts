@@ -20,6 +20,16 @@ describe('native conversation UI projection', () => {
       row(3, 'view', { event: { kind: 'text', text: 'Diagram explanation' } }), row(4, 'turn_end', { status: 'completed' })])
     expect(messages.filter((message) => message.role === 'assistant').map((message) => message.text)).toEqual(['Diagram explanation'])
   })
+  it('restores returned model errors and a failed activity after the conversation is reopened', () => {
+    const error = '403: The selected model is not available for this account'
+    const messages = projectSession([row(1, 'turn_begin', { role: 'canvas', text: 'Draw' }),
+      row(2, 'model_event', { event: { kind: 'activity', activity: { type: 'warning', id: 'model-error', text: error } } }),
+      row(3, 'turn_end', { status: 'failed', error })])
+    expect(messages.find((message) => message.activity)?.activity).toMatchObject({
+      status: 'failed', warnings: [{ id: 'model-error', text: error }],
+    })
+    expect(messages.find((message) => message.id === 'error:u')?.text).toBe(error)
+  })
   it('expires native questions and stops running tools after a recovered interruption', () => {
     const messages = projectSession([row(1, 'turn_begin', { role: 'project', text: 'Edit' }),
       row(2, 'model_event', { event: { kind: 'activity', activity: { type: 'tool', id: 'cmd', name: 'Command', status: 'running' } } }),

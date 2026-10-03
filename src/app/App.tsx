@@ -245,19 +245,15 @@ export function App() {
         onDelete={(id, name) => openConfirm(text.workspace.deleteSessionTitle, formatUiText(text.workspace.deleteSessionMessage, { name }), () => ws.deleteSession(id))}
         text={text}
       />
-      <div className="chat-model-connection" title={connections.profile?.account ?? ''}>
-        <span className={`connection-status-dot${connections.profile ? ' online' : ''}`} />
-        <span>{connections.profile ? connections.profile.kind === 'gateway' ? 'Gateway' : 'GPT' : text.harness.configureFirst}</span>
-      </div>
       <ModelPicker
         key={`${connections.profile?.id ?? ''}:${engineId}`}
         value={connections.model}
         catalog={connections.catalog}
+        connection={connections.profile ? { label: connections.profile.kind === 'gateway' ? 'Gateway' : 'GPT', account: connections.profile.account } : null}
         onChange={connections.selectModel}
         disabled={busy || ws.changing || connections.loading || !connections.profile}
         loading={connections.loading}
         error={connections.catalogError}
-        onRefresh={connections.refresh}
         text={text}
       />
       {(sendError || conversation.error) && <p className="model-picker-note" role="alert">{sendError || conversation.error}</p>}

@@ -6,15 +6,8 @@ const en = {
   model: {
     label: 'Model',
     select: 'Select a model',
-    accountCatalog: 'GPT models',
-    apiCatalog: 'OpenAI API models',
-    gatewayCatalog: 'From your gateway',
-    unavailable: 'Unavailable',
-    candidate: 'Access unconfirmed',
-    candidateNote: 'Official model candidate. Access will be checked when you send a request.',
     loading: 'Loading available models…',
-    refresh: 'Refresh models',
-    loadFailed: 'Could not load this connection’s models. Refresh to retry.',
+    loadFailed: 'Could not load models.',
   },
   harness: {
     title: 'Model interface',
@@ -197,15 +190,8 @@ const zh: UiText = {
   model: {
     label: '模型',
     select: '选择模型',
-    accountCatalog: 'GPT 模型',
-    apiCatalog: 'OpenAI API 模型',
-    gatewayCatalog: '来自 Gateway',
-    unavailable: '不可用',
-    candidate: '访问待确认',
-    candidateNote: '官方候选模型，可用性将在发送请求时确认。',
     loading: '正在读取可用模型…',
-    refresh: '刷新模型列表',
-    loadFailed: '当前连接的模型列表读取失败，请刷新重试。',
+    loadFailed: '模型列表读取失败。',
   },
   activity: {
     aria: '工作区视图',
