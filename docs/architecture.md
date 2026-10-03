@@ -1,6 +1,6 @@
 # FlowM Architecture
 
-> Updated on 2026-10-02. Historical decisions and experiments remain in
+> Updated on 2026-10-03. Historical decisions and experiments remain in
 > [FlowM.md](../FlowM.md); geometry-specific details live in
 > [structured-refine.md](structured-refine.md),
 > [structure-schema.md](structure-schema.md), and
@@ -210,15 +210,25 @@ context-window claims until their route is verified. UI language stays in UI fil
 
 ## 5. Runtime ownership
 
-`useWorkspace` is the owner of project-scoped local canvas-agent runtimes:
+The native harness owns project-scoped logical conversations and durable events:
 
 ```text
-project -> FlowM session -> connection + credential version + role + model -> private thread
+project -> stable FlowM session -> ordered events / user requests
+                              -> credential + role + model execution segment -> private thread
 ```
 
-One runtime is created lazily per binding. Its FlowM harness thread ID is
-persisted before its first model request. The runtime is disposed when the
-session is deleted, another project is opened, or the workspace unmounts.
+`harness/src/sessions.rs` stores append-only JSONL journals with contiguous sequences,
+idempotent event IDs and a disk flush before publication. Logical IDs, names and history
+survive logout, model selection and credential replacement. Kernel segments resume only
+when their credential/role/model/instruction binding and conversation revision match.
+Other segments start with provider-neutral historical messages and completed results;
+old approval state, provider-encrypted reasoning and queued native tool calls stay isolated.
+
+`HarnessConversations` coordinates a user request across all canvas phases and subscribes
+to native events. `useWorkspace` selects projects, canvases and logical conversations;
+it does not store thread IDs, choose segments or seed context from UI bubbles.
+`Conversation` retains only the current canvas workflow's phase prompts and operation feedback.
+UI messages are projections of the native journal, rather than another conversation store.
 
 There is no projectless harness fallback. Without an open project,
 `activeConv()` returns `null`; this prevents a local agent from running with an
@@ -242,12 +252,20 @@ token backend. Unsupported managed backends fail explicitly. The Tauri superviso
 uses bounded queues and a Windows Job Object (process group on Unix), so forced
 shutdown includes descendants. Its executable path comes from bundled resources.
 
-Legacy CLI IDs remain in metadata as references. Visible conversation and scene
-data remain usable. Explicitly selected, completed standalone Codex histories
-can be forked into private storage; importing submits no task and does not read
-the source application's auth/config. Switching contexts is blocked during a send,
-and sending is blocked while an asynchronous context switch is in progress. Dead
-native interactions expire. Interrupted receipts persist a blocked thread state.
+Version 1 workspace conversation records migrate idempotently into the native harness,
+preserving IDs, names, visible records and recognizable legacy context. Original files remain
+available for rollback; version 2 workspace metadata stores only project/canvas data.
+Portable version 2 `.flowm.json` files combine conversation journals with opaque canvas data.
+Export/import use bounded pages; unfinished imports remain unpublished and submit no turn.
+Legacy version 1 files remain readable. System Codex/Claude history discovery is not used.
+
+Switching contexts is blocked during a send. Startup marks unfinished host workflows as
+interrupted and never replays accepted input, tools or canvas operations. Native completed
+results reconcile lost receipts only against matching locally owned bindings and input hashes.
+Dead interactions expire in the UI projection. Canvas batches are saved atomically before
+operation feedback is returned; canvas geometry and protocol remain unchanged.
+Deletion removes journal content, bindings, receipts and kernel history, retaining an identity
+tombstone so legacy migration cannot resurrect a deleted conversation.
 
 ## 6. Canvas implementation
 
@@ -321,7 +339,8 @@ tool lifecycle, diagnostics, and final text. It consumes `agent/` types and does
 not parse provider wire events.
 
 `app/App.tsx` is the composition root. It selects engines, connects workspace
-state to the shell, and maps callbacks into chat display state. Provider parsing,
+state to the shell, and subscribes to harness-owned conversation events.
+`chat/sessionProjection.ts` reconstructs display messages from the durable journal. Provider parsing,
 prompt construction, and canvas operation validation do not belong in App.
 
 ## 8. Verification
@@ -391,3 +410,20 @@ The renewed audit confirmed that the same SIWC credential completes a response w
 Kernel-only entries use origin: kernel and the picker states that access is confirmed when a request is sent. Gateway and API-key profiles use only remote candidates. Explicit remote hidden/none entries suppress the corresponding official candidate. Provider failures remain failures; another model is never silently substituted.
 
 Validation: 231 frontend tests, 18 native harness tests and 19 local Responses integration requests passed. A real native models/list returned eight candidates including GPT-6.1-Sol, and a native structured turn completed with reply OK and no operations. This validates the fixed native entry path; it does not establish full visual/tool conformance for every model.
+
+### Durable session ownership (2026-10-03)
+
+Protocol version 6 makes the native logical conversation the source of truth. Ownership is now explicit:
+
+| Owner | Responsibility |
+| --- | --- |
+| Native harness | Conversation CRUD, durable inputs/events/results/images, history, execution segments, credential/role isolation, interruption and native history deletion. |
+| Frontend harness | Frozen connection for a user request, RPC coordination, durable framework-event recording, restore subscriptions and paged portable transfer. |
+| Canvas framework | Canvas instructions, build/review/finalize, output validation, operation application and saving opaque scene state before feedback. |
+| Workspace/UI | Project and canvas selection, legacy source migration, conversation selection and journal-to-display projection. |
+
+Long-term chat history and private kernel IDs have been removed from workspace and App state. Legacy FlowM source files remain intact after migration. Both whole-document and paged imports use the same unpublished transaction and publish only after validation and commit; importing a file executes no task. A changed journal revision invalidates an in-progress export. Native restart ends unfinished workflows as interrupted, while completed-result receipt recovery never authorizes replaying canvas operations from an interrupted parent request.
+
+Validation: 243 frontend tests, 26 native harness tests, 3 desktop-shell tests, scoped ESLint, TypeScript/Vite build and a Windows debug desktop build passed. The local embedded-kernel integration issued 25 Responses requests, covering A→B→A model history, logout/replacement credentials without losing the logical conversation, paged import, forced runtime interruption without inference replay, explicit continuation and isolated deletion. The final import-transaction correction has an additional native regression test. The packaged runtime uses protocol 6 and the unchanged pinned upstream commit. Canvas/protocol directories and the canvas system prompt have no content changes.
+
+This record does not establish a real GPT→Claude gateway exchange: no real gateway was configured. Manual desktop interaction, a release installer, clean-machine operation and other platforms remain separate acceptance checks.
