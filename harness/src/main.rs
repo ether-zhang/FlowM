@@ -4,6 +4,7 @@ mod models;
 mod provider;
 mod responses_bridge;
 mod server;
+mod sessions;
 mod state;
 
 use codex_core_api::Arg0DispatchPaths;

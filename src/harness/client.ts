@@ -1,5 +1,5 @@
 import type { AgentQuestionAnswer } from '../agent'
-import type { HarnessModelCatalog } from './types'
+import type { HarnessModelCatalog, HarnessSessionMeta, HarnessSessionPage, HarnessConversationExport, HarnessSessionEvent } from './types'
 import { parseModelCatalog } from './models'
 import { startHarness } from './process'
 import { HARNESS_PROTOCOL, type HarnessBinding, type HarnessEvent, type HarnessNotification, type HarnessProfile, type HarnessTransport, type HarnessTransportFactory, type TurnReceipt } from './types'
@@ -134,12 +134,58 @@ export class HarnessClient {
   answer(threadId: string, answer: AgentQuestionAnswer): Promise<void> { return this.request('interaction/answer', { threadId, ...answer }) }
   status(requestId: string): Promise<TurnReceipt> { return this.request('turn/status', { requestId }) }
 
-  async runTurn(threadId: string, requestId: string, prompt: string, images: string[], outputSchema: unknown, onEvent: (event: HarnessEvent) => void): Promise<TurnReceipt> {
+  sessions(projectRoot: string): Promise<HarnessSessionMeta[]> { return this.request('session/list', { projectRoot }) }
+  createSession(projectRoot: string, name: string): Promise<HarnessSessionMeta> { return this.request('session/create', { projectRoot, name }) }
+  readSession(projectRoot: string, sessionId: string, afterSequence = 0): Promise<HarnessSessionPage> { return this.request('session/read', { projectRoot, sessionId, afterSequence }) }
+  renameSession(projectRoot: string, sessionId: string, name: string): Promise<void> { return this.request('session/rename', { projectRoot, sessionId, name }) }
+  deleteSession(projectRoot: string, sessionId: string): Promise<void> { return this.request('session/delete', { projectRoot, sessionId }) }
+  cancelSession(projectRoot: string, sessionId: string): Promise<void> { return this.request('session/cancel', { projectRoot, sessionId }, 25_000) }
+  importSession(projectRoot: string, name: string, display: unknown[], context: unknown[], metadata: unknown, sessionId?: string): Promise<HarnessSessionMeta> {
+    return this.request('session/import', { projectRoot, sessionId, name, display, context, metadata })
+  }
+  async exportSession(projectRoot: string, sessionId: string): Promise<HarnessConversationExport> {
+    const events: HarnessSessionEvent[] = []
+    let afterSequence = 0
+    let revision: number | undefined
+    let meta: HarnessSessionMeta
+    let more: boolean
+    do {
+      const page = await this.request<HarnessSessionPage & { revision: number }>('session/export', { projectRoot, sessionId, afterSequence, revision })
+      meta = page.meta; revision = page.revision
+      for (const event of page.events) {
+        if (event.kind === 'model_input') {
+          const images = await Promise.all((event.data.images as string[]).map((hash) => this.request<string>('session/image', { projectRoot, sessionId, hash })))
+          events.push({ ...event, data: { ...event.data, images } })
+        } else events.push(event)
+      }
+      more = page.hasMore
+      if (more && page.nextSequence <= afterSequence) throw new Error('Conversation export did not advance')
+      afterSequence = page.nextSequence
+    } while (more)
+    return { version: 1, meta, events }
+  }
+  async importConversation(projectRoot: string, name: string, document: HarnessConversationExport): Promise<HarnessSessionMeta> {
+    if (document.version !== 1 || !Array.isArray(document.events)) throw new Error('Unsupported conversation export')
+    const meta = await this.request<HarnessSessionMeta>('session/import-begin', { projectRoot, name })
+    // Separate bounded frames keep long conversations and image attachments out of the RPC limit.
+    for (const event of document.events) {
+      await this.request('session/import-events', { projectRoot, sessionId: meta.id, events: [event] })
+    }
+    await this.request('session/import-commit', { projectRoot, sessionId: meta.id })
+    return meta
+  }
+  beginSession(projectRoot: string, sessionId: string, turnId: string, role: HarnessBinding['role'], text: string, replyTo?: string): Promise<void> { return this.request('session/begin', { projectRoot, sessionId, turnId, role, text, replyTo }) }
+  finishSession(projectRoot: string, sessionId: string, turnId: string, status: 'completed' | 'failed', error?: string): Promise<void> { return this.request('session/finish', { projectRoot, sessionId, turnId, status, error }) }
+  recordSession(projectRoot: string, sessionId: string, turnId: string, event: HarnessEvent | { kind: 'debug'; text: string } | { kind: 'context'; value: unknown }): Promise<HarnessSessionEvent> {
+    return this.request('session/record', { projectRoot, sessionId, turnId, eventId: crypto.randomUUID(), event })
+  }
+
+  async runTurn(threadId: string, requestId: string, prompt: string, images: string[], outputSchema: unknown, onEvent: (event: HarnessEvent) => void, userTurnId?: string): Promise<TurnReceipt> {
     try { await this.ready() } catch (error) { throw new HarnessNotSubmittedError(error) }
     if (this.turns.has(requestId)) throw new Error('This request is already in flight')
     this.turns.set(requestId, { threadId, onEvent })
     try {
-      const result = await this.raw<TurnReceipt>('turn/start', { threadId, requestId, prompt, images, outputSchema: outputSchema ?? null }, 31 * 60_000)
+      const result = await this.raw<TurnReceipt>('turn/start', { threadId, requestId, prompt, images, outputSchema: outputSchema ?? null, ...(userTurnId ? { userTurnId } : {}) }, 31 * 60_000)
       if (result.status !== 'completed' || typeof result.text !== 'string') throw new Error(result.error || 'Harness did not return a completed model response')
       return result
     } finally { this.turns.delete(requestId) }

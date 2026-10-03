@@ -25,6 +25,7 @@ codex-model-provider-info = { path = "../third_party/codex/codex-rs/model-provid
 codex-models-manager = { path = "../third_party/codex/codex-rs/models-manager" }
 codex-protocol = { path = "../third_party/codex/codex-rs/protocol" }
 codex-rollout = { path = "../third_party/codex/codex-rs/rollout" }
+codex-thread-store = { path = "../third_party/codex/codex-rs/thread-store" }
 dirs = "6"
 http = "1"
 jsonwebtoken = "9.3.1"

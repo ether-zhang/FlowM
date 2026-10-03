@@ -32,24 +32,29 @@ export class HarnessTurn implements HarnessTurnPort {
   private system: string | null = null
   private sent = 0
   private cancelled = false
-  private readonly binding: Omit<HarnessBinding, 'system'>
+  private disposed = false
+  private cursorTurn: string | undefined
+  private readonly binding: (system: string) => HarnessBinding
   private readonly createSession: (binding: HarnessBinding) => HarnessSession
-  constructor(binding: Omit<HarnessBinding, 'system'>,
-    createSession = (binding: HarnessBinding) => new HarnessSession(binding)) {
-    this.binding = binding
-    this.createSession = createSession
+  constructor(binding: Omit<HarnessBinding, 'system'> | ((system: string) => HarnessBinding),
+    createSession?: (binding: HarnessBinding) => HarnessSession) {
+    this.binding = typeof binding === 'function' ? binding : (system) => ({ ...binding, system })
+    this.createSession = createSession ?? (() => new HarnessSession(() => this.binding(this.system!)))
   }
 
   async run(input: HarnessTurnInput, callbacks: HarnessCallbacks): Promise<HarnessTurnResult> {
-    if (this.cancelled) throw new Error('Harness turn was cancelled; create a new FlowM conversation to continue')
+    if (this.disposed) throw new Error('Harness turn is closed')
+    const binding = this.binding(input.system)
+    if (this.cursorTurn !== binding.userTurnId) { this.sent = 0; this.cancelled = false; this.cursorTurn = binding.userTurnId }
+    if (this.cancelled) throw new Error('Harness turn was cancelled')
     if (!this.session) {
       this.system = input.system
-      this.session = this.createSession({ ...this.binding, system: input.system })
+      this.session = this.createSession(binding)
     } else if (this.system !== input.system) throw new Error('The system contract changed; open a new harness session')
     const delivered = input.messages.slice(this.sent)
     const prompt = delivered.filter((message) => message.role !== 'assistant').map((message) => message.content).join('\n\n')
     const images = delivered.flatMap((message) => message.role === 'user' && message.image ? [message.image] : [])
-    callbacks.onDebug?.(`FlowM harness · ${this.binding.role} · model: ${this.binding.model}\n${prompt}`)
+    callbacks.onDebug?.(`FlowM harness · ${binding.role} · model: ${binding.model}\n${prompt}`)
     const receipt = await this.session.run(prompt, images, input.outputSchema, (event) => routeHarnessEvent(event, callbacks))
     this.sent = input.messages.length
     callbacks.onDebug?.(`FlowM harness result · ${receipt.requestId}\n${receipt.text}`)
@@ -60,5 +65,5 @@ export class HarnessTurn implements HarnessTurnPort {
     await this.session.answer(answer)
   }
   async cancel(): Promise<void> { this.cancelled = true; await this.session?.cancel() }
-  async dispose(): Promise<void> { this.cancelled = true; await this.session?.dispose() }
+  async dispose(): Promise<void> { this.disposed = true; this.cancelled = true; await this.session?.dispose() }
 }

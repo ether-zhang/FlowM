@@ -1,6 +1,6 @@
 import type { AgentActivityEvent, AgentQuestion } from '../agent'
 
-export const HARNESS_PROTOCOL = 'flowm.harness/5'
+export const HARNESS_PROTOCOL = 'flowm.harness/6'
 
 export interface HarnessModel {
   id: string
@@ -39,6 +39,31 @@ export interface HarnessBinding {
   role: 'canvas' | 'project'
   model: string
   system: string
+  userTurnId?: string
+}
+
+export interface HarnessSessionMeta { id: string; name: string; projectRoot: string; createdAt: number }
+export interface HarnessSessionEvent {
+  sequence: number
+  id: string
+  turnId: string | null
+  kind: string
+  data: Record<string, unknown>
+  timestamp: number
+}
+export interface HarnessSessionPage {
+  meta: HarnessSessionMeta
+  events: HarnessSessionEvent[]
+  nextSequence: number
+  hasMore: boolean
+  activeTurnId: string | null
+}
+export interface HarnessConversationExport { version: 1; meta: HarnessSessionMeta; events: HarnessSessionEvent[] }
+export interface HarnessExecution extends HarnessConnection {
+  projectRoot: string
+  flowSessionId: string
+  userTurnId: string
+  role: HarnessBinding['role']
 }
 
 /** A model selection validated against the current connection's live catalog. */

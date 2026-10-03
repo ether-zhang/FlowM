@@ -4583,6 +4583,7 @@ dependencies = [
  "codex-models-manager",
  "codex-protocol",
  "codex-rollout",
+ "codex-thread-store",
  "dirs",
  "http 1.4.0",
  "jsonwebtoken",

@@ -37,4 +37,19 @@ describe('CanvasEngine activity routing', () => {
     await expect(engine.send('draw', { onText: vi.fn(), onActivity })).rejects.toBe(failure)
     expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'failed' })
   })
+
+  it('commits a canvas batch and its opaque feedback before the workflow reports success', async () => {
+    const order: string[] = []
+    const result = [{ ok: true, op: 'create_geo', id: 'shape' }]
+    const port = { apply: async () => { order.push('apply'); return result } } as unknown as CanvasPort
+    const conversation = { send: async (_text: string, surface: CanvasPort) => {
+      await surface.apply([])
+      order.push('feedback')
+    } } as unknown as Conversation
+    const record = vi.fn(async () => { order.push('journal') })
+    const engine = new CanvasEngine(() => conversation, () => port, async () => { order.push('save') }, record)
+    await engine.send('Draw', { onText: vi.fn() })
+    expect(order).toEqual(['apply', 'save', 'journal', 'feedback'])
+    expect(record).toHaveBeenCalledWith(result)
+  })
 })

@@ -67,24 +67,24 @@ export async function openProject(folder: string): Promise<{ id: string; meta: P
   const raw = await read(projMetaPath(id))
   const parsed = raw ? (JSON.parse(raw) as Partial<ProjectMeta>) : null
   const meta: ProjectMeta = {
-    version: 1,
+    version: parsed?.version ?? 1,
     folder,
-    sessions: parsed?.sessions ?? [],
+    legacySessions: (parsed as { sessions?: ProjectMeta['legacySessions'] } | null)?.sessions ?? [],
     canvases: parsed?.canvases ?? [],
   }
   return { id, meta }
 }
 
 export const saveProject = (id: string, meta: ProjectMeta): Promise<void> =>
-  write(projMetaPath(id), JSON.stringify(meta, null, 2))
+  write(projMetaPath(id), JSON.stringify({ version: meta.version, folder: meta.folder, canvases: meta.canvases,
+    ...(meta.version < 2 ? { sessions: meta.legacySessions ?? [] } : {}) }, null, 2))
 
-/** A session's UI bubbles (model history belongs to the private harness thread). */
-export async function loadSessionDisplay(projId: string, sessId: string): Promise<DisplayMessage[] | null> {
+/** Legacy input only. New conversations are read and written through the harness. */
+export async function loadLegacySession(projId: string, sessId: string): Promise<{ display: DisplayMessage[]; context: unknown[] }> {
   const raw = await read(sessPath(projId, sessId))
-  return raw ? (JSON.parse(raw) as { display: DisplayMessage[] }).display : null
+  const saved = raw ? JSON.parse(raw) as { display?: DisplayMessage[]; api?: unknown[] } : null
+  return { display: saved?.display ?? [], context: saved?.api ?? [] }
 }
-export const saveSessionDisplay = (projId: string, sessId: string, display: DisplayMessage[]): Promise<void> =>
-  write(sessPath(projId, sessId), JSON.stringify({ display }))
 
 /** A canvas's opaque scene (CanvasPort.serialize output). */
 export async function loadCanvasScene(projId: string, canvasId: string): Promise<unknown | null> {
@@ -95,7 +95,7 @@ export const saveCanvasScene = (projId: string, canvasId: string, scene: unknown
   write(canvasPath(projId, canvasId), JSON.stringify({ scene }))
 
 /** Remove a deleted session's / canvas's data file along with its meta entry (idempotent). */
-export const deleteSessionDisplay = (projId: string, sessId: string): Promise<void> => del(sessPath(projId, sessId))
+export const deleteLegacySession = (projId: string, sessId: string): Promise<void> => del(sessPath(projId, sessId))
 export const deleteCanvasScene = (projId: string, canvasId: string): Promise<void> => del(canvasPath(projId, canvasId))
 
 /** The last path segment of a folder, used as the project's display name. */

@@ -2,6 +2,7 @@
 use crate::{
     auth::{AuthBridge, AuthService},
     models::ModelDirectory,
+    sessions::Sessions,
     state::{Binding, Profile, Role, Store, payload_hash},
 };
 use anyhow::{Context, Result, bail};
@@ -43,6 +44,8 @@ pub struct OpenThread {
     pub role: Role,
     pub model: String,
     pub system: String,
+    #[serde(default)]
+    pub user_turn_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -53,6 +56,8 @@ pub struct StartTurn {
     pub prompt: String,
     pub images: Vec<String>,
     pub output_schema: Option<Value>,
+    #[serde(default)]
+    pub user_turn_id: Option<String>,
 }
 
 enum Interaction {
@@ -84,6 +89,7 @@ pub struct Registry {
     store: Arc<Store>,
     auth: Arc<AuthService>,
     models: Arc<ModelDirectory>,
+    sessions: Arc<Sessions>,
     paths: Arg0DispatchPaths,
     groups: Mutex<HashMap<String, Arc<ThreadManager>>>,
     pub threads: RwLock<HashMap<String, Arc<LiveThread>>>,
@@ -104,6 +110,7 @@ impl Registry {
         store: Arc<Store>,
         auth: Arc<AuthService>,
         models: Arc<ModelDirectory>,
+        sessions: Arc<Sessions>,
         paths: Arg0DispatchPaths,
         events: mpsc::Sender<Value>,
     ) -> Self {
@@ -111,6 +118,7 @@ impl Registry {
             store,
             auth,
             models,
+            sessions,
             paths,
             groups: Mutex::new(HashMap::new()),
             threads: RwLock::new(HashMap::new()),
@@ -136,6 +144,44 @@ impl Registry {
             bail!("Connection credentials changed; refresh the connection before opening a thread");
         }
         self.auth.headers(&profile, false).await?;
+        self.sessions
+            .create(
+                &request.project_root,
+                Some(request.flow_session_id.clone()),
+                request.flow_session_id.clone(),
+            )
+            .await?;
+        if let Some(turn) = &request.user_turn_id {
+            self.sessions
+                .assert_active(
+                    &request.project_root,
+                    &request.flow_session_id,
+                    turn,
+                    &request.role,
+                )
+                .await?;
+        }
+        let revision = self
+            .sessions
+            .context_revision(&request.project_root, &request.flow_session_id)
+            .await?;
+        // Conversation identity is stable. Select an execution segment only if it contains
+        // the latest shared context and has the exact credential and permission binding.
+        if request.thread_id.is_none() {
+            request.thread_id = self
+                .store
+                .data
+                .lock()
+                .await
+                .bindings
+                .values()
+                .find(|binding| {
+                    validate_binding(binding, &request, &profile).is_ok()
+                        && binding.context_sequence == revision
+                        && binding.blocked_request_id.is_none()
+                })
+                .map(|binding| binding.id.clone());
+        }
         let mut binding = if let Some(id) = &request.thread_id {
             self.store
                 .data
@@ -158,9 +204,16 @@ impl Registry {
                 rollout_path: None,
                 imported_from: None,
                 blocked_request_id: None,
+                context_sequence: revision,
+                native_id: None,
             }
         };
         validate_binding(&binding, &request, &profile)?;
+        if binding.context_sequence != revision {
+            bail!(
+                "Execution segment has older conversation context; reopen through the logical session"
+            );
+        }
         if self.threads.read().await.contains_key(&binding.id) {
             return Ok(binding_result(&binding));
         }
@@ -195,6 +248,11 @@ impl Registry {
             options.initial_history = codex_rollout::RolloutRecorder::get_rollout_history(&path)
                 .await
                 .context("Private thread history could not be recovered")?;
+        } else {
+            options.initial_history = self
+                .sessions
+                .history(&binding.project_root, &binding.flow_session_id)
+                .await?;
         }
         let NewThread {
             thread,
@@ -206,6 +264,7 @@ impl Registry {
             .context("Harness thread could not start")?;
         thread.ensure_rollout_materialized().await;
         binding.rollout_path = thread.rollout_path();
+        binding.native_id = Some(native_id.to_string());
         if binding.rollout_path.is_none() {
             let _ = thread.shutdown_and_wait().await;
             bail!("Kernel did not create durable session history");
@@ -683,6 +742,7 @@ impl Registry {
         answers: HashMap<String, Vec<String>>,
     ) -> Result<()> {
         let live = self.live(thread_id).await?;
+        let journal_answers = answers.clone();
         let mut interactions = live.interactions.lock().await;
         let interaction = interactions
             .get(interaction_id)
@@ -745,6 +805,18 @@ impl Registry {
         };
         live.thread.submit(op).await?;
         interactions.remove(interaction_id);
+        drop(interactions);
+        self.sessions
+            .append(
+                &live.binding.project_root,
+                &live.binding.flow_session_id,
+                format!("answer:{interaction_id}"),
+                None,
+                "answer",
+                json!({"interactionId":interaction_id,"answers":journal_answers}),
+                false,
+            )
+            .await?;
         Ok(())
     }
 
@@ -796,6 +868,93 @@ impl Registry {
         Ok(())
     }
 
+    pub async fn delete_session(&self, root: &std::path::Path, id: &str) -> Result<()> {
+        let bindings: Vec<_> = self
+            .store
+            .data
+            .lock()
+            .await
+            .bindings
+            .values()
+            .filter(|binding| binding.project_root == root && binding.flow_session_id == id)
+            .cloned()
+            .collect();
+        for binding in &bindings {
+            self.close(&binding.id).await?;
+            let mut profile = self.store.profile(&binding.profile_id).await?;
+            profile.credential_version = binding.credential_version;
+            let config = self
+                .config(
+                    binding,
+                    &profile,
+                    codex_protocol::openai_models::ModelsResponse { models: vec![] },
+                )
+                .await?;
+            let native_id = if let Some(native_id) = &binding.native_id {
+                Some(serde_json::from_value::<ThreadId>(json!(native_id))?)
+            } else if let Some(path) = &binding.rollout_path {
+                match codex_rollout::RolloutRecorder::get_rollout_history(path).await? {
+                    codex_history::InitialHistory::Resumed(history) => {
+                        Some(history.conversation_id)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(thread_id) = native_id {
+                thread_store_from_config(&config, init_state_db(&config).await)
+                    .delete_thread(codex_thread_store::DeleteThreadParams { thread_id })
+                    .await?;
+            }
+            if let Some(path) = &binding.rollout_path {
+                if path.exists() {
+                    let canonical = tokio::fs::canonicalize(path).await?;
+                    if !canonical.starts_with(tokio::fs::canonicalize(&self.store.home).await?) {
+                        bail!("Private history deletion escaped the harness home");
+                    }
+                    tokio::fs::remove_file(canonical).await?;
+                }
+            }
+        }
+        let ids: Vec<_> = bindings.iter().map(|binding| binding.id.as_str()).collect();
+        let mut files = tokio::fs::read_dir(self.store.home.join("receipts")).await?;
+        while let Some(file) = files.next_entry().await? {
+            if file.path().extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let receipt: crate::state::Receipt =
+                serde_json::from_slice(&tokio::fs::read(file.path()).await?)?;
+            if ids.contains(&receipt.thread_id.as_str()) {
+                tokio::fs::remove_file(file.path()).await?;
+            }
+        }
+        self.store
+            .data
+            .lock()
+            .await
+            .bindings
+            .retain(|_, binding| !ids.contains(&binding.id.as_str()));
+        self.store.save().await
+    }
+
+    pub async fn cancel_session(&self, root: &std::path::Path, id: &str) -> Result<()> {
+        let threads: Vec<_> = self
+            .threads
+            .read()
+            .await
+            .values()
+            .filter(|live| live.binding.project_root == root && live.binding.flow_session_id == id)
+            .cloned()
+            .collect();
+        for live in threads {
+            if live.run.try_lock().is_err() {
+                self.cancel(&live.binding.id).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn shutdown(&self) {
         for manager in self.groups.lock().await.values() {
             manager
@@ -805,6 +964,21 @@ impl Registry {
     }
 
     pub async fn emit(&self, request: &StartTurn, event: Value) -> Result<()> {
+        let live = self.live(&request.thread_id).await?;
+        self.sessions
+            .append(
+                &live.binding.project_root,
+                &live.binding.flow_session_id,
+                Uuid::new_v4().to_string(),
+                request
+                    .user_turn_id
+                    .clone()
+                    .or_else(|| Some(request.request_id.clone())),
+                "model_event",
+                json!({"requestId":request.request_id,"role":live.binding.role,"event":event}),
+                false,
+            )
+            .await?;
         self.events.send(json!({"method":"turn/event","params":{"threadId":request.thread_id,"requestId":request.request_id,"event":event}})).await.context("FlowM connection closed")
     }
     async fn activity(&self, request: &StartTurn, activity: Value) -> Result<()> {
@@ -881,7 +1055,15 @@ mod tests {
         let (events, _receiver) = mpsc::channel(16);
         let auth = AuthService::new(store.clone(), events.clone())?;
         let models = ModelDirectory::new(store.clone(), auth.clone());
-        let registry = Registry::new(store, auth, models, Arg0DispatchPaths::default(), events);
+        let sessions = Sessions::open(&store.home, events.clone()).await?;
+        let registry = Registry::new(
+            store,
+            auth,
+            models,
+            sessions,
+            Arg0DispatchPaths::default(),
+            events,
+        );
         for auth_kind in [
             crate::state::AuthKind::Bearer,
             crate::state::AuthKind::Chatgpt,
@@ -910,6 +1092,8 @@ mod tests {
                 rollout_path: None,
                 imported_from: None,
                 blocked_request_id: None,
+                context_sequence: 0,
+                native_id: None,
             };
             let catalog = crate::models::ModelCatalog::from_response(
                 &profile,

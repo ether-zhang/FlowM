@@ -203,12 +203,12 @@ export interface SendCallbacks {
   /** Harness request/response trace. */
   onDebug?(text: string): void
   /** The assistant needs a yes/no/other user decision before continuing. */
-  onQuestion?(question: LlmQuestion): void
+  onQuestion?(question: LlmQuestion, source?: 'model'): void
   /** Activity emitted by the harness and FlowM's canvas orchestration. */
-  onActivity?(event: AgentActivityEvent): void
+  onActivity?(event: AgentActivityEvent, source?: 'model'): void
 }
 
-/** Holds the provider-neutral message history and runs the tool-use loop for one user turn. */
+/** Runs a canvas workflow. Long-lived conversation history belongs to the harness. */
 export class Conversation {
   private history: LlmMessage[] = []
   private runtime: CanvasTurnRuntime
@@ -278,6 +278,7 @@ export class Conversation {
   }
 
   async send(userText: string, port: CanvasPort, cb: SendCallbacks): Promise<void> {
+    this.history = [] // only this workflow's prompts and operation feedback live in the framework
     this.cancelled = false
     this.turnScope = null // declarations are scoped to this user turn; start fresh
     this.refMap.clear() // create-refs likewise live only within this user turn

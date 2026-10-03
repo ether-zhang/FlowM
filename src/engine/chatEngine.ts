@@ -4,7 +4,7 @@ import type { HarnessCallbacks } from '../harness'
 /** What an engine reports back while producing a reply, mapped onto chat messages. */
 export interface ChatCallbacks extends HarnessCallbacks {
   /** Assistant prose, streamed or returned by a completed harness turn. */
-  onText(text: string): void
+  onText(text: string, source?: 'model'): void
 }
 
 /**

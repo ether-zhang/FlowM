@@ -98,10 +98,8 @@ describe('harness session recovery', () => {
       runTurn: vi.fn().mockRejectedValue(new Error('broken pipe')),
       status: vi.fn().mockResolvedValue({ status: 'completed', text: 'saved result' }),
     } as unknown as HarnessClient
-    const persisted = vi.fn().mockResolvedValue(undefined)
-    const session = new HarnessSession({ projectRoot: '/project', profileId: "p", credentialVersion: 1, model: 'm', flowSessionId: 's', role: 'canvas', system: '' }, client, persisted)
+    const session = new HarnessSession({ projectRoot: '/project', profileId: "p", credentialVersion: 1, model: 'm', flowSessionId: 's', role: 'canvas', system: '' }, client)
     expect((await session.run('draw', [], null, () => {})).text).toBe('saved result')
-    expect(persisted).toHaveBeenCalledWith('t')
     expect(client.runTurn).toHaveBeenCalledTimes(1)
   })
 })

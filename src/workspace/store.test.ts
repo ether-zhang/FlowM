@@ -19,7 +19,7 @@ describe('old FlowM project metadata', () => {
       throw new Error(`Unexpected native command: ${command}`)
     })
     const { id, meta } = await openProject(folder)
-    meta.sessions[0].harnessThreads = { 'private-binding': 'private-thread' }
+    meta.legacySessions![0].harnessThreads = { 'private-binding': 'private-thread' }
     await saveProject(id, meta)
     const saved = JSON.parse(files.get(`${projectId}/project.json`)!)
     expect(saved.sessions[0]).toMatchObject({ name: 'Old conversation', sessionId: 'old-claude', codexSessionId: 'old-codex', harnessThreads: { 'private-binding': 'private-thread' } })

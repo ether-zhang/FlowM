@@ -1,6 +1,7 @@
 import type { CanvasPort } from '../protocol'
 import type { LlmMessage } from '../llm/types'
 import type { DisplayMessage } from '../chat/types'
+import type { HarnessConversationExport } from '../harness'
 
 const VERSION = 1
 
@@ -11,14 +12,16 @@ export interface Project {
   canvas: unknown
   display: DisplayMessage[]
   api: LlmMessage[]
+  conversation?: HarnessConversationExport
 }
 
 export function buildProject(
   port: CanvasPort,
   display: DisplayMessage[],
   api: LlmMessage[],
+  conversation?: HarnessConversationExport,
 ): Project {
-  return { version: VERSION, canvas: port.serialize(), display, api }
+  return { version: conversation ? 2 : VERSION, canvas: port.serialize(), display, api, ...(conversation ? { conversation } : {}) }
 }
 
 export function restoreCanvas(port: CanvasPort, project: Project) {

@@ -2,14 +2,13 @@
  * The workspace model for the VSCode-plugin-style shell. Decisions (confirmed):
  *  - 工程 = 代码文件夹: a project binds to one code folder; FlowM's own state lives under ~/.flowm,
  *    while per-invocation canvas artifacts live under the project's gitignored .flowm folder.
- *  - 每对话一条 session: each role has its own private harness thread. FlowM keeps no
- *    parallel model history; the agent session is the history, FlowM persists only the UI bubbles.
+ *  - Logical conversations and execution bindings are owned by the native harness.
  *  - 画布 ⊥ session: canvases and sessions are INDEPENDENT lists under a project. A new canvas does
  *    NOT create a session and vice-versa; the active session (a chat thread) drives whatever the
  *    active canvas (a drawing surface) currently is.
  */
 
-/** A FlowM conversation with private role/model bindings. */
+/** A legacy project record, used only for idempotent migration into the harness. */
 export interface SessionMeta {
   id: string
   name: string
@@ -28,7 +27,7 @@ export interface ProjectMeta {
   version: number
   /** Absolute path of the code folder this project is bound to. */
   folder: string
-  sessions: SessionMeta[]
+  legacySessions?: SessionMeta[]
   canvases: CanvasMeta[]
 }
 

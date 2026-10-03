@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "flowm.harness/5";
+pub const PROTOCOL_VERSION: &str = "flowm.harness/6";
 pub const UPSTREAM_REVISION: &str = "67727e7cf114cf3e1b71db368d74b24e32f6cb12";
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -102,6 +102,10 @@ pub struct Binding {
     pub imported_from: Option<String>,
     #[serde(default)]
     pub blocked_request_id: Option<String>,
+    #[serde(default)]
+    pub context_sequence: u64,
+    #[serde(default)]
+    pub native_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

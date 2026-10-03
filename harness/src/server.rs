@@ -2,6 +2,7 @@ use crate::{
     auth::AuthService,
     kernel::{OpenThread, Registry, StartTurn},
     models::ModelDirectory,
+    sessions::Sessions,
     state::{
         AuthKind, PROTOCOL_VERSION, Profile, Receipt, Store, UPSTREAM_REVISION, now, payload_hash,
     },
@@ -30,6 +31,7 @@ struct Service {
     store: Arc<Store>,
     auth: Arc<AuthService>,
     models: Arc<ModelDirectory>,
+    sessions: Arc<Sessions>,
     registry: Registry,
     settings: Mutex<()>,
 }
@@ -37,6 +39,164 @@ struct Service {
 impl Service {
     async fn dispatch(&self, method: &str, params: Value) -> Result<Value> {
         match method {
+            "session/create" => Ok(serde_json::to_value(
+                self.sessions
+                    .create(
+                        &project_root(&params)?,
+                        params["sessionId"].as_str().map(str::to_owned),
+                        required_string(&params, "name")?,
+                    )
+                    .await?,
+            )?),
+            "session/list" => Ok(serde_json::to_value(
+                self.sessions.list(&project_root(&params)?).await?,
+            )?),
+            "session/read" => {
+                self.sessions
+                    .read(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        params["afterSequence"].as_u64().unwrap_or(0),
+                    )
+                    .await
+            }
+            "session/rename" => {
+                self.sessions
+                    .rename(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        &required_string(&params, "name")?,
+                    )
+                    .await?;
+                Ok(json!({}))
+            }
+            "session/import" => Ok(serde_json::to_value(
+                self.sessions
+                    .import(
+                        &project_root(&params)?,
+                        params["sessionId"].as_str().map(str::to_owned),
+                        required_string(&params, "name")?,
+                        serde_json::from_value(
+                            params.get("display").cloned().unwrap_or(json!([])),
+                        )?,
+                        serde_json::from_value(
+                            params.get("context").cloned().unwrap_or(json!([])),
+                        )?,
+                        params.get("metadata").cloned().unwrap_or(json!({})),
+                    )
+                    .await?,
+            )?),
+            "session/import-export" => Ok(serde_json::to_value(
+                self.sessions
+                    .import_export(
+                        &project_root(&params)?,
+                        required_string(&params, "name")?,
+                        params["document"].clone(),
+                    )
+                    .await?,
+            )?),
+            "session/export" => {
+                self.sessions
+                    .export_page(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        params["afterSequence"].as_u64().unwrap_or(0),
+                        params["revision"].as_u64(),
+                    )
+                    .await
+            }
+            "session/image" => Ok(json!(
+                self.sessions
+                    .image(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        &required_string(&params, "hash")?
+                    )
+                    .await?
+            )),
+            "session/import-begin" => Ok(serde_json::to_value(
+                self.sessions
+                    .begin_import(&project_root(&params)?, required_string(&params, "name")?)
+                    .await?,
+            )?),
+            "session/import-events" => {
+                self.sessions
+                    .import_events(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        serde_json::from_value(params["events"].clone())?,
+                    )
+                    .await?;
+                Ok(json!({}))
+            }
+            "session/import-commit" => {
+                self.sessions
+                    .commit_import(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                    )
+                    .await?;
+                Ok(json!({}))
+            }
+            "session/delete" => {
+                let root = crate::sessions::canonical_root(&project_root(&params)?).await?;
+                let id = required_string(&params, "sessionId")?;
+                self.sessions.delete(&root, &id).await?;
+                self.registry.delete_session(&root, &id).await?;
+                Ok(json!({}))
+            }
+            "session/begin" => {
+                self.sessions
+                    .begin(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        required_string(&params, "turnId")?,
+                        serde_json::from_value(params["role"].clone())?,
+                        required_string(&params, "text")?,
+                        params["replyTo"].as_str().map(str::to_owned),
+                    )
+                    .await
+            }
+            "session/finish" => {
+                self.sessions
+                    .finish(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        &required_string(&params, "turnId")?,
+                        &required_string(&params, "status")?,
+                        params["error"].as_str().map(str::to_owned),
+                    )
+                    .await?;
+                Ok(json!({}))
+            }
+            "session/cancel" => {
+                let root = crate::sessions::canonical_root(&project_root(&params)?).await?;
+                let id = required_string(&params, "sessionId")?;
+                if let Some(turn) = self.sessions.active_turn(&root, &id).await? {
+                    self.registry.cancel_session(&root, &id).await?;
+                    self.sessions
+                        .finish(
+                            &root,
+                            &id,
+                            &turn,
+                            "interrupted",
+                            Some("Request stopped. No previous action was replayed.".into()),
+                        )
+                        .await?;
+                }
+                Ok(json!({}))
+            }
+            "session/record" => Ok(serde_json::to_value(
+                self.sessions
+                    .view(
+                        &project_root(&params)?,
+                        &required_string(&params, "sessionId")?,
+                        &required_string(&params, "turnId")?,
+                        required_string(&params, "eventId")?,
+                        params["event"].clone(),
+                    )
+                    .await?,
+            )?),
             "initialize" => {
                 if params["protocolVersion"].as_str() != Some(PROTOCOL_VERSION) {
                     bail!("Incompatible FlowM harness protocol");
@@ -217,6 +377,40 @@ impl Service {
         }
         live.cancelled
             .store(false, std::sync::atomic::Ordering::Release);
+        let turn = request
+            .user_turn_id
+            .clone()
+            .unwrap_or_else(|| request.request_id.clone());
+        if request.user_turn_id.is_none() {
+            self.sessions
+                .begin(
+                    &live.binding.project_root,
+                    &live.binding.flow_session_id,
+                    turn.clone(),
+                    live.binding.role.clone(),
+                    request.prompt.clone(),
+                    None,
+                )
+                .await?;
+        }
+        self.sessions
+            .assert_active(
+                &live.binding.project_root,
+                &live.binding.flow_session_id,
+                &turn,
+                &live.binding.role,
+            )
+            .await?;
+        let images = self
+            .sessions
+            .save_images(
+                &live.binding.project_root,
+                &live.binding.flow_session_id,
+                &request.images,
+            )
+            .await?;
+        self.sessions.append(&live.binding.project_root, &live.binding.flow_session_id, format!("input:{}",request.request_id), Some(turn.clone()),
+            "model_input", json!({"requestId":request.request_id,"threadId":request.thread_id,"role":live.binding.role,"prompt":request.prompt,"images":images,"outputSchema":request.output_schema}), true).await?;
         let mut receipt = Receipt {
             request_id: request.request_id.clone(),
             thread_id: request.thread_id.clone(),
@@ -249,7 +443,48 @@ impl Service {
                 receipt.error = Some(error.to_string());
             }
         }
+        self.sessions
+            .append(
+                &live.binding.project_root,
+                &live.binding.flow_session_id,
+                format!("result:{}", request.request_id),
+                Some(turn.clone()),
+                "model_result",
+                json!({"role":live.binding.role,"receipt":receipt}),
+                false,
+            )
+            .await?;
         self.store.write_receipt(&receipt).await?;
+        let revision = self
+            .sessions
+            .context_revision(&live.binding.project_root, &live.binding.flow_session_id)
+            .await?;
+        if let Some(binding) = self
+            .store
+            .data
+            .lock()
+            .await
+            .bindings
+            .get_mut(&request.thread_id)
+        {
+            binding.context_sequence = revision;
+        }
+        self.store.save().await?;
+        if request.user_turn_id.is_none() {
+            self.sessions
+                .finish(
+                    &live.binding.project_root,
+                    &live.binding.flow_session_id,
+                    &turn,
+                    if receipt.error.is_some() {
+                        "failed"
+                    } else {
+                        "completed"
+                    },
+                    receipt.error.clone(),
+                )
+                .await?;
+        }
         if let Some(error) = &receipt.error {
             if receipt.native_turn_id.is_some()
                 || live.cancelled.load(std::sync::atomic::Ordering::Acquire)
@@ -276,21 +511,7 @@ pub async fn serve(home: PathBuf, paths: Arg0DispatchPaths) -> Result<()> {
     let store = Arc::new(Store::open(home).await?);
     store.recover_receipts().await?;
     let (output, mut frames) = mpsc::channel::<Value>(64);
-    let auth = AuthService::new(store.clone(), output.clone())?;
-    let models = ModelDirectory::new(store.clone(), auth.clone());
-    let service = Arc::new(Service {
-        registry: Registry::new(
-            store.clone(),
-            auth.clone(),
-            models.clone(),
-            paths,
-            output.clone(),
-        ),
-        store,
-        auth,
-        models,
-        settings: Mutex::new(()),
-    });
+    // The journal may publish crash-recovery events during initialization.
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(mut frame) = frames.recv().await {
@@ -301,6 +522,56 @@ pub async fn serve(home: PathBuf, paths: Arg0DispatchPaths) -> Result<()> {
             stdout.flush().await?;
         }
         Ok::<_, anyhow::Error>(())
+    });
+    let sessions = Sessions::open(&store.home, output.clone()).await?;
+    // A completed journal result is proof, even if the process died before updating its
+    // small receipt file. Only matching locally owned bindings can supply that proof.
+    for (root, id, completed) in sessions.completed_receipts().await? {
+        let owned = store
+            .data
+            .lock()
+            .await
+            .bindings
+            .get(&completed.thread_id)
+            .is_some_and(|binding| binding.project_root == root && binding.flow_session_id == id);
+        if owned
+            && let Some(previous) = store.receipt(&completed.request_id).await?
+            && previous.payload_hash == completed.payload_hash
+            && matches!(
+                previous.status.as_str(),
+                "accepted" | "running" | "uncertain"
+            )
+        {
+            store.write_receipt(&completed).await?;
+            if let Some(binding) = store
+                .data
+                .lock()
+                .await
+                .bindings
+                .get_mut(&completed.thread_id)
+                && binding.blocked_request_id.as_deref() == Some(completed.request_id.as_str())
+            {
+                binding.blocked_request_id = None;
+            }
+        }
+    }
+    store.save().await?;
+    let auth = AuthService::new(store.clone(), output.clone())?;
+    let models = ModelDirectory::new(store.clone(), auth.clone());
+    let service = Arc::new(Service {
+        registry: Registry::new(
+            store.clone(),
+            auth.clone(),
+            models.clone(),
+            sessions.clone(),
+            paths,
+            output.clone(),
+        ),
+        store,
+        auth,
+        models,
+        sessions,
+        settings: Mutex::new(()),
     });
     let mut input = BufReader::new(tokio::io::stdin());
     let limit = Arc::new(Semaphore::new(32));
@@ -354,6 +625,10 @@ fn required_string(params: &Value, key: &str) -> Result<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .with_context(|| format!("Missing {key}"))
+}
+
+fn project_root(params: &Value) -> Result<PathBuf> {
+    Ok(PathBuf::from(required_string(params, "projectRoot")?))
 }
 
 async fn read_frame(input: &mut (impl AsyncBufRead + Unpin)) -> Result<Option<Vec<u8>>> {

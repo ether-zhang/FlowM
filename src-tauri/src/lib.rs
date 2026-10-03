@@ -17,11 +17,84 @@ fn flowm_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn flowm_path(app: &AppHandle, rel: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(rel);
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err("Invalid FlowM store path".into());
+    }
+    Ok(flowm_dir(app)?.join(relative))
+}
+
+fn write_store_file(path: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(1);
+    let parent = path.parent().ok_or("Store path has no parent")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let temporary = parent.join(format!(
+        ".flowm-{}-{nonce}-{}.tmp",
+        std::process::id(),
+        NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    #[test]
+    fn store_writes_replace_existing_files_and_clean_failed_temporary_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "flowm-store-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("canvas.json");
+        write_store_file(&file, "first").unwrap();
+        write_store_file(&file, "second").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "second");
+        let blocked = directory.join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        assert!(write_store_file(&blocked, "replacement").is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        fs::remove_file(&file).unwrap();
+        fs::remove_dir(&blocked).unwrap();
+        fs::remove_dir(&directory).unwrap();
+    }
+}
+
 /// Read a file under `~/.flowm` (e.g. `workspace.json`, `<proj>/project.json`). Missing file →
 /// `None` (a fresh workspace), not an error, so the caller can treat first-run as empty.
 #[tauri::command]
 fn flowm_read(app: AppHandle, rel: String) -> Result<Option<String>, String> {
-    let path = flowm_dir(&app)?.join(&rel);
+    let path = flowm_path(&app, &rel)?;
     match fs::read_to_string(&path) {
         Ok(s) => Ok(Some(s)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -32,18 +105,15 @@ fn flowm_read(app: AppHandle, rel: String) -> Result<Option<String>, String> {
 /// Write a file under `~/.flowm`, creating parent dirs (so `<proj>/conv-<id>.json` just works).
 #[tauri::command]
 fn flowm_write(app: AppHandle, rel: String, content: String) -> Result<(), String> {
-    let path = flowm_dir(&app)?.join(&rel);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(&path, content).map_err(|e| e.to_string())
+    let path = flowm_path(&app, &rel)?;
+    write_store_file(&path, &content)
 }
 
 /// Delete a file under `~/.flowm` (a deleted session's bubbles / a deleted canvas's scene), so
 /// deleting the meta entry doesn't strand its data file. Idempotent: a missing file is fine.
 #[tauri::command]
 fn flowm_delete(app: AppHandle, rel: String) -> Result<(), String> {
-    let path = flowm_dir(&app)?.join(&rel);
+    let path = flowm_path(&app, &rel)?;
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

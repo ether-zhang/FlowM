@@ -13,13 +13,19 @@ export class CanvasEngine implements ChatEngine {
   readonly label: string
   private getConv: () => Conversation | null
   private getPort: () => CanvasPort | null
+  private readonly persistCanvas?: () => Promise<void>
+  private readonly recordContext?: (value: unknown) => Promise<void>
 
   constructor(
     getConv: () => Conversation | null,
     getPort: () => CanvasPort | null,
+    persistCanvas?: () => Promise<void>,
+    recordContext?: (value: unknown) => Promise<void>,
   ) {
     this.getConv = getConv
     this.getPort = getPort
+    this.persistCanvas = persistCanvas
+    this.recordContext = recordContext
     this.id = 'canvas-harness'
     this.label = 'Canvas Assistant'
   }
@@ -28,10 +34,22 @@ export class CanvasEngine implements ChatEngine {
     const conv = this.getConv()
     const port = this.getPort()
     if (!conv || !port) throw new Error('画布会话未就绪')
+    // The host commits opaque scene data before reporting an applied batch to the model.
+    const apply = async (...args: Parameters<CanvasPort['apply']>) => {
+      const result = await port.apply(...args)
+      await this.persistCanvas?.()
+      await this.recordContext?.(result)
+      return result
+    }
+    const scopedPort = new Proxy(port, { get: (target, key) => {
+      if (key === 'apply') return apply
+      const value = Reflect.get(target, key)
+      return typeof value === 'function' ? value.bind(target) : value
+    } })
     let canvasBatch = 0
     cb.onActivity?.({ type: 'status', status: 'working' })
     try {
-      await conv.send(text, port, {
+      await conv.send(text, scopedPort, {
         onText: cb.onText,
         onToolsApplied: (summary) => {
           cb.onActivity?.({

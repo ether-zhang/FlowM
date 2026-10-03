@@ -59,14 +59,16 @@ const server = createServer(async (request, response) => {
 server.listen(0, '127.0.0.1')
 await once(server, 'listening')
 
-const child = spawn(binary, ['--home', home], { cwd: project, windowsHide: true, env: { ...process.env, CODEX_HOME: foreignHome } })
+let child
 const pending = new Map()
 const events = []
 let questionListener = null
 let diagnostics = ''
 let rpcId = 0
-child.stderr.on('data', (data) => { diagnostics = (diagnostics + data).slice(-20000) })
-createInterface({ input: child.stdout }).on('line', (line) => {
+function startChild() {
+  const nextChild = spawn(binary, ['--home', home], { cwd: project, windowsHide: true, env: { ...process.env, CODEX_HOME: foreignHome } })
+  nextChild.stderr.on('data', (data) => { diagnostics = (diagnostics + data).slice(-20000) })
+  createInterface({ input: nextChild.stdout }).on('line', (line) => {
   const message = JSON.parse(line)
   if (message.id != null) {
     const request = pending.get(message.id)
@@ -79,11 +81,14 @@ createInterface({ input: child.stdout }).on('line', (line) => {
     events.push(message)
     if (message.params?.event?.kind === 'question') questionListener?.(message.params)
   }
-})
-child.on('exit', (code) => {
+  })
+  nextChild.on('exit', (code) => {
   for (const request of pending.values()) { clearTimeout(request.timeout); request.reject(new Error(`Harness exited ${code}\n${diagnostics}`)) }
   pending.clear()
-})
+  })
+  return nextChild
+}
+child = startChild()
 const rpc = (method, params = {}) => new Promise((resolve, reject) => {
   const id = ++rpcId
   const timeout = setTimeout(() => { pending.delete(id); reject(new Error(`Timed out: ${method}\n${diagnostics}`)) }, 60000)
@@ -98,7 +103,8 @@ try {
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/2' }), /protocol/i)
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/3' }), /protocol/i)
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/4' }), /protocol/i)
-  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/5' })).protocolVersion, 'flowm.harness/5')
+  await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/5' }), /protocol/i)
+  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/6' })).protocolVersion, 'flowm.harness/6')
   const profileId = randomUUID()
   const profile = { id: profileId, name: 'Offline gateway', kind: 'gateway', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: '', authKind: 'none', credentialVersion: 0, account: null, subject: null, clientId: null }
   const savedProfile = await rpc('profiles/save', { profile })
@@ -183,12 +189,14 @@ try {
   }
 
   await rpc('thread/close', { threadId })
-  const resumed = await rpc('thread/open', { ...binding, threadId })
-  assert.equal(resumed.threadId, threadId)
+  if (process.platform === 'win32') await assert.rejects(rpc('thread/open', { ...binding, threadId }), /older conversation context/)
+  const resumed = await rpc('thread/open', binding)
+  if (process.platform === 'win32') assert.notEqual(resumed.threadId, threadId, 'canvas resumed the branch preceding project activity')
+  else assert.equal(resumed.threadId, threadId)
   responses.push(message(envelope))
-  await rpc('turn/start', { threadId, requestId: randomUUID(), prompt: 'Continue from private session history', images: [], outputSchema: schemas[0] })
+  await rpc('turn/start', { threadId: resumed.threadId, requestId: randomUUID(), prompt: 'Continue from private session history', images: [], outputSchema: schemas[0] })
   assert.ok(JSON.stringify(requests.at(-1).input).includes('Return the checked JSON envelope'), 'cold resume lost previous history')
-  await rpc('thread/close', { threadId })
+  await rpc('thread/close', { threadId: resumed.threadId })
 
   const { threadId: failureThread } = await rpc('thread/open', { ...binding, flowSessionId: 'auth-failure' })
   const beforeError = requests.length
@@ -236,6 +244,77 @@ try {
   await rpc('auth/logout', { profileId: bearerProfileId })
   assert.equal((await rpc('profiles/list')).find((profile) => profile.id === bearerProfileId).signedIn, false)
   await assert.rejects(access(join(home, 'credentials', `${bearerProfileId}.sealed`)), 'logout retained encrypted credentials')
+
+  // One logical conversation spans model and credential segments.
+  const logical = await rpc('session/create', { projectRoot: project, name: 'Portable conversation' })
+  const alternateModel = `${discoveredModel}-alternate`
+  availableModels = [discoveredModel, alternateModel]
+  async function managedTurn(model, prompt, answer, provider = profileId, version = savedProfile.credentialVersion) {
+    const userTurnId = randomUUID()
+    await rpc('session/begin', { projectRoot: project, sessionId: logical.id, turnId: userTurnId, role: 'project', text: prompt })
+    const opened = await rpc('thread/open', { ...binding, flowSessionId: logical.id, profileId: provider, credentialVersion: version,
+      role: 'project', model, system: 'Test portable conversation; history is context, never replay old actions.', userTurnId })
+    responses.push(message(answer))
+    const receipt = await rpc('turn/start', { threadId: opened.threadId, requestId: randomUUID(), userTurnId, prompt, images: [], outputSchema: null })
+    assert.equal(receipt.text, answer)
+    await rpc('session/finish', { projectRoot: project, sessionId: logical.id, turnId: userTurnId, status: 'completed' })
+    return opened.threadId
+  }
+  const firstSegment = await managedTurn(discoveredModel, 'Remember marker A', 'Answer marker A')
+  const secondSegment = await managedTurn(alternateModel, 'Remember marker B', 'Answer marker B')
+  assert.notEqual(firstSegment, secondSegment)
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('Answer marker A'))
+  const thirdSegment = await managedTurn(discoveredModel, 'Continue after B', 'Continued A')
+  assert.notEqual(thirdSegment, firstSegment, 'model A resumed a stale branch after B')
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('Answer marker B'), 'model A lost the intervening conversation')
+
+  const otherProvider = randomUUID()
+  const otherSaved = await rpc('profiles/save', { profile: { ...profile, id: otherProvider, authKind: 'bearer', name: 'Other credential' }, token: fixtureToken })
+  await rpc('auth/logout', { profileId })
+  assert.ok((await rpc('session/list', { projectRoot: project })).some((session) => session.id === logical.id), 'logout hid the conversation')
+  await managedTurn(alternateModel, 'Continue with another login', 'Other login continued', otherProvider, otherSaved.credentialVersion)
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('Answer marker B'))
+  assert.equal(authorizations.at(-1), `Bearer ${fixtureToken}`)
+  await rpc('auth/logout', { profileId: otherProvider })
+  const reconnected = await rpc('profiles/save', { profile })
+  await managedTurn(discoveredModel, 'Return with fresh credentials', 'Fresh login continued', profileId, reconnected.credentialVersion)
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('Other login continued'))
+
+  const portable = await rpc('session/export', { projectRoot: project, sessionId: logical.id })
+  assert.ok(portable.events.some((event) => event.kind === 'model_result'))
+  const imported = await rpc('session/import-begin', { projectRoot: project, name: 'Imported portable conversation' })
+  for (const event of portable.events) await rpc('session/import-events', { projectRoot: project, sessionId: imported.id, events: [event] })
+  assert.ok(!(await rpc('session/list', { projectRoot: project })).some((session) => session.id === imported.id), 'an uncommitted import was published')
+  await rpc('session/import-commit', { projectRoot: project, sessionId: imported.id })
+  assert.ok((await rpc('session/list', { projectRoot: project })).some((session) => session.id === imported.id))
+
+  // Stop after durable user input. Restart must restore a stopped turn without inference.
+  const interruptedId = randomUUID()
+  await rpc('session/begin', { projectRoot: project, sessionId: logical.id, turnId: interruptedId, role: 'project', text: 'Durable unfinished user input' })
+  const countBeforeRestart = requests.length
+  const old = child
+  const stopped = once(old, 'exit')
+  old.kill()
+  await stopped
+  child = startChild()
+  await rpc('initialize', { protocolVersion: 'flowm.harness/6' })
+  const restored = await rpc('session/read', { projectRoot: project, sessionId: logical.id })
+  assert.equal(restored.meta.id, logical.id)
+  assert.equal(restored.activeTurnId, null)
+  assert.ok(restored.events.some((event) => event.kind === 'turn_end' && event.turnId === interruptedId && event.data.status === 'interrupted'))
+  assert.equal(requests.length, countBeforeRestart, 'restart replayed a request')
+  await managedTurn(discoveredModel, 'Explicit new request after restart', 'Restart continued', profileId, reconnected.credentialVersion)
+  assert.ok(JSON.stringify(requests.at(-1).input).includes('Fresh login continued'))
+
+  const privateState = JSON.parse(await readFile(join(home, 'state.json'), 'utf8'))
+  const ownedBindings = Object.values(privateState.bindings).filter((candidate) => candidate.flowSessionId === logical.id)
+  await rpc('session/delete', { projectRoot: project, sessionId: logical.id })
+  const deletedState = JSON.parse(await readFile(join(home, 'state.json'), 'utf8'))
+  assert.ok(!Object.values(deletedState.bindings).some((candidate) => candidate.flowSessionId === logical.id))
+  for (const candidate of ownedBindings) await assert.rejects(access(candidate.rolloutPath), 'delete retained private model history')
+  await assert.rejects(rpc('session/read', { projectRoot: project, sessionId: logical.id }), /not found/)
+  assert.ok((await rpc('session/list', { projectRoot: project })).some((session) => session.id === imported.id), 'deletion crossed conversation boundaries')
+
   assert.equal(await readFile(join(foreignHome, 'config.toml'), 'utf8'), 'INVALID EXTERNAL CONFIG: MUST NEVER BE READ')
   console.log(`Harness integration passed: ${requests.length} local Responses requests, schema changes, receipts, binding isolation, native questions, encrypted bearer/logout, provider failure, cold resume, cancellation${process.platform === 'win32' ? ', Windows read-only/workspace-write, approval allow/deny' : ''}.`)
   console.log(`Evidence directory: ${testRoot}`)

@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { Canvas, createExcalidrawPort } from '../canvas'
 import type { CanvasPort } from '../protocol'
-import type { LlmMessage, LlmQuestion } from '../llm'
-import { Chat, createDisplayActivity, reduceActivity, type DisplayMessage, type DisplayQuestion } from '../chat'
-import { finishActivity } from '../chat/activityLifecycle'
+import { Chat, type DisplayQuestion } from '../chat'
 import { FilePanel, FloatingEditor, GitPanel, PickerBar, useWorkspace } from '../workspace'
 import { Resizer } from './Resizer'
 import { ModelPicker } from './ModelPicker'
 import { useHarnessConnection } from './useHarnessConnection'
+import { useHarnessConversation } from './useHarnessConversation'
 import { HarnessSettings } from './HarnessSettings'
 import { resolveEngineId } from './engineSelection'
 import { buildProject, downloadProject, openProjectFile, restoreCanvas } from '../persistence'
@@ -33,10 +32,11 @@ const numFromStorage = (k: string, fallback: number) => {
 
 export function App() {
   const portRef = useRef<CanvasPort | null>(null)
-  // Preserve an imported file's legacy history for export, without using its old transport.
-  const importedHistoryRef = useRef<{ display: DisplayMessage[]; api: LlmMessage[] } | null>(null)
-  const [messages, setMessages] = useState<DisplayMessage[]>([])
-  const [busy, setBusy] = useState(false)
+  const conversation = useHarnessConversation()
+  const messages = conversation.messages
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [sending, setBusy] = useState(false)
+  const busy = sending || !!conversation.activeTurnId
   const busyRef = useRef(false)
   const activeEngineRef = useRef<ChatEngine | null>(null)
   const [debug, setDebug] = useState(false)
@@ -59,6 +59,7 @@ export function App() {
   const cwdRef = useRef('')
   const [cwd, setCwd] = useState('')
   const connections = useHarnessConnection()
+  const getConnection = connections.getConnection
 
   // Shell pane geometry. Panels are data-driven (side + width + shown) so a future VSCode-style
   // rearrange only changes this state, not the render — the seam is here. Defaults keep the centre
@@ -91,10 +92,6 @@ export function App() {
     toggleFiles(activeActivity === view ? !filesShown : true)
   }
 
-  // A live mirror of `messages` so the workspace's async save/switch reads the latest bubbles
-  // (a state closure would be stale). Kept in sync by the effect below.
-  const messagesRef = useRef<DisplayMessage[]>([])
-
   const setFolder = useCallback((folder: string) => {
     cwdRef.current = folder
     setCwd(folder)
@@ -104,11 +101,9 @@ export function App() {
   // project `ws.activeConv()` is null, so local agents cannot accidentally run outside a project.
   const ws = useWorkspace({
     getPort: () => portRef.current,
-    getMessages: () => messagesRef.current,
-    setMessages,
+    conversations: conversation.service,
     getCwd: () => cwdRef.current,
-    getConnection: connections.getConnection,
-    isBusy: () => busyRef.current,
+    isBusy: () => busyRef.current || !!conversation.service.getSnapshot().activeTurnId,
     setFolder,
   })
 
@@ -117,17 +112,12 @@ export function App() {
   // Constructors store getters and read them only during send/cancel, outside render.
   // eslint-disable-next-line react-hooks/refs
   const [engines] = useState<ChatEngine[]>(() => [
-    new CanvasEngine(() => ws.activeConv(), () => portRef.current),
+    new CanvasEngine(() => ws.activeConv(), () => portRef.current, () => ws.persistActive(), (result) => conversation.service.recordContext(result)),
     new HarnessProjectEngine(() => ws.activeProject(), () => portRef.current),
   ])
   const [engineId, setEngineId] = useState(() => resolveEngineId(localStorage.getItem(ENGINE_STORAGE)))
 
-  // Mirror `messages` for the workspace's async reads (declared FIRST so it updates before the
-  // persist effect below reads it), then persist the active conversation whenever a send settles
-  // or the active conversation changes.
-  useEffect(() => {
-    messagesRef.current = messages
-  }, [messages])
+  // Conversation events are already durable. Persist host-owned canvas/project data separately.
   const persistActiveRef = useRef(ws.persistActive)
   useEffect(() => { persistActiveRef.current = ws.persistActive }, [ws.persistActive])
   useEffect(() => {
@@ -140,33 +130,6 @@ export function App() {
     },
     [],
   )
-
-  const addMessage = (role: DisplayMessage['role'], text: string, image?: string) => {
-    const id = crypto.randomUUID()
-    setMessages((m) => [...m, { id, role, text, image }])
-    return id
-  }
-
-  const addQuestionMessage = (question: LlmQuestion, targetEngineId: string) => {
-    const id = crypto.randomUUID()
-    setMessages((m) => [
-      ...m,
-      {
-        id,
-        role: 'assistant',
-        text: '',
-        question: {
-          requestId: question.requestId,
-          items: question.items,
-          engineId: targetEngineId,
-        },
-      },
-    ])
-    return id
-  }
-
-  const appendToMessage = (id: string, delta: string) =>
-    setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, text: msg.text + delta } : msg)))
 
   const formatQuestionAnswer = useCallback((question: DisplayQuestion, answers: Record<string, string[]>) => {
     const items = question.items?.length
@@ -186,67 +149,29 @@ export function App() {
   }, [])
 
   const sendToEngine = useCallback(
-    async (targetEngineId: string, text: string) => {
+    async (targetEngineId: string, text: string, replyTo?: string) => {
       if (busyRef.current || isWorkspaceChanging()) return
       const engine = engines.find((e) => e.id === targetEngineId)
       if (!engine) return
-      addMessage('user', text)
+      const connection = getConnection()
+      if (!connection) return
       busyRef.current = true
       activeEngineRef.current = engine
       setBusy(true)
-      // Lazily open an assistant bubble on the first text; a system note closes it so the next
-      // text starts a fresh bubble below — keeps Claude's "progress then prose" ordering readable.
-      let assistantId: string | null = null
-      let activityId: string | null = null
-      let outcome: 'completed' | 'failed' = 'completed'
-      let settled = false
+      setSendError(null)
       try {
-        await engine.send(text, {
-          onText: (delta) => {
-            if (!assistantId) assistantId = addMessage('assistant', '')
-            appendToMessage(assistantId, delta)
-          },
-          onQuestion: (question) => {
-            addQuestionMessage(question, targetEngineId)
-            assistantId = null
-          },
-          onActivity: (event) => {
-            if (settled) return
-            if (!activityId) {
-              activityId = crypto.randomUUID()
-              const id = activityId
-              setMessages((items) => [...items, {
-                id,
-                role: 'system',
-                text: '',
-                activity: reduceActivity(createDisplayActivity(), event),
-              }])
-              return
-            }
-            const id = activityId
-            setMessages((items) => items.map((message) =>
-              message.id === id && message.activity
-                ? { ...message, activity: reduceActivity(message.activity, event) }
-                : message,
-            ))
-          },
-          onDebug: debug ? (t) => addMessage('debug', t) : undefined,
-        })
+        await conversation.service.run(text, targetEngineId === 'project-harness' ? 'project' : 'canvas', connection,
+          (callbacks) => engine.send(text, callbacks), () => engine.cancel?.() ?? Promise.resolve(), debug, replyTo)
       } catch (e) {
-        outcome = 'failed'
-        // Not every throw is an Error: a Tauri command rejects with its Rust Err string, which
-        // has no `.message` (it showed as "undefined"). Surface whatever it actually is.
         const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e)
-        addMessage('system', `出错：${msg || '(空错误)'}`)
+        setSendError(msg || '(空错误)')
       } finally {
-        settled = true
-        setMessages((items) => finishActivity(items, activityId, outcome).map((message) => message.question?.requestId && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message))
         activeEngineRef.current = null
         busyRef.current = false
         setBusy(false)
       }
     },
-    [engines, debug, isWorkspaceChanging],
+    [engines, debug, isWorkspaceChanging, getConnection, conversation.service],
   )
 
   const onSend = useCallback(
@@ -258,7 +183,7 @@ export function App() {
 
   const onAnswerQuestion = useCallback(
     async (messageId: string, answers: Record<string, string[]>) => {
-      const message = messagesRef.current.find((m) => m.id === messageId)
+      const message = messages.find((m) => m.id === messageId)
       const question = message?.question
       if (!question || question.answer || question.expired) return
       const answerText = formatQuestionAnswer(question, answers)
@@ -266,43 +191,28 @@ export function App() {
       const targetEngineId = resolveEngineId(question.engineId)
       const engine = question.requestId ? activeEngineRef.current : engines.find((item) => item.id === targetEngineId)
       if (!engine) return
-      setMessages((items) =>
-        items.map((m) =>
-          m.id === messageId && m.question
-            ? { ...m, question: { ...m.question, answer: { text: answerText } } }
-            : m,
-        ),
-      )
       try {
         if (question.requestId) {
           if (!engine.answerQuestion) throw new Error('This agent cannot resume an in-flight question')
           await engine.answerQuestion({ requestId: question.requestId, answers })
         } else {
           if (busy) throw new Error('Wait for the current request to finish before answering')
-          await sendToEngine(targetEngineId, answerText)
+          await sendToEngine(targetEngineId, answerText, messageId.replace(/^question:/, ''))
         }
       } catch (error) {
-        setMessages((items) =>
-          items.map((m) =>
-            m.id === messageId && m.question
-              ? { ...m, question: { ...m.question, answer: undefined } }
-              : m,
-          ),
-        )
         const detail = error instanceof Error ? error.message : String(error)
-        addMessage('system', `出错：${detail}`)
+        setSendError(detail)
       }
     },
-    [busy, engines, formatQuestionAnswer, sendToEngine],
+    [busy, engines, formatQuestionAnswer, sendToEngine, messages],
   )
 
-  const onSave = useCallback(() => {
+  const onSave = useCallback(async () => {
     const port = portRef.current
     if (!port) return
-    const imported = importedHistoryRef.current
-    const history = imported?.display === messages ? imported.api : ws.activeConv()?.messages ?? []
-    downloadProject(buildProject(port, messages, history))
-  }, [messages, ws])
+    try { downloadProject(buildProject(port, messages, [], await conversation.service.exportCurrent())) }
+    catch (error) { setSendError(error instanceof Error ? error.message : String(error)) }
+  }, [messages, conversation.service])
 
   const onLoad = useCallback(async () => {
     if (busyRef.current || ws.isChanging()) return
@@ -310,14 +220,11 @@ export function App() {
     if (!port) return
     const project = await openProjectFile()
     if (!project || busyRef.current || ws.isChanging()) return
-    // Start imported visible history in a fresh harness session, retaining the previous session.
-    if (ws.projectName) await ws.newSession()
-    restoreCanvas(port, project)
-    const display = project.display.map((message) => message.question && !message.question.answer ? { ...message, question: { ...message.question, expired: true } } : message)
-    importedHistoryRef.current = { display, api: project.api }
-    messagesRef.current = display
-    setMessages(display)
-    await ws.persistActive()
+    try {
+      await ws.importConversation(project.conversation, project.display ?? [], project.api ?? [])
+      restoreCanvas(port, project)
+      await ws.persistActive()
+    } catch (error) { setSendError(error instanceof Error ? error.message : String(error)) }
   }, [ws])
 
   const canSend = !ws.changing && !!cwd.trim() && !!connections.connection
@@ -353,6 +260,7 @@ export function App() {
         onRefresh={connections.refresh}
         text={text}
       />
+      {(sendError || conversation.error) && <p className="model-picker-note" role="alert">{sendError || conversation.error}</p>}
       </>
     )
   const activeActivityLabel = text.activity.labels[activeActivity]
@@ -427,7 +335,10 @@ export function App() {
           placeholder={placeholder}
           onSend={onSend}
           onStop={() => {
-            void activeEngineRef.current?.cancel?.().catch((error) => addMessage('system', `出错：${error instanceof Error ? error.message : String(error)}`))
+            const cancel = activeEngineRef.current?.cancel
+              ? activeEngineRef.current.cancel()
+              : conversation.service.cancel()
+            void cancel.catch((error) => setSendError(error instanceof Error ? error.message : String(error)))
           }}
           onAnswerQuestion={onAnswerQuestion}
           onToggleDebug={() => setDebug((d) => !d)}

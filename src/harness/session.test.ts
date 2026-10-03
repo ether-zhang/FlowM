@@ -43,16 +43,27 @@ describe('harness delivery lifecycle', () => {
     const onText = vi.fn(), onActivity = vi.fn()
     const session = new HarnessSession(binding, api as unknown as HarnessClient)
     await session.send({ prompt: 'talk' }, { onText, onActivity })
-    expect(onText.mock.calls.flat().join('')).toBe('Hello world')
-    expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'completed' })
+    expect(onText.mock.calls.map(([text]) => text).join('')).toBe('Hello world')
+    expect(onText.mock.calls.every(([, source]) => source === 'model')).toBe(true)
+    expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'completed' }, 'model')
   })
   it('finalizes failed activity and retains the no-replay recovery behavior', async () => {
     const api = { openThread: vi.fn().mockResolvedValue({ threadId: 't' }), runTurn: vi.fn().mockRejectedValue(new Error('broken pipe')), status: vi.fn().mockResolvedValue({ status: 'uncertain' }) }
     const session = new HarnessSession(binding, api as unknown as HarnessClient)
     const onActivity = vi.fn()
     await expect(session.send({ prompt: 'change code' }, { onActivity })).rejects.toThrow('broken pipe')
-    expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'failed' })
+    expect(onActivity).toHaveBeenLastCalledWith({ type: 'status', status: 'failed' }, 'model')
     await expect(session.send({ prompt: 'retry' }, {})).rejects.toThrow('did not settle')
+    expect(api.runTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not return a completed model result to a host workflow interrupted by restart', async () => {
+    const api = { openThread: vi.fn().mockResolvedValue({ threadId: 't' }), runTurn: vi.fn().mockRejectedValue(new Error('runtime stopped')),
+      status: vi.fn().mockResolvedValue({ status: 'completed', text: '{"operations":[{"op":"create_geo"}]}' }),
+      readSession: vi.fn().mockResolvedValue({ activeTurnId: null }) }
+    const session = new HarnessSession({ ...binding, userTurnId: 'host-request' }, api as unknown as HarnessClient)
+    await expect(session.run('Draw', [], null, () => {})).rejects.toThrow('runtime stopped')
+    expect(api.readSession).toHaveBeenCalledWith(binding.projectRoot, binding.flowSessionId)
     expect(api.runTurn).toHaveBeenCalledTimes(1)
   })
 })
