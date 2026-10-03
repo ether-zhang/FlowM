@@ -227,7 +227,7 @@ LiteLLM 有公开的 [Codex 接入示例](https://docs.litellm.ai/docs/proxy/cli
 
 Codex 对未知模型可能使用 [默认元数据](https://github.com/openai/codex/blob/67727e7cf114cf3e1b71db368d74b24e32f6cb12/codex-rs/models-manager/src/model_info.rs)。不能据此推定 Claude 路由的上下文窗口、reasoning 参数、工具形态或视觉支持。
 
-模型目录由 harness 统一装配。请求复用 Codex `ModelsClient`，ChatGPT 公共目录读取 `models[].slug` 与 `visibility: list`，API Key/Gateway 读取 `/v1/models` 的 `data[].id`，然后装配内核需要的模型元数据。`model_catalog_url` 原生格式要求不能直接套用到普通 `/v1/models` 数据。应用启动、运行时重启与手动刷新均访问上游；不缓存目录、不提供手填模型入口、不把 bundled OpenAI fallback 显示为已授权目录。目录外的模型在原生线程创建时也被拒绝。网关必须同时支持模型列表和 Responses，模型出现在列表中不代替工具能力的真实验收。
+模型目录由 harness 统一装配。请求复用 Codex `ModelsClient`，ChatGPT 公共目录读取 `models[].slug` 与 `visibility: list`，API Key/Gateway 读取 `/v1/models` 的 `data[].id`，然后装配内核需要的模型元数据。`model_catalog_url` 原生格式要求不能直接套用到普通 `/v1/models` 数据。应用启动、运行时重启与手动刷新均访问上游；不缓存目录、不提供手填模型入口、不把 bundled OpenAI fallback 显示为已授权目录。未知模型 ID 与显式隐藏的模型在原生线程创建时被拒绝；SIWC 内核候选不受实时目录漏项阻断，账号权限由实际请求判断。网关必须同时支持模型列表和 Responses，模型出现在列表中不代替工具能力的真实验收。
 
 FlowM 公开协议保留请求协议与 capability 描述，首版仅实现 Responses，不把这一实现约束永久写入上层业务类型。后续增加原生 Messages 或 Chat Completions 时，使用新的后端适配器。
 
@@ -261,7 +261,7 @@ Project agent 可在明确的 workspace roots 中编辑和执行命令。正常�
 
 ## FlowM 协议
 
-公开协议由 FlowM 定义，当前版本标识为 `flowm.harness/4`。连接使用 stdio 上的 JSON-RPC 和 JSONL framing；stdout 只承载协议消息，诊断进入 stderr，并去除 secret。
+公开协议由 FlowM 定义，当前版本标识为 `flowm.harness/5`。连接使用 stdio 上的 JSON-RPC 和 JSONL framing；stdout 只承载协议消息，诊断进入 stderr，并去除 secret。
 
 下表定义首版接口范围，具体参数 schema 在实现阶段冻结：
 
@@ -437,7 +437,7 @@ third_party/
 
 ## 本轮运行时清理（2026-10-02）
 
-协议升级到 `flowm.harness/4`，模型目录携带连接身份、凭据版本、来源与真实默认模型。UI 与内核使用同一认证目录；GPT 登录不再写死模型名，Gateway 也从上游发现模型。显式输入模型及目录外模型放行已移除，旧协议客户端被拒绝。请求复用 Codex `ModelsClient`，启动/运行时重启/手动刷新都重新请求，不读取模型缓存。模型元数据中的 `tool_mode` 会覆盖内核功能开关，因此 FlowM 强制直接工具模式并清理不交付的 Code Mode、插件、应用及实验工具元数据。旧 adapter 调试双通道、可选活动开关、CLI resume getter 与外部历史导入链路已移除。画布业务循环与 CanvasPort 操作保持不变。
+协议升级到 `flowm.harness/5`，模型目录携带连接身份、凭据版本、来源与真实默认模型。UI 与内核使用同一认证目录；GPT 登录不再写死模型名，Gateway 也从上游发现模型。显式输入模型及目录外模型放行已移除，旧协议客户端被拒绝。请求复用 Codex `ModelsClient`，启动/运行时重启/手动刷新都重新请求，不读取模型缓存。模型元数据中的 `tool_mode` 会覆盖内核功能开关，因此 FlowM 强制直接工具模式并清理不交付的 Code Mode、插件、应用及实验工具元数据。旧 adapter 调试双通道、可选活动开关、CLI resume getter 与外部历史导入链路已移除。画布业务循环与 CanvasPort 操作保持不变。
 
 本轮回归通过 228 项前端测试、16 项原生 harness 测试与 19 次本地 Responses 集成请求，覆盖实时目录更新、旧偏好/目录外模型拒绝、权限、审批、取消与冷恢复。桌面 debug 构建完成。真实 SIWC 公共目录在兼容版本 `0.155.0` 下返回 7 个可见模型；复用 Codex 请求代码后 GPT-6.1-Sol 仍不在原始响应中。之前同凭据的最小 GPT-6.1-Sol 推理已完成，但目录缺失的服务端原因尚未确认。路由、版本对照与证据边界见 [architecture.md](architecture.md#live-catalog-refresh)。真实 gateway/Claude 验收仍待用户配置。
 
@@ -449,3 +449,10 @@ third_party/
 连接选择、认证状态、实时目录与模型偏好由 src/harness/HarnessConnections 统一管理；UI 仅订阅，workspace 通过 harness 工厂取得模型会话。原生 ModelDirectory 负责模型发现及内核元数据，AuthService 只负责凭据。私有绑定、历史过滤、发送游标、流式正文与最终正文合并、模型活动结束和取消/恢复统一在 harness 内。CanvasTurnProjection 保留画布输出契约校验，Conversation 和 CanvasPort 的业务职责保持。
 
 线程创建必须携带目录验证过的 credentialVersion；关闭中的会话不提交模型请求；准备阶段失败不会误标成已提交的不确定请求。已提交且中断的请求仍禁止自动重放。内核模型元数据变化时，新线程使用对应的新 manager。SIWC 注册、目录与推理统一使用 FlowM 应用标识；实测新旧标识的公共目录都仍不返回 GPT-6.1-Sol，服务端目录缺失原因仍待确认。
+
+
+## 官方候选与访问权限修正（2026-10-03）
+
+模型发现与权限验证分离。SIWC 使用固定版本 Codex 的官方模型元数据作为候选，实时目录覆盖同名模型的定义、名称与可见性，再由 Codex StaticModelsManager 生成排序、默认模型和内核运行定义。UI 与线程使用同一份模型管理器快照；核心逻辑仅在原生 harness 装配，前端只选择候选。内核候选标注访问待确认，真正的账号权限由 Responses 服务验证。API Key 与 Gateway 仍只使用各自远端返回的 ID，不混入 OpenAI 候选；显式隐藏项不会被内核候选重新显示。每次启动、重启、手动刷新仍请求远端，不保存权限名单，不恢复手填入口，不做启动推理探测，不读取系统 Codex 配置。
+
+本次已通过 231 项前端测试、18 项原生测试与 19 次本地模拟 Responses 集成请求。真实随包 harness 返回 8 个候选，其中包含 GPT-6.1-Sol；通过 native thread/open 与 turn/start 完成了严格 JSON 空操作请求，结果为 OK。该证据覆盖修复后的模型入口与结构化输出，完整视觉/工具流程和真实 Claude 网关联调仍按各自验收条件执行。

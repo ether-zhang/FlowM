@@ -201,8 +201,11 @@ service used by both `models/list` and kernel thread creation; authentication is
 by `AuthService`. Settings selects one FlowM-owned connection at a time; the session bar selects its model. OpenAI API-key
 discovery uses `/v1/models`; ChatGPT discovery uses the plan-aware `models` array
 and `visibility: list`. Gateway discovery uses its authenticated `/v1/models`
-response (`data[].id`). Model choices and kernel metadata are projected from the
-same authenticated provider directory. Discovered gateway models omit reasoning and
+response (`data[].id`). SIWC starts from the pinned Codex kernel's official candidates,
+then live remote metadata overrides matching IDs, including explicit visibility.
+Codex's in-process model manager owns picker order, defaults and runtime definitions.
+Each model records `origin: remote | kernel`; neither origin asserts account entitlement.
+API-key and gateway profiles use only their own discovered IDs. Discovered gateway models omit reasoning and
 context-window claims until their route is verified. UI language stays in UI files.
 
 ## 5. Runtime ownership
@@ -358,7 +361,7 @@ mixed into provider or canvas behavior work.
 
 ## Runtime cleanup audit (2026-10-02)
 
-The version 4 handshake requires the caller's validated credential version on thread creation. Older clients are rejected. `models/list` returns a profile- and credential-scoped catalog, including its source and a real default model. Account and gateway choices and kernel metadata originate from the same native directory service. The upstream bundled model catalog is never used for FlowM model selection or another model’s capability claims. Unlisted or hidden models are rejected by native thread creation, including obsolete saved preferences.
+The version 5 handshake requires the caller's validated credential version on thread creation and candidate-origin metadata in `models/list`. Older clients are rejected. Account and gateway candidates and kernel metadata originate from the same native model manager snapshot. Candidate discovery is separate from account authorization. Unknown IDs and explicitly hidden models remain excluded; SIWC models missing from the public directory can use their exact official kernel definitions. Gateway candidates remain limited to that gateway's live directory.
 
 FlowM constrains model metadata to direct tools. Upstream `tool_mode` can override feature switches, so it is normalized alongside the disabled Code Mode/host flags. Legacy API/Claude debug switches, optional activity channels, CLI resume handles and standalone Codex-history import are removed from live execution. Saved FlowM data and private thread resume remain supported. Canvas build/review/finalize and CanvasPort operations are unchanged.
 
@@ -368,7 +371,7 @@ Discovery uses the pinned Codex `ModelsClient` request construction and raw-resp
 
 The 2026-10-02 native audit used the existing FlowM SIWC account without exposing OAuth tokens. The public `/v1/models` response contained five visible models with no version, `0.0.0`, `0.153.0` or `0.154.0`; versions `0.155.0`, `0.156.0` and `0.157.0` returned seven. Reusing Codex `ModelsClient` and its default client headers still returned seven. GPT-6.1-Sol was absent from the complete raw responses, rather than hidden by the UI visibility filter. Prior minimal inference probes using the same credentials completed for GPT-6.1-Sol, GPT-6-Sol and GPT-6-Luna; that evidence establishes those requests only, not agent-tool conformance.
 
-Codex’s default discovery instead targets `https://chatgpt.com/backend-api/codex/models` and can use a bundled or cached catalog. Its pinned bundled directory contains eight visible models, including GPT-6.1-Sol. SIWC explicitly requires the public API, so reproducing Codex backend routing or merging its bundled model names is not a valid way to fill this account’s public directory. The discrepancy is confirmed at the public catalog boundary; the server-side reason for omitting GPT-6.1-Sol is not established by client source or published documentation. See [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+Codex’s default discovery instead targets `https://chatgpt.com/backend-api/codex/models` and can use a bundled or cached catalog. Its pinned official catalog contains eight visible models, including GPT-6.1-Sol. SIWC continues to use the public API with FlowM-owned credentials. The official candidate set is kept distinct from the public account directory; kernel-only candidates are not presented as account-authorized models. The server-side reason for omitting GPT-6.1-Sol is not established by client source or published documentation. See [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) and [Codex catalog guidance](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server).
 
 ### Model interaction ownership review
 
@@ -379,3 +382,12 @@ Review fixes include rejecting stale credential versions before thread creation,
 `harness/src/provider.rs` owns the application identity, public OpenAI resource and pinned catalog compatibility version. SIWC registration previously used `FlowM` while requests used `flowm_harness`; discovery and inference now use the same `FlowM` identity. A paired native public-catalog check using both identities still returned seven visible models and omitted GPT-6.1-Sol in both complete responses, ruling out this identity mismatch as the explanation for this account's missing directory entry.
 
 Validation: 228 frontend tests across 34 files, 16 native harness tests, TypeScript/Vite build, and local kernel integration with a discovered `claude-offline-fixture` model ID. A loopback test service returns this ID and preset Responses events; it does not run Claude or use Anthropic's native protocol. FlowM harness, the embedded Codex kernel, tools and OS sandbox run normally against that simulated downstream service. Real providers use the same harness path. Canvas, protocol and the canvas system prompt match all 31 protected baseline hashes. Real gateway/Claude inference remains unverified until a gateway is configured.
+
+
+### Official candidates and access (2026-10-03)
+
+The renewed audit confirmed that the same SIWC credential completes a response whose actual model is gpt-6.1-sol, while the live public directory omits that ID. The former directory-only admission rule caused a false rejection. ModelDirectory now seeds SIWC with codex_models_manager::bundled_models_response, overlays live metadata and delegates picker order, default selection and runtime definitions to StaticModelsManager. Native execution receives the same complete normalized candidate snapshot. No application-owned model-ID list or persisted authorization cache is introduced.
+
+Kernel-only entries use origin: kernel and the picker states that access is confirmed when a request is sent. Gateway and API-key profiles use only remote candidates. Explicit remote hidden/none entries suppress the corresponding official candidate. Provider failures remain failures; another model is never silently substituted.
+
+Validation: 231 frontend tests, 18 native harness tests and 19 local Responses integration requests passed. A real native models/list returned eight candidates including GPT-6.1-Sol, and a native structured turn completed with reply OK and no operations. This validates the fixed native entry path; it does not establish full visual/tool conformance for every model.
