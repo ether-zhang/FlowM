@@ -111,6 +111,41 @@ describe('harness connection ownership', () => {
     expect(service.getConnection()).toBeNull()
     expect(storage.get('flowm.activeModelConnection')).toBe('')
   })
+  it('activates a gateway only after its own credential-bound model directory succeeds', async () => {
+    const { api, service, storage } = fixture()
+    const gateway = { ...profile, id: 'gateway', kind: 'gateway' as const, authKind: 'bearer' as const,
+      baseUrl: 'https://openrouter.ai/api/v1', model: '' }
+    storage.set('flowm.activeModelConnection', '')
+    api.profiles.mockResolvedValue([gateway])
+    api.models.mockResolvedValue({ ...catalog(), profileId: 'gateway', source: 'gateway',
+      models: [{ id: 'anthropic/claude-fixture', label: 'Claude fixture', origin: 'remote' }], defaultModel: 'anthropic/claude-fixture' })
+    await service.connect('gateway')
+    expect(api.models).toHaveBeenCalledExactlyOnceWith('gateway')
+    expect(storage.get('flowm.activeModelConnection')).toBe('gateway')
+    expect(service.getConnection()).toEqual({ profileId: 'gateway', credentialVersion: 1, model: 'anthropic/claude-fixture' })
+  })
+  it('reports gateway discovery errors without persisting an active connection', async () => {
+    const { api, service, storage } = fixture()
+    storage.set('flowm.activeModelConnection', '')
+    api.models.mockRejectedValueOnce(new Error('Model discovery returned HTTP 401'))
+    await expect(service.connect('p')).rejects.toThrow('HTTP 401')
+    expect(storage.get('flowm.activeModelConnection')).toBe('')
+    expect(service.getSnapshot()).toMatchObject({ profile: null, connection: null, loading: false, error: 'Model discovery returned HTTP 401' })
+  })
+  it('does not activate a delayed gateway directory after logout', async () => {
+    const { api, service, storage } = fixture()
+    storage.set('flowm.activeModelConnection', '')
+    const pending = deferred<HarnessModelCatalog>()
+    api.models.mockReturnValueOnce(pending.promise)
+    const connect = service.connect('p')
+    await vi.waitFor(() => expect(api.models).toHaveBeenCalledOnce())
+    api.profiles.mockResolvedValue([{ ...profile, signedIn: false, credentialVersion: 2 }])
+    await service.logout('p')
+    pending.resolve(catalog())
+    await expect(connect).rejects.toThrow('Connection changed')
+    expect(storage.get('flowm.activeModelConnection')).toBe('')
+    expect(service.getConnection()).toBeNull()
+  })
   it('handles completion arriving before the sign-in start response', async () => {
     const { api, service, emit, storage } = fixture()
     storage.set('flowm.activeModelConnection', '')

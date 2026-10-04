@@ -32,7 +32,7 @@ const destination = join(root, 'src-tauri', 'binaries')
 await mkdir(destination, { recursive: true })
 await copyFile(binary, join(destination, `flowm-harness-${target}${suffix}`))
 const metadata = {
-  protocolVersion: 'flowm.harness/6', harnessVersion: '0.1.0', upstreamRevision: source.revision,
+  protocolVersion: 'flowm.harness/8', harnessVersion: '0.1.0', upstreamRevision: source.revision,
   rustc: '1.96.0', target, buildProfile: release ? 'release' : 'debug',
   sha256: createHash('sha256').update(await readFile(binary)).digest('hex'),
   cargoLockSha256: createHash('sha256').update(await readFile(join(root, 'harness', 'Cargo.lock'))).digest('hex'),

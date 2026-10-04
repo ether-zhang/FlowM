@@ -7,6 +7,7 @@ import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { once } from 'node:events'
+import { createServer as createViteServer } from 'vite'
 
 const root = resolve(import.meta.dirname, '..')
 const binary = process.env.FLOWM_TEST_HARNESS ?? join(root, 'harness', 'target', 'debug', process.platform === 'win32' ? 'flowm-harness.exe' : 'flowm-harness')
@@ -29,15 +30,19 @@ let availableModels = [discoveredModel]
 let catalogRequests = 0
 let heldRequests = 0
 const server = createServer(async (request, response) => {
-  if (request.method === 'GET' && request.url === '/v1/models') {
+  if (request.method === 'GET' && request.url === '/api/v1/models') {
     catalogRequests++
     assert.equal(request.headers['cache-control'], 'no-cache, no-store')
-    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: availableModels.map((id) => ({ id })) }))
+    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: availableModels.map((id) => ({
+      id, name: `Gateway ${id}`, context_length: 128000,
+      architecture: { input_modalities: ['text', 'image'] },
+      supported_parameters: ['tools', 'structured_outputs'],
+    })) }))
     return
   }
   let content = ''
   for await (const chunk of request) content += chunk
-  if (request.method !== 'POST' || request.url !== '/v1/responses') {
+  if (request.method !== 'POST' || request.url !== '/api/v1/responses') {
     response.writeHead(404).end('unexpected route')
     return
   }
@@ -45,13 +50,13 @@ const server = createServer(async (request, response) => {
   authorizations.push(request.headers.authorization ?? null)
   const next = responses.shift()
   if (!next) { response.writeHead(500).end('No response fixture'); return }
-  if (next.status) { response.writeHead(next.status).end(JSON.stringify({ error: { message: 'simulated provider failure' } })); return }
+  if (next.status) { response.writeHead(next.status).end(JSON.stringify(next.body ?? { error: { message: 'simulated provider failure' } })); return }
   response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
   if (next.hold) { heldRequests++; response.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: randomUUID() } })}\n\n`); return }
   const events = [
     { type: 'response.created', response: { id: randomUUID() } },
-    next,
-    { type: 'response.completed', response: { id: randomUUID(), usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } },
+    ...(next.events ?? [next]),
+    ...(!next.failed ? [{ type: 'response.completed', response: { id: randomUUID(), usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }] : []),
   ]
   for (const event of events) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
   response.end()
@@ -99,14 +104,46 @@ const message = (text) => ({ type: 'response.output_item.done', item: { type: 'm
 const tool = (name, args) => ({ type: 'response.output_item.done', item: { type: 'function_call', call_id: randomUUID(), name, arguments: JSON.stringify(args) } })
 const envelope = JSON.stringify({ reply: 'checked', question: null, operations: [] })
 
+// Exercise the exact canvas contract; a tiny hand-written schema misses provider compiler limits.
+const schemaServer = await createViteServer({ root, configFile: false, optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, hmr: false, watch: null } })
+let schemas
+try {
+  const { buildCanvasTurnOutputSchema } = await schemaServer.ssrLoadModule('/src/llm/outputContract.ts')
+  const { canvasTools, declareDiagramTool, declareStructureTool } = await schemaServer.ssrLoadModule('/src/protocol/index.ts')
+  schemas = [
+    [declareDiagramTool, ...canvasTools, declareStructureTool],
+    [...canvasTools.filter((tool) => ['move_shape', 'place_region'].includes(tool.name)), declareStructureTool],
+    [],
+  ].map((tools) => buildCanvasTurnOutputSchema(tools, 'strict'))
+} finally { await schemaServer.close() }
+
+function checkGatewayGrammar(schema) {
+  let unions = 0
+  function walk(value) {
+    if (!value || typeof value !== 'object') return
+    if (Array.isArray(value.type) || Array.isArray(value.anyOf)) unions++
+    for (const key of ['enum', 'required', 'anyOf', 'allOf', 'oneOf']) {
+      if (Object.hasOwn(value, key)) assert.ok(Array.isArray(value[key]), `invalid schema keyword: ${key} must be an array`)
+    }
+    if (Object.hasOwn(value, 'enum')) assert.equal(typeof value.type, 'string', 'gateway compiler rejects nullable type arrays with enums')
+    if (Object.hasOwn(value, 'properties')) assert.ok(value.properties && !Array.isArray(value.properties) && typeof value.properties === 'object', 'schema properties must be an object')
+    assert.ok(value.maxItems === undefined, 'gateway compiler rejects array maxItems')
+    for (const [key, child] of Object.entries(value)) if (key !== 'description') walk(child)
+  }
+  walk(schema)
+  assert.ok(unions <= 16, `gateway compiler limit exceeded: ${unions} union parameters`)
+}
+
 try {
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/2' }), /protocol/i)
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/3' }), /protocol/i)
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/4' }), /protocol/i)
   await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/5' }), /protocol/i)
-  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/6' })).protocolVersion, 'flowm.harness/6')
+  await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/6' }), /protocol/i)
+  await assert.rejects(rpc('initialize', { protocolVersion: 'flowm.harness/7' }), /protocol/i)
+  assert.equal((await rpc('initialize', { protocolVersion: 'flowm.harness/8' })).protocolVersion, 'flowm.harness/8')
   const profileId = randomUUID()
-  const profile = { id: profileId, name: 'Offline gateway', kind: 'gateway', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: '', authKind: 'none', credentialVersion: 0, account: null, subject: null, clientId: null }
+  const profile = { id: profileId, name: 'Offline gateway', kind: 'gateway', baseUrl: `http://127.0.0.1:${server.address().port}/api/v1`, model: '', authKind: 'none', credentialVersion: 0, account: null, subject: null, clientId: null }
   const savedProfile = await rpc('profiles/save', { profile })
   const catalog = await rpc('models/list', { profileId })
   assert.equal(catalog.profileId, profileId)
@@ -114,6 +151,7 @@ try {
   assert.ok(catalog.models.every((model) => model.origin === 'remote'), 'gateway inherited kernel candidates')
   assert.deepEqual(catalog.models.map((model) => model.id), [discoveredModel], 'gateway picker included an upstream bundled model')
   assert.equal(catalog.defaultModel, discoveredModel)
+  assert.equal(catalog.models[0].label, `Gateway ${discoveredModel}`)
   const binding = { projectRoot: project, flowSessionId: 'flowm-test', profileId, credentialVersion: savedProfile.credentialVersion, role: 'canvas', model: discoveredModel, system: 'Test harness. Return JSON when given a schema.' }
   await assert.rejects(rpc('thread/open', { ...binding, credentialVersion: 0 }), /credentials changed/)
   await assert.rejects(rpc('thread/open', { ...binding, model: 'not-returned-by-gateway' }), /absent from.*catalog/)
@@ -124,22 +162,133 @@ try {
   availableModels = [discoveredModel]
   assert.ok(catalogRequests >= 4, 'model discovery did not reach the upstream')
   const { threadId } = await rpc('thread/open', binding)
-  const schemas = ['build', 'review', 'finalize'].map((phase) => ({ type: 'object', additionalProperties: false, properties: { reply: { type: 'string', description: phase }, question: { type: 'null' }, operations: { type: 'array', items: { type: 'object', properties: {}, additionalProperties: false }, maxItems: 0 } }, required: ['reply', 'question', 'operations'] }))
+  const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABCSURBVDhP3cwxCgAgFMPQ3v/Sur+C8HERA1kCbdYlMUx58CDJUaniQKWKA5UqDlSqOFCp4kCligOVKg5Uugz54GADbQ087qcDcpoAAAAASUVORK5CYII='
   for (const schema of schemas) {
     responses.push(message(envelope))
-    const params = { threadId, requestId: randomUUID(), prompt: 'Return the checked JSON envelope', images: [], outputSchema: schema }
+    const params = { threadId, requestId: randomUUID(), prompt: 'Return the checked JSON envelope', images: [image], outputSchema: schema }
     const receipt = await rpc('turn/start', params)
     assert.equal(receipt.status, 'completed')
-    assert.equal(receipt.text, envelope)
+    assert.deepEqual(JSON.parse(receipt.text), JSON.parse(envelope))
     const count = requests.length
-    assert.equal((await rpc('turn/start', params)).text, envelope)
+    assert.equal((await rpc('turn/start', params)).text, receipt.text)
     assert.equal(requests.length, count, 'completed request must not execute twice')
-    assert.deepEqual(requests.at(-1).text.format.schema, schema)
+    checkGatewayGrammar(requests.at(-1).text.format.schema)
+    assert.equal(requests.at(-1).text.format.schema.properties.operations.items.properties.arguments_json.type, 'string')
     assert.equal(requests.at(-1).store, false)
     assert.equal(requests.at(-1).stream, true)
     assert.equal(requests.at(-1).previous_response_id, undefined)
+    assert.ok(requests.at(-1).input.some((item) => item.content?.some((content) => content.type === 'input_image' && content.image_url.startsWith('data:image/'))), 'gateway request lost the canvas image')
   }
   await assert.rejects(rpc('thread/open', { ...binding, threadId, role: 'project' }), /binding changed/)
+
+  // A single logical canvas workflow crosses an inspection segment and a tool-free output segment.
+  const stageSession = await rpc('session/create', { projectRoot: project, name: 'Controlled canvas stages' })
+  const stageTurn = randomUUID()
+  await rpc('session/begin', { projectRoot: project, sessionId: stageSession.id, turnId: stageTurn, role: 'canvas', text: 'Inspect then draw' })
+  const inspectPolicy = { phase: 'inspect', tools: 'inspect', timeoutSecs: 600 }
+  const outputPolicy = (phase) => ({ phase, tools: 'none', timeoutSecs: 600 })
+  const stageBinding = { ...binding, flowSessionId: stageSession.id, userTurnId: stageTurn }
+  const inspectSegment = await rpc('thread/open', { ...stageBinding, toolsDisabled: false })
+  responses.push(tool('exec_command', { cmd: 'Get-Content sample.txt', shell: 'powershell', login: false, max_output_tokens: 50 }),
+    message('Inspection found source marker: runtime mapping'))
+  await rpc('turn/start', { threadId: inspectSegment.threadId, requestId: randomUUID(), userTurnId: stageTurn,
+    prompt: 'Read context only', images: [], outputSchema: null, runtimePolicy: inspectPolicy })
+  const renderSegment = await rpc('thread/open', { ...stageBinding, toolsDisabled: true })
+  assert.notEqual(inspectSegment.threadId, renderSegment.threadId)
+  for (const [index, phase] of ['build', 'review', 'finalize'].entries()) {
+    responses.push(message(envelope))
+    await rpc('turn/start', { threadId: renderSegment.threadId, requestId: randomUUID(), userTurnId: stageTurn,
+      prompt: 'Produce only the canvas result', images: [], outputSchema: schemas[index], runtimePolicy: outputPolicy(phase) })
+    assert.deepEqual(requests.at(-1).tools, [], 'canvas output advertised project tools')
+    assert.ok(JSON.stringify(requests.at(-1).input).includes('runtime mapping'), 'output stage lost inspection context')
+  }
+  await rpc('session/finish', { projectRoot: project, sessionId: stageSession.id, turnId: stageTurn, status: 'completed' })
+  await rpc('thread/close', { threadId: inspectSegment.threadId })
+  await rpc('thread/close', { threadId: renderSegment.threadId })
+
+  const noToolSegment = await rpc('thread/open', { ...binding, flowSessionId: 'output-cannot-run-commands', toolsDisabled: true })
+  const noToolRequest = randomUUID()
+  responses.push(tool('exec_command', { cmd: 'echo forbidden', shell: 'powershell', login: false }))
+  await assert.rejects(rpc('turn/start', { threadId: noToolSegment.threadId, requestId: noToolRequest, prompt: 'Canvas output only',
+    images: [], outputSchema: schemas[0], runtimePolicy: outputPolicy('build') }), /project tools are disabled/)
+  assert.ok(!events.some((event) => event.params?.requestId === noToolRequest && event.params?.event?.activity?.type === 'tool'), 'output command executed before rejection')
+  await rpc('thread/close', { threadId: noToolSegment.threadId })
+
+  const repeatSegment = await rpc('thread/open', { ...binding, flowSessionId: 'repeated-tools-within-timeout' })
+  const repeatRequest = randomUUID()
+  for (let count = 0; count < 3; count++) responses.push(tool('exec_command', { cmd: 'echo ok', shell: 'powershell', login: false, max_output_tokens: 50 }))
+  responses.push(message('Repeated inspection completed within the deadline'))
+  await rpc('turn/start', { threadId: repeatSegment.threadId, requestId: repeatRequest, prompt: 'Permit repeated calls within the total deadline',
+    images: [], outputSchema: null, runtimePolicy: inspectPolicy })
+  assert.equal(events.filter((event) => event.params?.requestId === repeatRequest && event.params?.event?.activity?.type === 'tool').length, 3, 'time-bounded inspection retained a repetition limit')
+  await rpc('thread/close', { threadId: repeatSegment.threadId })
+
+  const timeoutSegment = await rpc('thread/open', { ...binding, flowSessionId: 'absolute-stage-timeout' })
+  const timeoutRequest = { threadId: timeoutSegment.threadId, requestId: randomUUID(), prompt: 'Bound a held model stream',
+    images: [], outputSchema: null, runtimePolicy: { ...inspectPolicy, timeoutSecs: 1 } }
+  responses.push({ hold: true })
+  const timeoutStarted = Date.now()
+  await assert.rejects(rpc('turn/start', timeoutRequest), /timed out|deadline/i)
+  assert.ok(Date.now() - timeoutStarted < 10000, 'a held stream outlived its absolute deadline')
+  assert.notEqual((await rpc('turn/status', { requestId: timeoutRequest.requestId })).status, 'completed')
+  const callsAfterTimeout = requests.length
+  await assert.rejects(rpc('turn/start', timeoutRequest), /not replayed/)
+  assert.equal(requests.length, callsAfterTimeout)
+  await rpc('thread/close', { threadId: timeoutSegment.threadId })
+
+  if (process.platform === 'win32') {
+    const timedToolSegment = await rpc('thread/open', { ...binding, flowSessionId: 'timeout-stops-command', role: 'project' })
+    responses.push(tool('exec_command', { cmd: "Start-Sleep -Seconds 4; Set-Content timeout-marker.txt 'late'", shell: 'powershell', login: false, max_output_tokens: 50 }))
+    await assert.rejects(rpc('turn/start', { threadId: timedToolSegment.threadId, requestId: randomUUID(), prompt: 'Cancel the running tool at the stage deadline',
+      images: [], outputSchema: null, runtimePolicy: { phase: 'project', tools: 'workspace', timeoutSecs: 1 } }), /timed out|deadline/i)
+    await new Promise((resolve) => setTimeout(resolve, 4500))
+    await assert.rejects(access(join(project, 'timeout-marker.txt')), 'timed-out command kept running after cancellation')
+    await rpc('thread/close', { threadId: timedToolSegment.threadId })
+  }
+
+  const encoded = { reply: 'Declared', question: null, operations: [{ op: 'declare_diagram', arguments_json: JSON.stringify({ kind: 'process', focus: 'Fixture', regions: [{ ref: 'main', kind: 'process', purpose: 'Fixture', primaryRefs: ['a'] }] }) }] }
+  responses.push(message(JSON.stringify(encoded)))
+  const adapted = await rpc('turn/start', { threadId, requestId: randomUUID(), prompt: 'Check structured operation adaptation', images: [], outputSchema: schemas[0] })
+  assert.equal(JSON.parse(adapted.text).operations[0].kind, 'process')
+  assert.equal(JSON.parse(adapted.text).operations[0].arguments_json, undefined)
+
+  const { threadId: streamingThread } = await rpc('thread/open', { ...binding, flowSessionId: 'gateway-stream', role: 'project' })
+  const streamingRequest = randomUUID()
+  const messageId = randomUUID()
+  responses.push({ events: [
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: messageId, role: 'assistant', content: [] } },
+    { type: 'response.output_text.delta', item_id: messageId, output_index: 0, content_index: 0, delta: 'Gateway ' },
+    { type: 'response.output_text.delta', item_id: messageId, output_index: 0, content_index: 0, delta: 'streamed' },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: messageId, role: 'assistant', content: [{ type: 'output_text', text: 'Gateway streamed' }] } },
+  ] })
+  const streamed = await rpc('turn/start', { threadId: streamingThread, requestId: streamingRequest, prompt: 'Stream this gateway response', images: [], outputSchema: null })
+  assert.equal(streamed.text, 'Gateway streamed')
+  assert.equal(events.filter((event) => event.params?.requestId === streamingRequest && event.params?.event?.kind === 'text').map((event) => event.params.event.text).join(''), streamed.text)
+  await rpc('thread/close', { threadId: streamingThread })
+
+  const { threadId: unavailableThread } = await rpc('thread/open', { ...binding, flowSessionId: 'gateway-unavailable' })
+  const unavailableRequest = randomUUID()
+  responses.push({ failed: true, events: [{ type: 'response.failed', response: { id: randomUUID(), status: 'failed', error: { code: 'model_not_found', message: 'Gateway model is not available' } } }] })
+  await assert.rejects(rpc('turn/start', { threadId: unavailableThread, requestId: unavailableRequest, prompt: 'Report a returned model error', images: [], outputSchema: schemas[0] }), /model is not available/)
+  assert.notEqual((await rpc('turn/status', { requestId: unavailableRequest })).status, 'completed')
+  await rpc('thread/close', { threadId: unavailableThread })
+
+  const { threadId: wrappedErrorThread } = await rpc('thread/open', { ...binding, flowSessionId: 'gateway-wrapped-error' })
+  const wrappedRequest = randomUUID()
+  const wrappedMessage = 'output_config.format.schema: Invalid JSON Schema in output format: None is not of type array'
+  responses.push({ status: 400, body: { error: { message: 'Provider returned error', code: 400, metadata: {
+    raw: JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: wrappedMessage } }), provider_name: 'Google',
+  } }, user_id: 'private-fixture-account' } })
+  await assert.rejects(rpc('turn/start', { threadId: wrappedErrorThread, requestId: wrappedRequest, prompt: 'Report a wrapped provider error', images: [], outputSchema: schemas[0] }), (error) => {
+    assert.ok(error.message.includes(wrappedMessage))
+    assert.ok(!error.message.includes('private-fixture-account'))
+    assert.ok(!error.message.includes('"metadata"'))
+    return true
+  })
+  const wrappedReceipt = await rpc('turn/status', { requestId: wrappedRequest })
+  assert.ok(wrappedReceipt.error.includes(wrappedMessage))
+  assert.ok(!wrappedReceipt.error.includes('private-fixture-account'))
+  await rpc('thread/close', { threadId: wrappedErrorThread })
 
   responses.push(tool('request_user_input', { questions: [{ id: 'direction', header: 'Direction', question: 'Choose a test direction', options: [{ label: 'Left', description: 'Use the left route' }, { label: 'Right', description: 'Use the right route' }] }] }), message(envelope))
   let resolveInput
@@ -297,7 +446,7 @@ try {
   old.kill()
   await stopped
   child = startChild()
-  await rpc('initialize', { protocolVersion: 'flowm.harness/6' })
+  await rpc('initialize', { protocolVersion: 'flowm.harness/8' })
   const restored = await rpc('session/read', { projectRoot: project, sessionId: logical.id })
   assert.equal(restored.meta.id, logical.id)
   assert.equal(restored.activeTurnId, null)

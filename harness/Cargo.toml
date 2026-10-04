@@ -28,6 +28,7 @@ codex-rollout = { path = "../third_party/codex/codex-rs/rollout" }
 codex-thread-store = { path = "../third_party/codex/codex-rs/thread-store" }
 dirs = "6"
 http = "1"
+futures = "0.3"
 jsonwebtoken = "9.3.1"
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "stream"] }

@@ -410,7 +410,7 @@ impl Service {
             )
             .await?;
         self.sessions.append(&live.binding.project_root, &live.binding.flow_session_id, format!("input:{}",request.request_id), Some(turn.clone()),
-            "model_input", json!({"requestId":request.request_id,"threadId":request.thread_id,"role":live.binding.role,"prompt":request.prompt,"images":images,"outputSchema":request.output_schema}), true).await?;
+            "model_input", json!({"requestId":request.request_id,"threadId":request.thread_id,"role":live.binding.role,"prompt":request.prompt,"images":images,"outputSchema":request.output_schema,"runtimePolicy":request.runtime_policy}), true).await?;
         let mut receipt = Receipt {
             request_id: request.request_id.clone(),
             thread_id: request.thread_id.clone(),

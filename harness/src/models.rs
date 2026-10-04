@@ -96,7 +96,15 @@ pub async fn fetch_catalog_response(profile: &Profile, auth: HeaderMap) -> Resul
             provider,
             Arc::new(DiscoveryAuth(auth)),
         )
-        .list_models_raw(request_url, headers, Some(1024 * 1024))
+        .list_models_raw(
+            request_url,
+            headers,
+            Some(if profile.kind == ProviderKind::Gateway {
+                8 * 1024 * 1024
+            } else {
+                1024 * 1024
+            }),
+        )
         .await
         .map_err(|error| match error {
             codex_api::ApiError::Transport(codex_api::TransportError::Http { status, .. }) => {
@@ -167,11 +175,14 @@ impl ModelCatalog {
                 continue;
             }
             let existing = runtime_models.iter().position(|model| model.slug == id);
-            let model = decode_model_info(
+            let mut model = decode_model_info(
                 id,
                 entry,
                 existing.map(|index| runtime_models[index].clone()),
             )?;
+            if profile.kind == ProviderKind::Gateway {
+                crate::provider::normalize_gateway_metadata(entry, &mut model);
+            }
             if let Some(index) = existing {
                 runtime_models[index] = model;
             } else {
@@ -450,6 +461,110 @@ mod tests {
         assert_eq!(runtime.slug, "claude-route");
         assert_eq!(runtime.tool_mode, Some(ToolMode::Direct));
         assert!(runtime.context_window.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn openrouter_metadata_reaches_the_same_catalog_used_for_execution() -> Result<()> {
+        let mut profile = profile(ProviderKind::Gateway);
+        profile.auth_kind = AuthKind::Bearer;
+        profile.base_url = "https://openrouter.ai/api/v1".into();
+        let catalog = ModelCatalog::from_response(
+            &profile,
+            serde_json::json!({"data":[{
+                "id":"anthropic/claude-fixture", "name":"Anthropic: Claude fixture",
+                "context_length":1_000_000, "top_provider":{"context_length":200_000},
+                "architecture":{"input_modalities":["text","image","file"]},
+                "supported_parameters":["tools","structured_outputs","verbosity"],
+                "reasoning":{"supported_efforts":["high","medium","future-effort"],"default_effort":"high"}
+            }]}),
+        )?;
+        assert_eq!(catalog.models[0].label, "Anthropic: Claude fixture");
+        let model = catalog.model_info(&profile, &catalog.models[0].id)?;
+        assert_eq!(model.context_window, Some(200_000));
+        assert_eq!(model.max_context_window, Some(200_000));
+        assert_eq!(
+            model.input_modalities,
+            vec![
+                codex_protocol::openai_models::InputModality::Text,
+                codex_protocol::openai_models::InputModality::Image,
+            ]
+        );
+        assert!(model.support_verbosity);
+        assert_eq!(
+            model.default_reasoning_level,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+        assert_eq!(model.supported_reasoning_levels.len(), 3);
+        assert_eq!(
+            model.supported_reasoning_levels[2].effort.as_str(),
+            "future-effort"
+        );
+        assert!(
+            catalog
+                .runtime_catalog()?
+                .models
+                .iter()
+                .any(|entry| entry == &model)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_preserves_native_metadata_and_respects_text_only_models() -> Result<()> {
+        let mut profile = profile(ProviderKind::Gateway);
+        profile.auth_kind = AuthKind::None;
+        let catalog = ModelCatalog::from_response(
+            &profile,
+            serde_json::json!({"data":[{
+                "id":"native-route", "name":"Other name", "display_name":"Native name",
+                "context_window":32_000, "max_context_window":32_000, "context_length":999_999,
+                "input_modalities":["text"], "architecture":{"input_modalities":["image"]},
+                "default_reasoning_level":"low", "reasoning":{"default_effort":"high"}
+            }, {
+                "id":"text-route", "name":"Text route", "context_length":-1,
+                "architecture":{"input_modalities":["text"]}
+            }]}),
+        )?;
+        let native = catalog.model_info(&profile, "native-route")?;
+        assert_eq!(native.display_name, "Native name");
+        assert_eq!(native.context_window, Some(32_000));
+        assert_eq!(
+            native.input_modalities,
+            vec![codex_protocol::openai_models::InputModality::Text]
+        );
+        assert_eq!(
+            native.default_reasoning_level,
+            Some(codex_protocol::openai_models::ReasoningEffort::Low)
+        );
+        let text = catalog.model_info(&profile, "text-route")?;
+        assert!(text.context_window.is_none());
+        assert!(text.max_context_window.is_none());
+        assert_eq!(text.input_modalities, native.input_modalities);
+        assert!(!text.support_verbosity);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn large_gateway_directories_are_bounded_without_a_one_megabyte_cutoff() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let body =
+            serde_json::json!({"data":[{"id":"large-route", "description":"x".repeat(1_100_000)}]});
+        let app = axum::Router::new().route(
+            "/api/v1/models",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { axum::Json(body) }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut profile = profile(ProviderKind::Gateway);
+        profile.auth_kind = AuthKind::None;
+        profile.base_url = format!("http://{address}/api/v1");
+        let response = fetch_catalog_response(&profile, HeaderMap::new()).await;
+        server.abort();
+        assert_eq!(response?["data"][0]["id"], "large-route");
         Ok(())
     }
 

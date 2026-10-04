@@ -15,11 +15,15 @@ describe.each(['openai', 'gateway'])('%s canvas conformance', (profileId) => {
     build.messages = [{ role: 'user', content: 'Draw it', image: 'data:image/png;base64,test' }]
     await adapter.runTurn(build, {})
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ system: build.system, role: 'canvas', profileId }))
-    expect(run.mock.calls[0][1]).toEqual(['data:image/png;base64,test'])
+    expect(run.mock.calls[0][4]).toMatchObject({ phase: 'inspect', tools: 'inspect' })
+    expect(run.mock.calls[0][2]).toBeNull()
+    expect(run.mock.calls[1][1]).toEqual(['data:image/png;base64,test'])
+    expect(run.mock.calls[1][4]).toMatchObject({ phase: 'build', tools: 'none', timeoutSecs: 600 })
     const finalize = { ...params('finalize'), messages: [...build.messages, { role: 'user' as const, content: 'Give the final explanation' }] }
     await adapter.runTurn(finalize, {})
-    expect(run.mock.calls[1][0]).toBe('Give the final explanation')
-    expect(run.mock.calls[1][2].properties.operations.maxItems).toBe(0)
+    expect(run.mock.calls[2][0]).toBe('Give the final explanation')
+    expect(run.mock.calls[2][2].properties.operations.maxItems).toBe(0)
+    expect(run.mock.calls[2][4]).toMatchObject({ phase: 'finalize', tools: 'none' })
   })
   it('projects valid operations and refuses malformed JSON and finalize operations', () => {
     const result = parseCanvasResult('{"reply":"A","question":null,"operations":[{"op":"create_geo","shape":"rectangle","text":"A","x":null}]}', params(), 'stable-request')
@@ -30,10 +34,10 @@ describe.each(['openai', 'gateway'])('%s canvas conformance', (profileId) => {
     expect(() => parseCanvasResult('{"reply":"bad","operations":[null]}', params(), 'r')).toThrow('Incomplete')
   })
   it('does not resend completed input after invalid model output', async () => {
-    const run = vi.fn().mockResolvedValueOnce({ requestId: 'r1', status: 'completed', text: 'invalid' }).mockResolvedValueOnce({ requestId: 'r2', status: 'completed', text: '{"reply":"done","question":null,"operations":[]}' })
+    const run = vi.fn().mockResolvedValueOnce({ requestId: 'inspect', status: 'completed', text: 'Source facts' }).mockResolvedValueOnce({ requestId: 'r1', status: 'completed', text: 'invalid' }).mockResolvedValueOnce({ requestId: 'r2', status: 'completed', text: '{"reply":"done","question":null,"operations":[]}' })
     const adapter = new CanvasTurnProjection(new HarnessTurn({ projectRoot: '/p', flowSessionId: 's', profileId, model: 'model', role: 'canvas', credentialVersion: 1 }, () => ({ run }) as unknown as HarnessSession))
     await expect(adapter.runTurn(params(), {})).rejects.toThrow('valid canvas JSON')
     await adapter.runTurn({ ...params(), messages: [...params().messages, { role: 'user', content: 'Try again' }] }, {})
-    expect(run.mock.calls[1][0]).toBe('Try again')
+    expect(run.mock.calls[2][0]).toBe('Try again')
   })
 })

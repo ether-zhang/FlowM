@@ -161,10 +161,22 @@ export class HarnessConnections {
   connect = async (id: string): Promise<void> => {
     await this.refresh()
     if (this.state.error) throw new Error(this.state.error)
-    if (!this.state.profiles.some((profile) => profile.id === id && profile.signedIn)) throw new Error('The connection needs valid credentials before it can be used')
+    const profile = this.state.profiles.find((profile) => profile.id === id && profile.signedIn)
+    if (!profile) throw new Error('The connection needs valid credentials before it can be used')
     if (this.state.profile && this.state.profile.id !== id) throw new Error('Sign out of the active connection first')
-    this.activate(id)
-    await this.refresh()
+    const revision = ++this.revision
+    this.update({ loading: true, error: null, catalogError: null })
+    try {
+      const catalog = await this.client.models(id)
+      if (revision !== this.revision) throw new Error('Connection changed while discovering models')
+      this.publishCatalog(profile, catalog, this.savedModels()[`${profile.id}:${profile.credentialVersion}`] || profile.model)
+      if (!this.state.connection) throw new Error(this.state.catalogError || 'This connection returned no models')
+      this.activate(id)
+    } catch (error) {
+      if (revision === this.revision) this.update({ loading: false, profile: null, connection: null, catalog: null, model: '',
+        error: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
   }
   login = async (id: string): Promise<void> => {
     if (this.state.profile || this.state.loginPending) throw new Error('Sign out of the active connection first')

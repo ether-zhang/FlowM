@@ -4585,6 +4585,7 @@ dependencies = [
  "codex-rollout",
  "codex-thread-store",
  "dirs",
+ "futures",
  "http 1.4.0",
  "jsonwebtoken",
  "keyring",

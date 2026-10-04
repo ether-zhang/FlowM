@@ -46,6 +46,8 @@ pub struct OpenThread {
     pub system: String,
     #[serde(default)]
     pub user_turn_id: Option<String>,
+    #[serde(default)]
+    pub tools_disabled: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -58,6 +60,8 @@ pub struct StartTurn {
     pub output_schema: Option<Value>,
     #[serde(default)]
     pub user_turn_id: Option<String>,
+    #[serde(default)]
+    pub runtime_policy: Option<crate::execution::RuntimePolicy>,
 }
 
 enum Interaction {
@@ -83,6 +87,7 @@ pub struct LiveThread {
     pub run: Mutex<()>,
     interactions: Mutex<HashMap<String, Interaction>>,
     pub cancelled: AtomicBool,
+    closed: AtomicBool,
 }
 
 pub struct Registry {
@@ -94,7 +99,8 @@ pub struct Registry {
     groups: Mutex<HashMap<String, Arc<ThreadManager>>>,
     pub threads: RwLock<HashMap<String, Arc<LiveThread>>>,
     creation: Mutex<()>,
-    bridges: Mutex<HashMap<String, crate::responses_bridge::ResponsesBridge>>,
+    providers: crate::provider::Providers,
+    execution: Arc<crate::execution::ExecutionControl>,
     events: mpsc::Sender<Value>,
 }
 
@@ -116,6 +122,8 @@ impl Registry {
     ) -> Self {
         Self {
             store,
+            providers: crate::provider::Providers::new(auth.clone()),
+            execution: Arc::new(crate::execution::ExecutionControl::default()),
             auth,
             models,
             sessions,
@@ -123,7 +131,6 @@ impl Registry {
             groups: Mutex::new(HashMap::new()),
             threads: RwLock::new(HashMap::new()),
             creation: Mutex::new(()),
-            bridges: Mutex::new(HashMap::new()),
             events,
         }
     }
@@ -206,6 +213,7 @@ impl Registry {
                 blocked_request_id: None,
                 context_sequence: revision,
                 native_id: None,
+                tools_disabled: request.tools_disabled,
             }
         };
         validate_binding(&binding, &request, &profile)?;
@@ -233,9 +241,11 @@ impl Registry {
             }
         };
         let mut options = StartThreadOptions::new(config);
-        options
-            .thread_extension_init
-            .insert(tool_policy(&binding.role));
+        let mut tools = tool_policy(&binding.role);
+        if binding.tools_disabled {
+            tools.allowed_tools = Some(Vec::new());
+        }
+        options.thread_extension_init.insert(tools);
         options.user_instructions = Some(LoadedUserInstructions::default());
         if let Some(path) = &binding.rollout_path {
             let path = tokio::fs::canonicalize(path)
@@ -286,6 +296,7 @@ impl Registry {
                 run: Mutex::new(()),
                 interactions: Mutex::new(HashMap::new()),
                 cancelled: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
             }),
         );
         Ok(binding_result(&binding))
@@ -308,53 +319,12 @@ impl Registry {
                 Role::Project => "project",
             });
         tokio::fs::create_dir_all(&home).await?;
-        let provider_id = if profile.kind == crate::state::ProviderKind::Openai {
-            "flowm-openai"
-        } else {
-            "flowm"
-        };
-        let base_url = if profile.auth_kind == crate::state::AuthKind::Chatgpt {
-            let key = format!("{}:{}", profile.id, profile.credential_version);
-            let mut bridges = self.bridges.lock().await;
-            if !bridges.contains_key(&key) {
-                bridges.insert(
-                    key.clone(),
-                    crate::responses_bridge::ResponsesBridge::start(
-                        self.auth.clone(),
-                        profile.clone(),
-                    )
-                    .await?,
-                );
-            }
-            bridges[&key].base_url.clone()
-        } else {
-            profile.base_url.clone()
-        };
+        let provider = self.providers.resolve(profile).await?;
+        let provider_id = provider.id;
         let mut overrides = vec![
             (
                 format!("model_providers.{provider_id}"),
-                toml::Value::try_from(codex_model_provider_info::ModelProviderInfo {
-                    name: if profile.kind == crate::state::ProviderKind::Openai {
-                        "FlowM OpenAI"
-                    } else {
-                        "FlowM gateway"
-                    }
-                    .into(),
-                    base_url: Some(base_url),
-                    http_headers: Some(
-                        crate::provider::request_headers()
-                            .iter()
-                            .map(|(name, value)| {
-                                (name.to_string(), value.to_str().unwrap().to_owned().into())
-                            })
-                            .collect(),
-                    ),
-                    requires_openai_auth: true,
-                    request_max_retries: Some(0),
-                    stream_max_retries: Some(0),
-                    stream_idle_timeout_ms: Some(180_000),
-                    ..Default::default()
-                })?,
+                toml::Value::try_from(provider.info)?,
             ),
             ("web_search".into(), toml::Value::String("disabled".into())),
             (
@@ -517,19 +487,7 @@ impl Registry {
     async fn manager(&self, config: &Config, profile: Profile) -> Result<Arc<ThreadManager>> {
         let state_db = init_state_db(config).await;
         let auth_manager = AuthManager::shared_from_config(config, false).await?;
-        let request_auth = if profile.auth_kind == crate::state::AuthKind::Chatgpt {
-            let key = format!("{}:{}", profile.id, profile.credential_version);
-            Some(
-                self.bridges
-                    .lock()
-                    .await
-                    .get(&key)
-                    .context("ChatGPT request bridge is missing")?
-                    .request_auth(),
-            )
-        } else {
-            None
-        };
+        let request_auth = self.providers.request_auth(&profile).await?;
         auth_manager
             .set_external_auth(Arc::new(AuthBridge::new(
                 self.auth.clone(),
@@ -550,6 +508,8 @@ impl Registry {
             )
             .await?,
         );
+        let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+        extensions.model_request_contributor(self.execution.clone());
         Ok(Arc::new(ThreadManager::new(
             config,
             auth_manager.clone(),
@@ -557,7 +517,7 @@ impl Registry {
             CodexAppsToolsCache::default(),
             SessionSource::Exec,
             environment,
-            Arc::new(ExtensionRegistryBuilder::<Config>::new().build()),
+            Arc::new(extensions.build()),
             Arc::new(NoUserInstructions),
             None,
             passthrough_image_store(),
@@ -582,6 +542,58 @@ impl Registry {
         if live.cancelled.load(Ordering::Acquire) {
             bail!("Request cancelled before model submission");
         }
+        let profile = self.store.profile(&live.binding.profile_id).await?;
+        let policy = request.runtime_policy.clone().unwrap_or_else(|| {
+            crate::execution::RuntimePolicy::default_for(
+                &live.binding.role,
+                live.binding.tools_disabled,
+            )
+        });
+        policy.validate(&live.binding.role, live.binding.tools_disabled)?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(policy.timeout_secs);
+        let _execution = self
+            .execution
+            .begin(live.native_id.to_string(), policy.clone(), deadline);
+        let result =
+            tokio::time::timeout_at(deadline, self.run_until(live, request, profile, deadline))
+                .await;
+        let timed_out = result.is_err() || tokio::time::Instant::now() >= deadline;
+        if timed_out {
+            let _ = live.thread.submit(Op::Interrupt).await;
+            let stopped =
+                tokio::time::timeout(Duration::from_secs(15), live.thread.shutdown_and_wait())
+                    .await;
+            live.interactions.lock().await.clear();
+            if !matches!(stopped, Ok(Ok(()))) {
+                bail!(
+                    "{} Native cleanup could not be confirmed; inspect active processes.",
+                    policy.timeout_message()
+                );
+            }
+            live.closed.store(true, Ordering::Release);
+            let _ = live.manager.remove_thread(&live.native_id).await;
+            bail!("{}", policy.timeout_message());
+        }
+        result.expect("execution completed before its deadline")
+    }
+
+    async fn run_until(
+        &self,
+        live: &LiveThread,
+        request: &StartTurn,
+        profile: Profile,
+        deadline: tokio::time::Instant,
+    ) -> Result<(String, String)> {
+        let output = if profile.kind == crate::state::ProviderKind::Gateway
+            && live.binding.role == Role::Canvas
+        {
+            request
+                .output_schema
+                .as_ref()
+                .and_then(crate::provider::GatewayCanvasOutput::from_schema)
+        } else {
+            None
+        };
         let mut content = vec![UserInput::Text {
             text: request.prompt.clone(),
             text_elements: vec![],
@@ -605,7 +617,10 @@ impl Registry {
                     client_id: Some(request.request_id.clone()),
                 })
                 .on_start(TurnStartOptions {
-                    final_output_json_schema: request.output_schema.clone(),
+                    final_output_json_schema: output
+                        .as_ref()
+                        .map(|output| output.schema.clone())
+                        .or_else(|| request.output_schema.clone()),
                     ..Default::default()
                 }),
             )
@@ -627,11 +642,27 @@ impl Registry {
         receipt.status = "running".into();
         receipt.native_turn_id = Some(native_turn.clone());
         self.store.write_receipt(&receipt).await?;
-        let result = self.collect(live, request, &native_turn).await;
+        let result = self
+            .collect(
+                live,
+                request,
+                &native_turn,
+                profile.kind == crate::state::ProviderKind::Gateway,
+                deadline,
+            )
+            .await;
         live.interactions.lock().await.clear();
         // Flush the durable history before acknowledging a successful result.
         live.thread.flush_rollout().await?;
-        result.map(|text| (native_turn, text))
+        let text = result?;
+        Ok((
+            native_turn,
+            if let Some(output) = output {
+                output.decode(&text)?
+            } else {
+                text
+            },
+        ))
     }
 
     async fn collect(
@@ -639,8 +670,9 @@ impl Registry {
         live: &LiveThread,
         request: &StartTurn,
         native_turn: &str,
+        gateway: bool,
+        deadline: tokio::time::Instant,
     ) -> Result<String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1800);
         let mut error: Option<String> = None;
         let mut output_chars = 0usize;
         loop {
@@ -649,32 +681,34 @@ impl Registry {
             }
             if tokio::time::Instant::now() >= deadline {
                 let _ = live.thread.submit(Op::Interrupt).await;
-                bail!("Request exceeded the 30 minute limit");
+                bail!("Runtime execution deadline reached; no automatic replay was performed");
             }
-            let waiting = !live.interactions.lock().await.is_empty();
-            let timeout = if waiting {
-                Duration::from_secs(600)
-            } else {
-                Duration::from_secs(240)
-            };
-            let event = match tokio::time::timeout(timeout, live.thread.next_event()).await {
+            let event = match tokio::time::timeout_at(deadline, live.thread.next_event()).await {
                 Ok(event) => event?,
                 Err(_) => {
                     let _ = live.thread.submit(Op::Interrupt).await;
-                    bail!(
-                        "Request became idle or its interaction expired; no automatic replay was performed"
-                    );
+                    bail!("Runtime execution deadline reached; no automatic replay was performed");
                 }
             };
             match event.msg {
                 EventMsg::TurnComplete(done) if done.turn_id == native_turn => {
-                    if let Some(failure) = done.error { bail!("{}", failure.message); }
+                    if let Some(failure) = done.error {
+                        let message = if gateway { crate::provider::gateway_error_message(&failure.message) } else { failure.message };
+                        bail!("{message}");
+                    }
                     if let Some(error) = error { bail!("{error}"); }
                     return done.last_agent_message.context("Model completed without a final answer");
                 }
                 EventMsg::TurnAborted(_) => bail!("Request was interrupted"),
-                EventMsg::Error(failure) => { error = Some(failure.message.clone()); self.activity(request, json!({"type":"warning","id":event.id,"text":failure.message})).await?; }
-                EventMsg::Warning(warning) => self.activity(request, json!({"type":"warning","id":event.id,"text":warning.message})).await?,
+                EventMsg::Error(failure) => {
+                    let message = if gateway { crate::provider::gateway_error_message(&failure.message) } else { failure.message };
+                    error = Some(message.clone());
+                    self.activity(request, json!({"type":"warning","id":event.id,"text":message})).await?;
+                }
+                EventMsg::Warning(warning) => {
+                    let message = if gateway { crate::provider::gateway_error_message(&warning.message) } else { warning.message };
+                    self.activity(request, json!({"type":"warning","id":event.id,"text":message})).await?;
+                }
                 EventMsg::ReasoningContentDelta(delta) => self.activity(request, json!({"type":"thinking_delta","id":delta.item_id,"delta":delta.delta})).await?,
                 EventMsg::AgentMessageContentDelta(delta) => {
                     output_chars += delta.delta.len();
@@ -822,6 +856,9 @@ impl Registry {
 
     pub async fn cancel(&self, thread_id: &str) -> Result<()> {
         let live = self.live(thread_id).await?;
+        if live.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         live.cancelled.store(true, Ordering::Release);
         live.interactions.lock().await.clear();
         live.thread.submit(Op::Interrupt).await?;
@@ -836,10 +873,12 @@ impl Registry {
         let live = self.threads.write().await.remove(thread_id);
         if let Some(live) = live {
             live.cancelled.store(true, Ordering::Release);
-            live.thread.submit(Op::Interrupt).await?;
-            tokio::time::timeout(Duration::from_secs(15), live.thread.shutdown_and_wait())
-                .await
-                .context("Thread shutdown timed out")??;
+            if !live.closed.swap(true, Ordering::AcqRel) {
+                live.thread.submit(Op::Interrupt).await?;
+                tokio::time::timeout(Duration::from_secs(15), live.thread.shutdown_and_wait())
+                    .await
+                    .context("Thread shutdown timed out")??;
+            }
             let _ = live.manager.remove_thread(&live.native_id).await;
         }
         Ok(())
@@ -861,10 +900,7 @@ impl Registry {
             .lock()
             .await
             .retain(|key, _| !key.starts_with(&format!("{profile}:")));
-        self.bridges
-            .lock()
-            .await
-            .retain(|key, _| !key.starts_with(&format!("{profile}:")));
+        self.providers.close_profile(profile).await;
         Ok(())
     }
 
@@ -997,13 +1033,14 @@ fn manager_key(
     // A manager owns a static catalog. New threads must not inherit obsolete capabilities
     // merely because their model ID and credentials match an older manager's snapshot.
     Ok(format!(
-        "{}:{}:{}:{:?}:{}:{}",
+        "{}:{}:{}:{:?}:{}:{}:{}",
         binding.profile_id,
         binding.credential_version,
         payload_hash(&json!(binding.project_root)),
         binding.role,
         binding.model,
-        payload_hash(&serde_json::to_value(models)?)
+        payload_hash(&serde_json::to_value(models)?),
+        binding.tools_disabled
     ))
 }
 fn validate_binding(binding: &Binding, request: &OpenThread, profile: &Profile) -> Result<()> {
@@ -1014,6 +1051,7 @@ fn validate_binding(binding: &Binding, request: &OpenThread, profile: &Profile) 
         || binding.role != request.role
         || binding.model != request.model
         || binding.system != request.system
+        || binding.tools_disabled != request.tools_disabled
     {
         bail!(
             "Session binding changed (project, FlowM session, provider, account, role, model, or instructions); create a separate harness thread"
@@ -1094,6 +1132,7 @@ mod tests {
                 blocked_request_id: None,
                 context_sequence: 0,
                 native_id: None,
+                tools_disabled: false,
             };
             let catalog = crate::models::ModelCatalog::from_response(
                 &profile,

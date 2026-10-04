@@ -1,5 +1,5 @@
 import type { AgentQuestionAnswer } from '../agent'
-import type { HarnessModelCatalog, HarnessSessionMeta, HarnessSessionPage, HarnessConversationExport, HarnessSessionEvent } from './types'
+import type { HarnessModelCatalog, HarnessSessionMeta, HarnessSessionPage, HarnessConversationExport, HarnessSessionEvent, HarnessRuntimePolicy } from './types'
 import { parseModelCatalog } from './models'
 import { startHarness } from './process'
 import { HARNESS_PROTOCOL, type HarnessBinding, type HarnessEvent, type HarnessNotification, type HarnessProfile, type HarnessTransport, type HarnessTransportFactory, type TurnReceipt } from './types'
@@ -180,12 +180,12 @@ export class HarnessClient {
     return this.request('session/record', { projectRoot, sessionId, turnId, eventId: crypto.randomUUID(), event })
   }
 
-  async runTurn(threadId: string, requestId: string, prompt: string, images: string[], outputSchema: unknown, onEvent: (event: HarnessEvent) => void, userTurnId?: string): Promise<TurnReceipt> {
+  async runTurn(threadId: string, requestId: string, prompt: string, images: string[], outputSchema: unknown, onEvent: (event: HarnessEvent) => void, userTurnId?: string, runtimePolicy?: HarnessRuntimePolicy): Promise<TurnReceipt> {
     try { await this.ready() } catch (error) { throw new HarnessNotSubmittedError(error) }
     if (this.turns.has(requestId)) throw new Error('This request is already in flight')
     this.turns.set(requestId, { threadId, onEvent })
     try {
-      const result = await this.raw<TurnReceipt>('turn/start', { threadId, requestId, prompt, images, outputSchema: outputSchema ?? null, ...(userTurnId ? { userTurnId } : {}) }, 31 * 60_000)
+      const result = await this.raw<TurnReceipt>('turn/start', { threadId, requestId, prompt, images, outputSchema: outputSchema ?? null, ...(userTurnId ? { userTurnId } : {}), ...(runtimePolicy ? { runtimePolicy } : {}) }, 31 * 60_000)
       if (result.status !== 'completed' || typeof result.text !== 'string') throw new Error(result.error || 'Harness did not return a completed model response')
       return result
     } finally { this.turns.delete(requestId) }

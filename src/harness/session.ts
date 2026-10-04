@@ -1,6 +1,7 @@
 import type { AgentQuestionAnswer } from '../agent'
 import { HarnessClient, HarnessNotSubmittedError, harnessClient } from './client'
-import type { HarnessBinding, HarnessEvent, TurnReceipt } from './types'
+import type { HarnessBinding, HarnessEvent, TurnReceipt, HarnessRuntimePolicy } from './types'
+import { runtimePolicy } from './execution'
 import { routeHarnessEvent, type HarnessCallbacks } from './events'
 
 export class HarnessSession {
@@ -30,7 +31,7 @@ export class HarnessSession {
     return this.opening
   }
 
-  async run(prompt: string, images: string[], schema: unknown, onEvent: (event: HarnessEvent) => void): Promise<TurnReceipt> {
+  async run(prompt: string, images: string[], schema: unknown, onEvent: (event: HarnessEvent) => void, policy?: HarnessRuntimePolicy): Promise<TurnReceipt> {
     if (this.disposed) throw new Error('Harness session is closed')
     const binding = this.binding()
     if (this.userTurn !== binding.userTurnId && !this.inFlight) {
@@ -45,10 +46,10 @@ export class HarnessSession {
     this.inFlight = requestId
     let submitted = false
     try {
-      await this.open(binding)
+      await this.open({ ...binding, ...(policy ? { toolsDisabled: policy.tools === 'none' } : {}) })
       if (this.cancelled || this.disposed) throw new Error('Harness request cancelled before model submission')
       submitted = true
-      const receipt = await this.client.runTurn(this.thread!, requestId, prompt, images, schema, onEvent, binding.userTurnId)
+      const receipt = await this.client.runTurn(this.thread!, requestId, prompt, images, schema, onEvent, binding.userTurnId, policy)
       return receipt
     } catch (error) {
       if (!submitted || error instanceof HarnessNotSubmittedError) throw error
@@ -75,7 +76,7 @@ export class HarnessSession {
       const result = await this.run(input.prompt, input.images ?? [], null, (event) => {
         if (event.kind === 'text') streamed += event.text
         routeHarnessEvent(event, callbacks)
-      })
+      }, runtimePolicy('project'))
       if (result.text && !streamed.endsWith(result.text)) callbacks.onText?.(result.text.startsWith(streamed) ? result.text.slice(streamed.length) : result.text, 'model')
       callbacks.onActivity?.({ type: 'status', status: 'completed' }, 'model')
     } catch (error) {

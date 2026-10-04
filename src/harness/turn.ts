@@ -3,6 +3,7 @@ import { HarnessSession } from './session'
 import { routeHarnessEvent } from './events'
 import type { HarnessBinding, TurnReceipt } from './types'
 import type { HarnessCallbacks } from './events'
+import { inspectionRequest, runtimePolicy } from './execution'
 
 export interface HarnessMessage {
   role: 'user' | 'assistant' | 'tool'
@@ -10,6 +11,7 @@ export interface HarnessMessage {
   image?: string
 }
 export interface HarnessTurnInput {
+  phase: 'build' | 'review' | 'finalize'
   system: string
   messages: readonly HarnessMessage[]
   outputSchema: unknown
@@ -34,6 +36,7 @@ export class HarnessTurn implements HarnessTurnPort {
   private cancelled = false
   private disposed = false
   private cursorTurn: string | undefined
+  private inspected = false
   private readonly binding: (system: string) => HarnessBinding
   private readonly createSession: (binding: HarnessBinding) => HarnessSession
   constructor(binding: Omit<HarnessBinding, 'system'> | ((system: string) => HarnessBinding),
@@ -45,7 +48,7 @@ export class HarnessTurn implements HarnessTurnPort {
   async run(input: HarnessTurnInput, callbacks: HarnessCallbacks): Promise<HarnessTurnResult> {
     if (this.disposed) throw new Error('Harness turn is closed')
     const binding = this.binding(input.system)
-    if (this.cursorTurn !== binding.userTurnId) { this.sent = 0; this.cancelled = false; this.cursorTurn = binding.userTurnId }
+    if (this.cursorTurn !== binding.userTurnId) { this.sent = 0; this.cancelled = false; this.inspected = false; this.cursorTurn = binding.userTurnId }
     if (this.cancelled) throw new Error('Harness turn was cancelled')
     if (!this.session) {
       this.system = input.system
@@ -54,8 +57,14 @@ export class HarnessTurn implements HarnessTurnPort {
     const delivered = input.messages.slice(this.sent)
     const prompt = delivered.filter((message) => message.role !== 'assistant').map((message) => message.content).join('\n\n')
     const images = delivered.flatMap((message) => message.role === 'user' && message.image ? [message.image] : [])
+    if (input.phase === 'build' && !this.inspected) {
+      await this.session.run(inspectionRequest(prompt), [], null,
+        (event) => routeHarnessEvent(event, callbacks), runtimePolicy('inspect'))
+      this.inspected = true
+    }
+    if (this.cancelled || this.disposed) throw new Error('Harness canvas workflow stopped before output')
     callbacks.onDebug?.(`FlowM harness · ${binding.role} · model: ${binding.model}\n${prompt}`)
-    const receipt = await this.session.run(prompt, images, input.outputSchema, (event) => routeHarnessEvent(event, callbacks))
+    const receipt = await this.session.run(prompt, images, input.outputSchema, (event) => routeHarnessEvent(event, callbacks), runtimePolicy(input.phase))
     this.sent = input.messages.length
     callbacks.onDebug?.(`FlowM harness result · ${receipt.requestId}\n${receipt.text}`)
     return { receipt, delivered }

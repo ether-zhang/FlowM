@@ -14,6 +14,7 @@
     "tauri": "tauri",
     "harness:build": "node scripts/build-harness.mjs",
     "harness:test": "node scripts/test-harness.mjs",
+    "harness:check-gateway": "node scripts/check-gateway.mjs",
     "predev:desktop": "node scripts/build-harness.mjs",
     "dev:desktop": "npm run dev",
     "predesktop:build": "node scripts/build-harness.mjs --release",

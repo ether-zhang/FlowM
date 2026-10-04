@@ -9,7 +9,7 @@ export class CanvasTurnProjection implements CanvasTurnRuntime {
   private readonly turn: HarnessTurnPort
   constructor(turn: HarnessTurnPort) { this.turn = turn }
   async runTurn(params: RunTurnParams, callbacks: TurnCallbacks): Promise<LlmTurn> {
-    const { receipt, delivered } = await this.turn.run({ system: params.system,
+    const { receipt, delivered } = await this.turn.run({ phase: params.phase, system: params.system,
       messages: params.messages.map((message) => message.role === 'tool'
         ? { ...message, content: `Result of the previous operations: ${message.content}` } : message),
       outputSchema: buildCanvasTurnOutputSchema(params.tools, 'strict'),
