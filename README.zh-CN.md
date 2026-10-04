@@ -101,6 +101,16 @@ npm run harness:test
 
 在设置中通过 **GPT 登录** 完成 ChatGPT 授权，或通过 **Gateway** 配置 Responses-compatible 接口（`https://your-gateway/v1`、可选 bearer token）。模型只能从 harness 返回的候选列表选择；GPT 登录包含官方内核候选，可用性由实际请求结果反馈，Gateway 只使用自己的实时目录；网关须同时提供 `GET /v1/models` 和 `POST /v1/responses`。OpenAI API Key 也通过 Gateway 使用，地址为 `https://api.openai.com/v1`。Claude 账号直接登录尚未实现，可通过 Gateway 路由到 Claude 模型。同一时间启用一个连接，旁边显示退出登录按钮。认证由原生 harness 管理。原有 FlowM 对话、画布文件和 `.flowm.json` 导入导出继续保留，旧 CLI ID 仅作为历史引用。Harness 持久化管理逻辑会话，会话身份独立于账号、模型和执行角色；切换连接保留同一段对话，由新的私有执行线程接收共享历史。画布状态和操作仍由框架负责。中断任务只记录状态，不自动重放。实现进度和验收记录见[方案文档](docs/flowm-harness-mvp.md)。
 
+使用 OpenRouter 时，在 Gateway 设置中填入 `https://openrouter.ai/api/v1` 和 OpenRouter API Key，再从返回的目录选择模型。Gateway 与 GPT 登录共用 agent 内核和会话存储；模型名称、上下文长度及输入能力来自网关元数据。OpenRouter 提供 [Responses 接口](https://openrouter.ai/docs/api/api-reference/responses/create-responses)，工具、图片和结构化输出仍取决于所选模型及路由。
+
+不填写凭据、不发起推理，也可以通过原生运行时检查公开模型目录：
+
+```bash
+npm run harness:check-gateway -- https://openrouter.ai/api/v1
+```
+
+这个检查使用独立临时 home，不修改 FlowM 的实际连接。它只验证模型发现，不代表真实模型请求已经通过。
+
 ## 主要开源项目
 
 FlowM 基于多个重要开源项目构建：

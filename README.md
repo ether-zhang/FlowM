@@ -101,6 +101,18 @@ The harness integration test uses a local mock Responses server and temporary pr
 
 In Settings, use **GPT sign in** for ChatGPT authorization, or **Gateway** for a Responses-compatible endpoint (`https://your-gateway/v1`, optional bearer token). Choose from the harness candidate catalog. GPT sign-in includes official kernel candidates, with access errors reported from actual requests; Gateway uses only its own live catalog; gateways must provide `GET /v1/models` as well as `POST /v1/responses`. An OpenAI API key can use Gateway with `https://api.openai.com/v1`. Claude account sign-in is not implemented; Claude models can be routed through Gateway. One connection is active at a time, with sign-out beside it. Credentials belong to FlowM's native runtime. Existing FlowM chat/scene files and portable `.flowm.json` imports/exports remain usable; old CLI IDs are historical references. The harness persists logical conversations independently of account, model and execution role. Switching connections keeps the conversation; a new private execution segment receives its shared history. The framework owns canvas state and operations. Interrupted tasks are recorded and are never automatically replayed. See [the implementation and acceptance record](docs/flowm-harness-mvp.md).
 
+### OpenRouter
+
+For OpenRouter, enter `https://openrouter.ai/api/v1` and your OpenRouter API key in Gateway settings, then choose a model from the returned list. The gateway uses the same agent kernel and conversation store as GPT sign-in. Model names, context limits and input modalities come from the gateway's metadata. OpenRouter documents the [Responses endpoint](https://openrouter.ai/docs/api/api-reference/responses/create-responses); tool, image and structured-output support still depend on the selected model and route.
+
+To check public model discovery through the native runtime without credentials or inference:
+
+```bash
+npm run harness:check-gateway -- https://openrouter.ai/api/v1
+```
+
+This check uses a temporary private home and does not change your FlowM connections. It verifies discovery only; it does not establish that a model request will succeed.
+
 ## Built With
 
 FlowM is built on top of several major open-source projects:
