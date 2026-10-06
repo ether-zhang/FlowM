@@ -24,6 +24,19 @@ function transport() {
 }
 
 describe('FlowM harness connection', () => {
+  it('sends profile configuration without native credential-status fields', async () => {
+    const { client, sent, respond } = transport()
+    const saving = client.saveProfile({ id: 'gateway', name: 'Gateway', kind: 'gateway', baseUrl: 'https://openrouter.ai/api/v1',
+      authKind: 'bearer', model: '', credentialVersion: 1, account: null, subject: null, clientId: null, signedIn: false, hasSavedToken: true })
+    await vi.waitFor(() => expect(sent.some((message) => message.method === 'profiles/save')).toBe(true))
+    const request = sent.find((message) => message.method === 'profiles/save')!
+    expect(request.params.profile).not.toHaveProperty('signedIn')
+    expect(request.params.profile).not.toHaveProperty('hasSavedToken')
+    expect(request.params).not.toHaveProperty('token')
+    respond(0, { id: request.id, result: request.params.profile })
+    await saving
+    await client.dispose()
+  })
   it('invalidates UI catalog snapshots every time the native runtime starts', async () => {
     const { client, listeners } = transport()
     const onRuntime = vi.fn()

@@ -22,7 +22,7 @@ describe('model connection UI', () => {
   it('renders the active account with adjacent sign-out and disables all connection selectors', () => {
     const html = renderToStaticMarkup(createElement(HarnessSettings, {
       profiles: [gpt, gateway], profile: gpt, disabled: false, loginPending: false,
-      onSave: async (profile) => profile, onLogin: async () => {}, onLogout: async () => {}, onConnect: async () => {}, onCancelLogin: async () => {}, text: uiText.zh,
+      onSave: async (profile) => profile, onLogin: async () => {}, onLogout: async () => {}, onConnect: async () => {}, onCancelLogin: async () => {}, onForgetGatewayToken: async () => {}, text: uiText.zh,
     }))
     expect(html).toContain('大模型接口')
     expect(html).toContain('GPT 登录')
@@ -32,5 +32,12 @@ describe('model connection UI', () => {
     expect(html.match(/class="model-connection-option[^"]*" disabled=""/g)).toHaveLength(3)
     expect(html).toMatch(/class="model-disconnect"[^>]*>退出登录/)
     expect(html).not.toContain('gateway-connection-form')
+  })
+  it('labels Gateway exit as disconnect while keeping GPT sign-out semantics', () => {
+    const html = renderToStaticMarkup(createElement(HarnessSettings, {
+      profiles: [gateway], profile: gateway, disabled: false, loginPending: false,
+      onSave: async (profile) => profile, onLogin: async () => {}, onLogout: async () => {}, onConnect: async () => {}, onCancelLogin: async () => {}, onForgetGatewayToken: async () => {}, text: uiText.zh,
+    }))
+    expect(html).toMatch(/class="model-disconnect"[^>]*>断开连接/)
   })
 })

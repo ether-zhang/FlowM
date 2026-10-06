@@ -2,14 +2,14 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "flowm.harness/8";
+pub const PROTOCOL_VERSION: &str = "flowm.harness/9";
 pub const UPSTREAM_REVISION: &str = "67727e7cf114cf3e1b71db368d74b24e32f6cb12";
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -116,6 +116,8 @@ pub struct State {
     pub host_id: String,
     pub profiles: BTreeMap<String, Profile>,
     pub bindings: BTreeMap<String, Binding>,
+    #[serde(default)]
+    pub disconnected_gateways: BTreeSet<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -160,6 +162,7 @@ impl Store {
                 host_id: format!("urn:uuid:{}", Uuid::new_v4()),
                 profiles: BTreeMap::new(),
                 bindings: BTreeMap::new(),
+                disconnected_gateways: BTreeSet::new(),
             }
         };
         let store = Self {

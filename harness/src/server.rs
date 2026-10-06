@@ -4,7 +4,8 @@ use crate::{
     models::ModelDirectory,
     sessions::Sessions,
     state::{
-        AuthKind, PROTOCOL_VERSION, Profile, Receipt, Store, UPSTREAM_REVISION, now, payload_hash,
+        AuthKind, PROTOCOL_VERSION, Profile, ProviderKind, Receipt, Store, UPSTREAM_REVISION, now,
+        payload_hash,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -217,10 +218,23 @@ impl Service {
                     .collect();
                 let mut result = Vec::new();
                 for profile in profiles {
-                    let signed_in = profile.auth_kind == AuthKind::None
-                        || self.auth.has_credential(&profile.id).await;
-                    let mut value = serde_json::to_value(profile)?;
+                    let credential = self.auth.has_credential(&profile.id).await;
+                    let disconnected = self
+                        .store
+                        .data
+                        .lock()
+                        .await
+                        .disconnected_gateways
+                        .contains(&profile.id);
+                    let signed_in =
+                        !disconnected && (profile.auth_kind == AuthKind::None || credential);
+                    let mut value = serde_json::to_value(&profile)?;
                     value["signedIn"] = json!(signed_in);
+                    value["hasSavedToken"] = json!(
+                        profile.kind == ProviderKind::Gateway
+                            && profile.auth_kind == AuthKind::Bearer
+                            && credential
+                    );
                     result.push(value);
                 }
                 Ok(json!(result))
@@ -259,12 +273,10 @@ impl Service {
                     }
                     self.auth.set_bearer(&profile.id, token.to_owned()).await?;
                 }
-                self.store
-                    .data
-                    .lock()
-                    .await
-                    .profiles
-                    .insert(profile.id.clone(), profile.clone());
+                let mut data = self.store.data.lock().await;
+                data.disconnected_gateways.remove(&profile.id);
+                data.profiles.insert(profile.id.clone(), profile.clone());
+                drop(data);
                 self.store.save().await?;
                 Ok(serde_json::to_value(profile)?)
             }
@@ -283,7 +295,22 @@ impl Service {
                 let _guard = self.settings.lock().await;
                 let id = required_string(&params, "profileId")?;
                 self.registry.close_profile(&id).await?;
+                if self.store.profile(&id).await?.kind == ProviderKind::Gateway {
+                    self.auth.disconnect_gateway(&id).await?;
+                } else {
+                    self.auth.logout(&id).await?;
+                }
+                Ok(json!({}))
+            }
+            "auth/forget-gateway-token" => {
+                let _guard = self.settings.lock().await;
+                let id = required_string(&params, "profileId")?;
+                if self.store.profile(&id).await?.kind != ProviderKind::Gateway {
+                    bail!("This action only clears Gateway tokens");
+                }
+                self.registry.close_profile(&id).await?;
                 self.auth.logout(&id).await?;
+                self.auth.disconnect_gateway(&id).await?;
                 Ok(json!({}))
             }
             "models/list" => Ok(serde_json::to_value(

@@ -208,4 +208,9 @@ export class HarnessConnections {
     this.update({ profile: null })
     await this.refresh()
   }
+  forgetGatewayToken = async (id: string): Promise<void> => {
+    if (this.state.profile) throw new Error('Disconnect before clearing the saved token')
+    await this.client.forgetGatewayToken(id)
+    await this.refresh()
+  }
 }

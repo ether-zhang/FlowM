@@ -405,6 +405,7 @@ export function App() {
               onLogout={connections.logout}
               onConnect={connections.connect}
               onCancelLogin={connections.cancelLogin}
+              onForgetGatewayToken={connections.forgetGatewayToken}
               text={text}
             />
             {connections.error && <p className="settings-error" role="alert">{connections.error}</p>}

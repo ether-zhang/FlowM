@@ -1,6 +1,6 @@
 import type { AgentActivityEvent, AgentQuestion } from '../agent'
 
-export const HARNESS_PROTOCOL = 'flowm.harness/8'
+export const HARNESS_PROTOCOL = 'flowm.harness/9'
 
 export interface HarnessRuntimePolicy {
   phase: 'inspect' | 'build' | 'review' | 'finalize' | 'project'
@@ -34,6 +34,7 @@ export interface HarnessProfile {
   subject: string | null
   clientId: string | null
   signedIn?: boolean
+  hasSavedToken?: boolean
 }
 
 export interface HarnessBinding {

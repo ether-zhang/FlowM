@@ -1,5 +1,5 @@
 //! FlowM owns OAuth and credentials. No token-bearing payload is returned over IPC.
-use crate::state::{AuthKind, Profile, Store, now, payload_hash};
+use crate::state::{AuthKind, Profile, ProviderKind, Store, now, payload_hash};
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},
@@ -216,11 +216,38 @@ impl AuthService {
         self.store.save().await
     }
 
+    pub async fn disconnect_gateway(&self, id: &str) -> Result<()> {
+        let _guard = self.credentials.lock().await;
+        let mut data = self.store.data.lock().await;
+        let profile = data
+            .profiles
+            .get_mut(id)
+            .context("Gateway profile was removed")?;
+        if profile.kind != ProviderKind::Gateway {
+            bail!("Only Gateway connections can retain a saved bearer token");
+        }
+        profile.credential_version += 1;
+        data.disconnected_gateways.insert(id.to_owned());
+        drop(data);
+        self.store.save().await
+    }
+
     pub async fn headers(&self, profile: &Profile, force_refresh: bool) -> Result<CodexAuth> {
         let _guard = self.credentials.lock().await;
         let current = self.store.profile(&profile.id).await?;
         if current.credential_version != profile.credential_version {
             bail!("Credentials changed; reopen this model session");
+        }
+        if current.kind == ProviderKind::Gateway
+            && self
+                .store
+                .data
+                .lock()
+                .await
+                .disconnected_gateways
+                .contains(&current.id)
+        {
+            bail!("Gateway is disconnected; reconnect it in FlowM settings");
         }
         if force_refresh && current.auth_kind != AuthKind::Chatgpt {
             bail!(

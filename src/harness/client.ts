@@ -122,12 +122,14 @@ export class HarnessClient {
   saveProfile(profile: HarnessProfile, token?: string): Promise<HarnessProfile> {
     const saved = { ...profile }
     delete saved.signedIn
+    delete saved.hasSavedToken
     return this.request('profiles/save', { profile: saved, ...(token ? { token } : {}) })
   }
   async models(profileId: string): Promise<HarnessModelCatalog> { return parseModelCatalog(await this.request('models/list', { profileId })) }
   login(profileId: string): Promise<{ attemptId: string }> { return this.request('auth/start', { profileId }) }
   cancelLogin(attemptId: string): Promise<void> { return this.request('auth/cancel', { attemptId }) }
   logout(profileId: string): Promise<void> { return this.request('auth/logout', { profileId }) }
+  forgetGatewayToken(profileId: string): Promise<void> { return this.request('auth/forget-gateway-token', { profileId }) }
   openThread(binding: HarnessBinding): Promise<{ threadId: string }> { return this.request('thread/open', binding) }
   closeThread(threadId: string): Promise<void> { return this.request('thread/close', { threadId }) }
   cancel(threadId: string): Promise<void> { return this.request('turn/cancel', { threadId }, 20_000) }
