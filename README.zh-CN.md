@@ -99,7 +99,9 @@ npm run harness:test
 
 集成检查使用本地模拟 Responses 服务和临时工程，不发起付费模型调用。Windows 应在普通宿主终端运行；已有受限进程中的嵌套沙箱可能无法创建测试用的 Windows 令牌。
 
-在设置中通过 **GPT 登录** 完成 ChatGPT 授权，或通过 **Gateway** 配置 Responses-compatible 接口（`https://your-gateway/v1`、可选 bearer token）。模型只能从 harness 返回的候选列表选择；GPT 登录包含官方内核候选，可用性由实际请求结果反馈，Gateway 只使用自己的实时目录；网关须同时提供 `GET /v1/models` 和 `POST /v1/responses`。OpenAI API Key 也通过 Gateway 使用，地址为 `https://api.openai.com/v1`。Claude 账号直接登录尚未实现，可通过 Gateway 路由到 Claude 模型。同一时间启用一个连接，旁边显示退出登录按钮。认证由原生 harness 管理。原有 FlowM 对话、画布文件和 `.flowm.json` 导入导出继续保留，旧 CLI ID 仅作为历史引用。Harness 持久化管理逻辑会话，会话身份独立于账号、模型和执行角色；切换连接保留同一段对话，由新的私有执行线程接收共享历史。画布状态和操作仍由框架负责。中断任务只记录状态，不自动重放。实现进度和验收记录见[方案文档](docs/flowm-harness-mvp.md)。
+在设置中通过 **GPT 登录** 完成 ChatGPT 授权，或通过 **Gateway** 配置 Responses-compatible 接口（`https://your-gateway/v1`、可选 bearer token）。模型只能从 harness 返回的候选列表选择；GPT 登录包含官方内核候选，可用性由实际请求结果反馈，Gateway 只使用自己的实时目录；网关须同时提供 `GET /v1/models` 和 `POST /v1/responses`。OpenAI API Key 也通过 Gateway 使用，地址为 `https://api.openai.com/v1`。Claude 账号直接登录尚未实现，可通过 Gateway 路由到 Claude 模型。同一时间启用一个连接，旁边显示退出登录或断开连接按钮。认证由原生 harness 管理。原有 FlowM 对话、画布文件和 `.flowm.json` 导入导出继续保留，旧 CLI ID 仅作为历史引用。Harness 持久化管理逻辑会话，会话身份独立于账号、模型和执行角色；切换连接保留同一段对话，由新的私有执行线程接收共享历史。画布状态和操作仍由框架负责。中断任务只记录状态，不自动重放。实现进度和验收记录见[方案文档](docs/flowm-harness-mvp.md)。
+
+Gateway 断开后，上次使用的 bearer token 保留在 FlowM 原生加密凭据库中，重启也能保持。同一地址再次连接时，token 留空即可复用；设置中也可清除已保存 token。修改地址会删除旧凭据。前端只接收已保存状态，不读取 token 原值。GPT 退出登录仍会删除其凭据。Gateway 模型按发布者分组、按名称排序，默认模型仍由 harness 决定。
 
 使用 OpenRouter 时，在 Gateway 设置中填入 `https://openrouter.ai/api/v1` 和 OpenRouter API Key，再从返回的目录选择模型。Gateway 与 GPT 登录共用 agent 内核和会话存储；模型名称、上下文长度及输入能力来自网关元数据。OpenRouter 提供 [Responses 接口](https://openrouter.ai/docs/api/api-reference/responses/create-responses)，工具、图片和结构化输出仍取决于所选模型及路由。
 
