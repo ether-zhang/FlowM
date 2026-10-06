@@ -1,6 +1,7 @@
 import { useId } from 'react'
 import type { HarnessModelCatalog } from '../harness'
 import type { UiText } from './uiText'
+import { groupModelsByPublisher } from './modelGroups'
 
 export function ModelPicker({
   value, catalog, connection, onChange, disabled, loading = false, error, text,
@@ -36,7 +37,11 @@ export function ModelPicker({
           onChange={(event) => onChange(event.target.value)}
         >
           <option value="" disabled>{loading ? text.model.loading : text.model.select}</option>
-          {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+          {catalog?.source === 'gateway'
+            ? groupModelsByPublisher(models, text.model.otherPublisher).map((group) => <optgroup key={group.id} label={group.label}>
+              {group.models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </optgroup>)
+            : models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
         </select>
         <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
       </div>

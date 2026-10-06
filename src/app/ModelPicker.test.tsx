@@ -81,4 +81,22 @@ describe('connection model picker', () => {
     expect(html).toContain('disabled=""')
     expect(html).not.toContain('model-picker-note')
   })
+  it('groups gateway publishers while preserving the selected model and the upstream catalog', () => {
+    const current = catalog([
+      { id: 'openai/gpt-fixture', label: 'OpenAI: GPT fixture', origin: 'remote' },
+      { id: 'anthropic/claude-fixture', label: 'Anthropic: Claude fixture', origin: 'remote' },
+    ], 'gateway')
+    const html = renderToStaticMarkup(<ModelPicker value="openai/gpt-fixture" catalog={current} disabled={false} onChange={() => {}} text={uiText.zh} />)
+    expect(html.indexOf('<optgroup label="Anthropic">')).toBeLessThan(html.indexOf('<optgroup label="OpenAI">'))
+    expect(html).toContain('value="openai/gpt-fixture" selected=""')
+    expect(current.defaultModel).toBe('openai/gpt-fixture')
+    expect(current.models[0].id).toBe('openai/gpt-fixture')
+  })
+  it('keeps the harness ordering for GPT sign-in', () => {
+    const html = renderToStaticMarkup(<ModelPicker value="second" catalog={catalog([
+      { id: 'second', label: 'Z model', origin: 'kernel' }, { id: 'first', label: 'A model', origin: 'remote' },
+    ])} disabled={false} onChange={() => {}} text={uiText.en} />)
+    expect(html).not.toContain('<optgroup')
+    expect(html.indexOf('Z model')).toBeLessThan(html.indexOf('A model'))
+  })
 })

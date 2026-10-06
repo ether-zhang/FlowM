@@ -8,6 +8,7 @@ const en = {
     select: 'Select a model',
     loading: 'Loading available models…',
     loadFailed: 'Could not load models.',
+    otherPublisher: 'Other',
   },
   harness: {
     title: 'Model interface',
@@ -198,6 +199,7 @@ const zh: UiText = {
     select: '选择模型',
     loading: '正在读取可用模型…',
     loadFailed: '模型列表读取失败。',
+    otherPublisher: '其他',
   },
   activity: {
     aria: '工作区视图',
